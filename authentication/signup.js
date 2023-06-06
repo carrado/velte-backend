@@ -30,8 +30,8 @@ _router.post("/createaccount", function (req, res, next) {
             });
         }
         else {
-            let sql_2 = `INSERT INTO users (userId, name, username, phone, password) 
-            VALUES ('${data.userId}', '${data.name}', '${data.username}', '${data.phone}', '${data.password}')`;
+            let sql_2 = `INSERT INTO users (name, username, phone, password, userId) 
+            VALUES ('${data.name}', '${data.username}', '${data.phone}', '${data.password}', '${data.userId}')`;
 
             let query = conn.query(sql_2, function (err, result) {
                 if (err) {
