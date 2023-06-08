@@ -40,17 +40,28 @@ _router.post("/createaccount", function (req, res, next) {
                         .send({ success: false, message: "Error in creating User" });
                 }
                 else {
-                  /*  let tokenData = {
-                        email: `${data.email}`,
+                    let tokenSchema = {
+                        "receiver": {
+                            "contacts": [
+                                {
+                                    "identifierValue": "+2348163276826"
+                                }
+                            ]
+                        },
+                        "body": {
+                            "type": "text",
+                            "text": {
+                                "text": "Single text message"
+                            }
+                        }
                     }
 
-                    const token = jwt.sign(decryptedEmail, jwtSecretKey); */
-
-                    res.status(200).send({
-                        success: true,
-                        message: "Account created successfully",
-                    });
-
+                    axios.post(`https://nest.messagebird.com/workspaces/${process.env.WORKSPACE_ID}/channels/${process.env.SMS_CHANNEL}/messages`, tokenSchema).then(() => {
+                        res.status(200).send({
+                            success: true,
+                            message: "Account created successfully",
+                        });
+                    })
                 }
             });
         }
