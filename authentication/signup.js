@@ -56,7 +56,12 @@ _router.post("/createaccount", function (req, res, next) {
                         }
                     }
 
-                    axios.post(`https://nest.messagebird.com/workspaces/${process.env.WORKSPACE_ID}/channels/${process.env.SMS_CHANNEL}/messages`, tokenSchema).then(() => {
+                    axios.post(`https://nest.messagebird.com/workspaces/${process.env.WORKSPACE_ID}/channels/${process.env.SMS_CHANNEL}/messages`, tokenSchema, {
+                        headers: {
+                            Authorization: `AccessKey ${process.env.ACCESSKEY
+                        }`
+                        }
+                    }).then(() => {
                         res.status(200).send({
                             success: true,
                             message: "Account created successfully",
