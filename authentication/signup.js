@@ -26,7 +26,7 @@ _router.post("/createaccount", function (req, res, next) {
         if (result.length > 0) {
             res.status(405).send({
                 success: false,
-                message: `User with mobile number '${data.phone}' already exists`,
+                message: `Account already exists`,
             });
         }
         else {
