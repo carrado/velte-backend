@@ -40,7 +40,12 @@ _router.post("/createaccount", function (req, res, next) {
                         .send({ success: false, message: "Error in creating User" });
                 }
                 else {
-                    let tokenSchema = {
+                    res.status(200).send({
+                        success: true,
+                        message: "Account created successfully",
+                        data: { id: userId }
+                    });
+                   /* let tokenSchema = {
                         "receiver": {
                             "contacts": [
                                 {
@@ -67,7 +72,7 @@ _router.post("/createaccount", function (req, res, next) {
                             message: "Account created successfully",
                             data: {id: userId}
                         });
-                    })
+                    }) */
                 }
             });
         }
