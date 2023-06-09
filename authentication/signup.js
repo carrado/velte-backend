@@ -65,6 +65,7 @@ _router.post("/createaccount", function (req, res, next) {
                         res.status(200).send({
                             success: true,
                             message: "Account created successfully",
+                            data: {id: userId}
                         });
                     })
                 }
