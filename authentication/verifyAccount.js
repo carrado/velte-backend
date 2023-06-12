@@ -1,6 +1,6 @@
 import { router as _router, conn as _mysqlConn } from "../header/appHeader.js";
 
-_router.post("/verifyAccount", function (req, res, next) {
+_router.patch("/verifyAccount", function (req, res, next) {
 
     var currentTime = Math.floor(Date.now() / 1000).toString();
 
