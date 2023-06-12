@@ -36,3 +36,5 @@ _router.patch("/verifyAccount", function (req, res, next) {
         }
     });
 });
+
+export default _router;
