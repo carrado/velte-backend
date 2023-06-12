@@ -5,13 +5,13 @@ _router.post("/createaccount", function (req, res, next) {
     var username = req.body.username;
     var password = req.body.password;
     var mobile = req.body.phoneContact;
-
-    // var tokenNo = (Math.floor(Math.random() * 10000) + 90000).toString();
-
-    /* var currentTime = Math.floor(Date.now() / 1000);
-     var tokenExpires = currentTime + (60 * 60).toString(); */
     
     const userId = uuidv4();
+
+    var tokenNo = (Math.floor(Math.random() * 1000) + 9000).toString();
+
+    var currentTime = Math.floor(Date.now() / 1000);
+    var tokenExpires = currentTime + (60 * 60).toString();
 
     let data = {
         userId: userId,
@@ -30,8 +30,8 @@ _router.post("/createaccount", function (req, res, next) {
             });
         }
         else {
-            let sql_2 = `INSERT INTO users (name, username, phone, password, userId) 
-            VALUES ('${data.name}', '${data.username}', '${data.phone}', '${data.password}', '${data.userId}')`;
+            let sql_2 = `INSERT INTO users (name, username, phone, password, userId, code, tokenElapse) 
+            VALUES ('${data.name}', '${data.username}', '${data.phone}', '${data.password}', '${data.userId}', '${tokenNo}', '${tokenExpires}')`;
 
             let query = conn.query(sql_2, function (err, result) {
                 if (err) {
@@ -43,7 +43,7 @@ _router.post("/createaccount", function (req, res, next) {
                     res.status(200).send({
                         success: true,
                         message: "Account created successfully",
-                        data: { id: userId }
+                        lynchpin: { id: userId }
                     });
                    /* let tokenSchema = {
                         "receiver": {

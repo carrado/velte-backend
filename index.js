@@ -37,8 +37,11 @@ app.use("/images", express.static("public/media/t/v16"));
 
 import createaccount from "./authentication/signup.js";
 
+import verifyAccount from "./authentication/verifyAccount.js";
+
 
 app.use("/authenticate/", createaccount);
+app.use("/authenticate/", verifyAccount);
 
 
 
