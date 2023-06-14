@@ -37,4 +37,40 @@ _router.patch("/verifyAccount", function (req, res, next) {
     });
 });
 
+
+
+_router.patch("/resend-code", function (req, res, next) {
+
+    var tokenNo = (Math.floor(Math.random() * 1000) + 9000).toString();
+
+    var currentTime = Math.floor(Date.now() / 1000);
+    var tokenExpires = currentTime + (60 * 60).toString();
+
+    var userId = req.body.userId;
+
+    let data = {
+        userId: userId,
+        token: tokenNo,
+        tokenElapse: tokenExpires,
+    };
+
+    let sql_1 = `UPDATE users SET token = '${data.token}', tokenElapse = '${data.tokenElapse}' WHERE userId = '${userId}'`;
+    _mysqlConn.query(sql_1, function (err, result) {
+        if (err) {
+            res.status(405).send({
+                success: false,
+                subscribed: false,
+                message: "Error in sending passcode",
+            });
+        }
+        else {
+            res.status(200).send({
+                success: true,
+                subscribed: true,
+                message: "Passcode re-sent successfully"
+            });
+        }
+    });
+});
+
 export default _router;
