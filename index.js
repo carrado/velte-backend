@@ -39,9 +39,13 @@ import createaccount from "./authentication/signup.js";
 
 import verifyAccount from "./authentication/verifyAccount.js";
 
+import login from "./authentication/login.js";
+
+
 
 app.use("/authenticate/", createaccount);
 app.use("/authenticate/", verifyAccount);
+app.use("/login", login);
 
 
 
