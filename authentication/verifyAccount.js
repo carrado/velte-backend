@@ -11,7 +11,7 @@ _router.patch("/verifyAccount", function (req, res, next) {
     let sql = `SELECT * FROM users WHERE code = '${token}' AND tokenElapse < '${currentTime}'`;
     let fquery = _mysqlConn.query(sql, (err, results) => {
         if (results.length > 0) {
-            let sql_1 = `UPDATE users SET status = 'Active', token = '', tokenElapse = '' WHERE userId = '${userId}'`;
+            let sql_1 = `UPDATE users SET status = 'Active', code = '', tokenElapse = '' WHERE userId = '${userId}'`;
             _mysqlConn.query(sql_1, function (err, result) {
                 if (err) {
                     res.status(405).send({
@@ -54,7 +54,7 @@ _router.patch("/resend-code", function (req, res, next) {
         tokenElapse: tokenExpires,
     };
 
-    let sql_1 = `UPDATE users SET token = '${data.token}', tokenElapse = '${data.tokenElapse}' WHERE userId = '${userId}'`;
+    let sql_1 = `UPDATE users SET code = '${data.token}', tokenElapse = '${data.tokenElapse}' WHERE userId = '${userId}'`;
     _mysqlConn.query(sql_1, function (err, result) {
         if (err) {
             res.status(405).send({
