@@ -71,7 +71,7 @@ _router.post("/login", function (req, res) {
                         subscribed: true,
                         passcode: true,
                         message: "Passcode resent",
-                        lynchpin: {id: result[0].userId}
+                        lynchpin: {id: results[0].userId}
                     })
                 })
             }
