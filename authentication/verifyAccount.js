@@ -67,10 +67,31 @@ _router.patch("/resend-code", function (req, res, next) {
             res.status(200).send({
                 success: true,
                 subscribed: true,
-                message: "Passcode re-sent successfully"
+                message: "Passcode sent successfully"
             });
         }
     });
 });
+
+
+
+_router.get("/getUserId/:id", function (req, res, next) {
+    let sql = `SELECT * FROM users WHERE phone = '${req.params.id}'`;
+    _mysqlConn.query(sql, (err, results) => {
+        if (results.length > 0) {
+            res.status(200).send({
+                success: true,
+                userId: results[0].userId
+            });
+        }
+        else {
+            res.status(405).send({
+                success: false,
+                message: `No account found with mobile number ${req.params.id}`
+            })
+        }
+    })
+});
+
 
 export default _router;
