@@ -11,7 +11,7 @@ _router.post("/createaccount", function (req, res, next) {
     var tokenNo = (Math.floor(Math.random() * 1000) + 9000).toString();
 
     var currentTime = Math.floor(Date.now() / 1000);
-    var tokenExpires = currentTime + (60 * 60).toString();
+    var tokenExpires = currentTime + (60 * 5).toString();
 
     let data = {
         userId: userId,
@@ -56,7 +56,7 @@ _router.post("/createaccount", function (req, res, next) {
                         "body": {
                             "type": "text",
                             "text": {
-                                "text": "Single text message"
+                                "text": `Dear customer, use this One Time Password ${tokenNo} to verify your account. This OTP will be valid for the next 5 mins.`
                             }
                         }
                     }

@@ -44,7 +44,7 @@ _router.patch("/resend-code", function (req, res, next) {
     var tokenNo = (Math.floor(Math.random() * 1000) + 9000).toString();
 
     var currentTime = Math.floor(Date.now() / 1000);
-    var tokenExpires = currentTime + (60 * 60).toString();
+    var tokenExpires = currentTime + (60 * 5).toString();
 
     var userId = req.body.userId;
 
