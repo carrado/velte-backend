@@ -48,7 +48,7 @@ _router.post("/login", function (req, res) {
                         "receiver": {
                             "contacts": [
                                 {
-                                    "identifierValue": `${results[0].phone}`
+                                    "identifierValue": `${result[0].phone}`
                                 }
                             ]
                         },
@@ -70,7 +70,8 @@ _router.post("/login", function (req, res) {
                         success: true,
                         subscribed: true,
                         passcode: true,
-                        message: "Passcode resent"
+                        message: "Passcode resent",
+                        lynchpin: {id: result[0].userId}
                     })
                 })
             }
