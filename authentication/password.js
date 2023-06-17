@@ -34,3 +34,5 @@ _router.patch("/create-password", function (req, res, next) {
         }
     });
 });
+
+export default _router;

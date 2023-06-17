@@ -41,11 +41,14 @@ import verifyAccount from "./authentication/verifyAccount.js";
 
 import login from "./authentication/login.js";
 
+import createPassword from "./authentication/password.js"
+
 
 
 app.use("/authenticate/", createaccount);
 app.use("/authenticate/", verifyAccount);
 app.use("/login", login);
+app.use("/create-password", createPassword);
 
 
 
