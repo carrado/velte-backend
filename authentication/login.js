@@ -28,7 +28,7 @@ _router.post("/login", function (req, res) {
             /**
              * Record found but account is verified
              */
-            if (results[0].status === 'verified') {
+            if (results[0].status === 'active') {
                 res.status(200).send({
                     success: true,
                     subscribed: true,
