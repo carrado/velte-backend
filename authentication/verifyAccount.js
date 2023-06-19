@@ -24,6 +24,7 @@ _router.patch("/verifyAccount", function (req, res, next) {
                     res.status(200).send({
                         success: true,
                         subscribed: true,
+                        lynchpin: { id: userId, active: true }
                     });
                 }
             });

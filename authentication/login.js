@@ -33,6 +33,7 @@ _router.post("/login", function (req, res) {
                     success: true,
                     subscribed: true,
                     passcode: false,
+                    lynchpin: { id: results[0].userId, active: true }
                 })
             }
 
@@ -71,7 +72,7 @@ _router.post("/login", function (req, res) {
                         subscribed: true,
                         passcode: true,
                         message: "Passcode resent",
-                        lynchpin: {id: results[0].userId}
+                        lynchpin: {id: results[0].userId, active: false}
                     })
                 })
             }
