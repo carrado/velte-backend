@@ -6,6 +6,10 @@ _router.get("/", function (req, res, next) {
         res.status(200).send({
             response
         })
+    }).catch((err) => {
+        res.status(400).send({
+            err
+        })
     })
 });
 
