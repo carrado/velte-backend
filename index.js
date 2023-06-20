@@ -35,6 +35,7 @@ app.use("/images", express.static("public/media/t/v16"));
  * Route to authentication Endpoints
  */
 
+
 import createaccount from "./authentication/signup.js";
 
 import verifyAccount from "./authentication/verifyAccount.js";
@@ -43,12 +44,15 @@ import login from "./authentication/login.js";
 
 import createPassword from "./authentication/password.js"
 
+import geoLocator from "./locationAPI/setLocator.js";
+
 
 
 app.use("/authenticate/", createaccount);
 app.use("/authenticate/", verifyAccount);
 app.use("/login", login);
 app.use("/create-password", createPassword);
+app.use("/get-coordinates", geoLocator);
 
 
 
@@ -61,8 +65,8 @@ uuidv4();
 
 
 // Other routes here
-app.get("*", function (req, res) {
+/* app.get("*", function (req, res) {
     res.status(404).send("Sorry, this is an invalid URL.");
-});
+}); */
 
 export default app
