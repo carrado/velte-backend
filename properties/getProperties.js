@@ -4,7 +4,7 @@ _router.get("/getAllProperties/:id", function (req, res, next) {
     let arrayData = [];
     let photosArr = [];
 
-    let sql = `SELECT * FROM properties WHERE location = '${req.params.id}' `;
+    let sql = `SELECT * FROM properties WHERE location = '${req.params.id}' AND category = '${req.query.category}' `;
 
     let fquery = _mysqlConn.query(sql, (err, results) => {
         if (results.length > 0) {
