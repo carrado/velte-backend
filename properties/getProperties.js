@@ -13,7 +13,7 @@ _router.get("/getAllProperties/:id", function (req, res, next) {
                 const photos = element.photos.split(',');
 
                 photos.forEach(photo => {
-                    photosArr.push(photo)
+                    photosArr.push(photo.replace("\r\n", ''));
                 });
 
                   arrayData.push({
