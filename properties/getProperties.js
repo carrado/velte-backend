@@ -2,13 +2,20 @@ import { router as _router, conn as _mysqlConn } from "../header/appHeader.js";
 
 _router.get("/getAllProperties/:id", function (req, res, next) {
     let arrayData = [];
+    let photosArr = [];
 
     let sql = `SELECT * FROM properties WHERE location = '${req.params.id}' `;
 
     let fquery = _mysqlConn.query(sql, (err, results) => {
         if (results.length > 0) {
 
-              results.forEach(element => {
+            results.forEach(element => {
+                const photos = element.photos.split(',');
+
+                photos.forEach(photo => {
+                    photosArr.push(photo)
+                });
+
                   arrayData.push({
                       title: element.title,
                       address: element.address,
@@ -20,7 +27,7 @@ _router.get("/getAllProperties/:id", function (req, res, next) {
                       price: Number(element.pricing),
                       kitchen: (element.kitchen === "true"),
                       parking: (element.parking === "true"),
-                      photos: [element.photos],
+                      photos: photosArr,
                       info: element.about,
                       plan: element.category === 'rent' ? '/year' : null
                 })
