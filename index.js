@@ -44,7 +44,13 @@ import login from "./authentication/login.js";
 
 import createPassword from "./authentication/password.js"
 
-import geoLocator from "./locationAPI/setLocator.js";
+
+
+
+/**
+ * Route to get, Post Properties
+ */
+import getAllProperties from "./properties/getProperties.js";
 
 
 
@@ -52,7 +58,7 @@ app.use("/authenticate/", createaccount);
 app.use("/authenticate/", verifyAccount);
 app.use("/login", login);
 app.use("/create-password", createPassword);
-app.use("/get-coordinates", geoLocator);
+app.use("/properties/", getAllProperties);
 
 
 
