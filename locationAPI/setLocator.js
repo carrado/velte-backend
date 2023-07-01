@@ -1,7 +1,7 @@
 import { router as _router, axios, conn } from "../header/appHeader.js";
 
-_router.get("/geo-locator", function (req, res, next) {
-    const address = "Plot XI Republic Estate, Independence Layout Enugu";
+_router.get("/", function (req, res, next) {
+    const address = `${req.query.address}`;
     axios.get(`https://maps.googleapis.com/maps/api/geocode/json?address=${address}&key=${process.env.GOOGLE_KEY}`).then((response) => {
         res.status(200).send({
             response
