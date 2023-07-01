@@ -61,7 +61,7 @@ app.use("/authenticate/", verifyAccount);
 app.use("/login", login);
 app.use("/create-password", createPassword);
 app.use("/properties/", getAllProperties);
-app.use("/geolocator", geoLocation);
+app.use("/geo-locator", geoLocation);
 
 
 
