@@ -1,16 +1,30 @@
 import { router as _router, axios, conn } from "../header/appHeader.js";
+import { Client } from "@googlemaps/google-maps-services-js";
 
-_router.get("/", function (req, res, next) {
-    const address = "Independence%20Layout%20Enugu"
-    axios.get(`https://maps.googleapis.com/maps/api/geocode/json?address=${address}&key=${process.env.GOOGLE_KEY}`).then((response) => {
-        res.status(200).send({
-            response
+
+const client = new Client({});
+
+
+
+_router.get("/nearby_search", function (req, res, next) {
+    client
+        .placesNearby({
+            params: {
+                keyword: `${req.params.type}`,
+                location: `${req.query.lat},${req.query.long}`,
+                radius: 1500,
+                key: `${process.env.GOOGLE_KEY}`
+            },
+            timeout: 1000, // milliseconds
         })
-    }).catch((err) => {
-        res.status(400).send({
-            err
+        .then((r) => {
+            res.status(200).send({
+                result: r.data.results
+            });
         })
-    })
+        .catch((e) => {
+            console.log(e);
+        });
 });
 
 

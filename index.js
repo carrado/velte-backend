@@ -42,7 +42,9 @@ import verifyAccount from "./authentication/verifyAccount.js";
 
 import login from "./authentication/login.js";
 
-import createPassword from "./authentication/password.js"
+import createPassword from "./authentication/password.js";
+
+import location from "./locationAPI/setLocator.js"
 
 
 
@@ -59,6 +61,7 @@ app.use("/authenticate/", verifyAccount);
 app.use("/login", login);
 app.use("/create-password", createPassword);
 app.use("/properties/", getAllProperties);
+app.use("/geo-locator/", location);
 
 
 
