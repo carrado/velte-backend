@@ -23,7 +23,9 @@ _router.get("/nearby_search", function (req, res, next) {
             });
         })
         .catch((e) => {
-            console.log(e);
+            res.status(500).send({
+                err: "No result found"
+            })
         });
 });
 
