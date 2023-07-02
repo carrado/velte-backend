@@ -29,6 +29,8 @@ _router.get("/getAllProperties/:id", function (req, res, next) {
                       parking: (element.parking === "true"),
                       photos: photosArr,
                       info: element.about,
+                      latitude: element.latitude,
+                      longtitude: element.longtitude,
                       plan: element.category === 'rent' ? '/year' : null
                 })
               });
