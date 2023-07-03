@@ -10,7 +10,7 @@ _router.get("/nearby_search", function (req, res, next) {
     client
         .placesNearby({
             params: {
-                keyword: `${req.params.type}`,
+                keyword: `${req.query.type}`,
                 location: `${req.query.lat},${req.query.long}`,
                 radius: 1500,
                 key: `${process.env.GOOGLE_KEY}`
