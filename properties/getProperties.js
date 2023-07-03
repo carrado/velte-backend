@@ -16,7 +16,8 @@ _router.get("/getAllProperties/:id", function (req, res, next) {
                     photosArr.push(photo.replace("\r\n", ''));
                 });
 
-                  arrayData.push({
+                arrayData.push({
+                      id: element.property_id,
                       title: element.title,
                       address: element.address,
                       utility: {
