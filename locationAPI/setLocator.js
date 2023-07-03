@@ -12,7 +12,7 @@ _router.get("/nearby_search", function (req, res, next) {
             params: {
                 keyword: `${req.query.type}`,
                 location: `${req.query.lat},${req.query.long}`,
-                radius: 1500,
+                radius: 500,
                 key: `${process.env.GOOGLE_KEY}`
             },
             timeout: 1000, // milliseconds
