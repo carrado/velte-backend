@@ -44,7 +44,6 @@ import login from "./authentication/login.js";
 
 import createPassword from "./authentication/password.js";
 
-import location from "./locationAPI/setLocator.js"
 
 
 
@@ -56,10 +55,25 @@ import getAllProperties from "./properties/getProperties.js";
 
 
 
+
+
+
+/**
+ * Routes for geo Locator
+ */
+
+import location from "./locationAPI/setLocator.js"
+
+
+
+
+
+
+
 app.use("/authenticate/", createaccount);
 app.use("/authenticate/", verifyAccount);
-app.use("/login", login);
-app.use("/create-password", createPassword);
+app.use("/authenticate/", login);
+app.use("/authenticate/", createPassword);
 app.use("/properties/", getAllProperties);
 app.use("/geo-locator/", location);
 
