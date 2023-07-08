@@ -1,6 +1,6 @@
 import { router as _router, conn as _mysqlConn } from "../header/appHeader.js";
 
-_router.post("/getAgentDetails/:id", function (req, res) {
+_router.get("/getAgentDetails/:id", function (req, res) {
 
     let sql = `SELECT * FROM agents WHERE agentId = '${req.params.id}'`;
 
