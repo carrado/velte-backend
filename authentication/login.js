@@ -2,6 +2,7 @@ import { router as _router, conn as _mysqlConn } from "../header/appHeader.js";
 
 _router.post("/login", function (req, res) {
     var tokenNo = (Math.floor(Math.random() * 1000) + 9000).toString();
+    var subscriptionExpires = currentTime.toString();
 
     var currentTime = Math.floor(Date.now() / 1000);
     var tokenExpires = currentTime + (60 * 5).toString();
@@ -25,6 +26,20 @@ _router.post("/login", function (req, res) {
         }
 
         else {
+            let subscriptionMode = false;
+
+            let sql_1 = `SELECT * FROM subscription WHERE userId = '${results[0].userId}' AND subscriptionElapse <= '${subscriptionExpires}'`;
+            _mysqlConn.query(sql_1, (err, response) => {
+
+                if (response.length === 0) {
+                    subscriptionMode = true;
+                }
+                else {
+                    subscriptionMode = false;
+                }
+            });
+
+
             /**
              * Record found but account is verified
              */
@@ -33,10 +48,10 @@ _router.post("/login", function (req, res) {
                     success: true,
                     subscribed: true,
                     passcode: false,
-                    lynchpin: { id: results[0].userId, active: true }
+                    lynchpin: { id: results[0].userId, active: true, subscriptionStatus: subscriptionMode }
                 })
+                
             }
-
             else {
                 /**
                  * Record found but account not verified yet

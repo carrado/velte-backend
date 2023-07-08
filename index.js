@@ -69,6 +69,16 @@ import location from "./locationAPI/setLocator.js"
 
 
 
+/**
+ * Route for Pricing and Subscription
+ */
+
+import subscription from "./subscription/subscribe.js"
+
+
+
+
+
 
 app.use("/authenticate/", createaccount);
 app.use("/authenticate/", verifyAccount);
@@ -76,6 +86,7 @@ app.use("/authenticate/", login);
 app.use("/authenticate/", createPassword);
 app.use("/properties/", getAllProperties);
 app.use("/geo-locator/", location);
+app.use("/pricing/", subscription);
 
 
 

@@ -43,7 +43,7 @@ _router.post("/createaccount", function (req, res, next) {
                     res.status(200).send({
                         success: true,
                         message: "Account created successfully",
-                        lynchpin: { id: userId, active: false }
+                        lynchpin: { id: userId, active: false, subscriptionStatus: false }
                     });
                    /* let tokenSchema = {
                         "receiver": {
