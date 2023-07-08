@@ -73,7 +73,7 @@ import location from "./locationAPI/setLocator.js"
  * Route for Pricing and Subscription
  */
 
-import subscription from "./subscription/subscribe.js"
+import agents from "./realtors/accounts.js"
 
 
 
@@ -86,7 +86,7 @@ app.use("/authenticate/", login);
 app.use("/authenticate/", createPassword);
 app.use("/properties/", getAllProperties);
 app.use("/geo-locator/", location);
-app.use("/pricing/", subscription);
+app.use("/agents/", agents);
 
 
 

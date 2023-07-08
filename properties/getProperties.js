@@ -17,25 +17,26 @@ _router.get("/getAllProperties/:id", function (req, res, next) {
                 });
 
                 arrayData.push({
-                      id: element.property_id,
-                      title: element.title,
-                      address: element.address,
-                      utility: {
-                          bedrooms: Number(element.bedrooms),
-                          bathrooms: Number(element.bathrooms),
-                          toilets: Number(element.toilets)
-                      },
-                      price: Number(element.pricing),
-                      kitchen: (element.kitchen === "true"),
-                      parking: (element.parking === "true"),
-                      photos: photosArr,
-                      info: element.about,
-                      latitude: element.latitude,
-                      longtitude: element.longtitude,
-                      plan: element.category === 'rent' ? '/year' : null
+                    id: element.property_id,
+                    title: element.title,
+                    address: element.address,
+                    utility: {
+                        bedrooms: Number(element.bedrooms),
+                        bathrooms: Number(element.bathrooms),
+                        toilets: Number(element.toilets)
+                    },
+                    price: Number(element.pricing),
+                    kitchen: (element.kitchen === "true"),
+                    parking: (element.parking === "true"),
+                    photos: photosArr,
+                    info: element.about,
+                    latitude: element.latitude,
+                    longtitude: element.longtitude,
+                    plan: element.category === 'rent' ? '/year' : null,
+                    agentId: element.agentId
                 })
-              });
-            
+            });
+
             res.status(200).send({
                 success: true,
                 message: 'Data retrieved',
