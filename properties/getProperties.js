@@ -2,7 +2,6 @@ import { router as _router, conn as _mysqlConn } from "../header/appHeader.js";
 
 _router.get("/getAllProperties/:id", function (req, res, next) {
     let arrayData = [];
-    let photosArr = [];
 
     let sql = `SELECT * FROM properties WHERE location = '${req.params.id}' AND category = '${req.query.category}' `;
 
@@ -10,6 +9,7 @@ _router.get("/getAllProperties/:id", function (req, res, next) {
         if (results.length > 0) {
 
             results.forEach(element => {
+                let photosArr = [];
                 const photos = element.photos.split(',');
 
                 photos.forEach(photo => {
