@@ -2,7 +2,6 @@ import { router as _router, conn as _mysqlConn } from "../header/appHeader.js";
 
 _router.post("/login", function (req, res) {
     var tokenNo = (Math.floor(Math.random() * 1000) + 9000).toString();
-    var subscriptionExpires = currentTime.toString();
 
     var currentTime = Math.floor(Date.now() / 1000);
     var tokenExpires = currentTime + (60 * 5).toString();

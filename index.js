@@ -82,7 +82,7 @@ import agents from "./realtors/accounts.js"
 
 app.use("/authenticate/", createaccount);
 app.use("/authenticate/", verifyAccount);
-app.use("/login", login);
+app.use("/authenticate/", login);
 app.use("/create-password", createPassword);
 app.use("/properties/", getAllProperties);
 app.use("/geo-locator/", location);
