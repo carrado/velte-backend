@@ -52,6 +52,7 @@ import createPassword from "./authentication/password.js";
  * Route to get, Post Properties
  */
 import getAllProperties from "./properties/getProperties.js";
+import searchProperties from "./properties/searchProperties.js";
 
 
 
@@ -85,6 +86,7 @@ app.use("/authenticate/", verifyAccount);
 app.use("/authenticate/", login);
 app.use("/create-password", createPassword);
 app.use("/properties/", getAllProperties);
+app.use("/properties/", searchProperties);
 app.use("/geo-locator/", location);
 app.use("/agents/", agents);
 
