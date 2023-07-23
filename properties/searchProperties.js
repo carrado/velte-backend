@@ -30,8 +30,7 @@ _router.get("/search-properties", function (req, res, next) {
                         toilets: Number(element.toilets)
                     },
                     price: Number(element.pricing),
-                    kitchen: (element.kitchen === "true"),
-                    parking: (element.parking === "true"),
+                    facilities: element.facilities,
                     photos: photosArr,
                     info: element.about,
                     latitude: element.latitude,
