@@ -4,26 +4,13 @@ _router.get("/search-properties", function (req, res, next) {
     let arrayData = [];
     let filteredArr = [];
     let sql = '';
-
-    if (req.query.type !== 'any') {
-        sql = `SELECT * FROM properties WHERE (address LIKE '%${req.query.search}%' OR location = '${req.query.search}') AND type='${req.query.type}'
-    AND pricing BETWEEN '${req.query.minimum}' AND '${req.query.maximum}'`;
-    }
-    else {
-        sql = `SELECT * FROM properties WHERE (address LIKE '%${req.query.search}%' OR location = '${req.query.search}') AND pricing BETWEEN '${req.query.minimum}' AND '${req.query.maximum}'`;
-    }
+    
+    sql = `SELECT * FROM properties WHERE address LIKE '%${req.query.search}%' OR location = '${req.query.search}'`;
 
     let fquery = _mysqlConn.query(sql, (err, results) => {
         if (results.length > 0) {
-
-            if (req.query.type === 'house') {
-                const filter1 = results.filter((data) => data.bathrooms === req.query.bathroom && data.bedrooms === req.query.bedroom && data.toilets === req.query.toilet);
-
-                filteredArr = filter1;
-            }
-            else {
-                filteredArr = results;
-            }
+            
+            filteredArr = results;
 
             filteredArr.forEach(element => {
                 let photosArr = [];
@@ -49,6 +36,12 @@ _router.get("/search-properties", function (req, res, next) {
                     info: element.about,
                     latitude: element.latitude,
                     longtitude: element.longtitude,
+                    type: element.type,
+                    size: {
+                        plot: element.plots,
+                        acres: element.acres,
+                        hectares: element.hectares
+                    },
                     plan: element.category === 'rent' ? '/year' : null,
                     agentId: element.agentId
                 })
