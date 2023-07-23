@@ -5,7 +5,7 @@ _router.get("/search-properties", function (req, res, next) {
     let filteredArr = [];
     let sql = '';
     
-    sql = `SELECT * FROM properties WHERE address LIKE '%${req.query.search}%' OR location = '${req.query.search}'`;
+    sql = `SELECT * FROM properties WHERE (address LIKE '%${req.query.search}%' OR location = '${req.query.search}') AND category = '${req.query.category}'`;
 
     let fquery = _mysqlConn.query(sql, (err, results) => {
         if (results.length > 0) {
