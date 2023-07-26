@@ -19,13 +19,26 @@ const options = {
     password: process.env.DB_PASSWORD,
     user: process.env.DB_USERNAME,
     database: process.env.DB_DATABASE,
-    host: process.env.DB_HOST,
-    createDatabaseTable: true,
+    host: process.env.DB_HOST
 };
 
 //create database connection
 const conn = createPool(options);
 const sessionStore = new mysqlStore(options, conn);
+
+
+const attemptConnection = () =>
+conn.getConnection((err, connection) => {
+    if (err) {
+        console.log('error connecting. retrying in 1 sec');
+        setTimeout(attemptConnection, 1000);
+    } else {
+        console.log('Successfully queried database.');
+    }
+});
+
+attemptConnection();
+
 
 router.use(
     session({

@@ -23,6 +23,7 @@ _router.post("/createaccount", function (req, res, next) {
 
     let sql = `SELECT * FROM users WHERE phone = '${data.phone}'`;
     let fquery = conn.query(sql, (err, result) => {
+        console.log(result)
         if (result.length > 0) {
             res.status(405).send({
                 success: false,
