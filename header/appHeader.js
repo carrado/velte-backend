@@ -31,7 +31,7 @@ const attemptConnection = () =>
 conn.getConnection((err, connection) => {
     if (err) {
         console.log('error connecting. retrying in 1 sec');
-        setTimeout(attemptConnection, 1000);
+        setTimeout(attemptConnection, 5000);
     } else {
         console.log('Successfully queried database.');
     }
