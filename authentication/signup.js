@@ -23,7 +23,6 @@ _router.post("/createaccount", function (req, res, next) {
 
     let sql = `SELECT * FROM users WHERE phone = '${data.phone}'`;
     let fquery = conn.query(sql, (err, result) => {
-        console.log(result)
         if (result.length > 0) {
             res.status(405).send({
                 success: false,
@@ -46,6 +45,18 @@ _router.post("/createaccount", function (req, res, next) {
                         message: "Account created successfully",
                         lynchpin: { id: userId, active: false }
                     });
+
+                    axios.post('https://textbelt.com/text', {
+                        phone: `${mobile}`,
+                        message: `Dear customer, use this One Time Password ${tokenNo} to verify your account. This OTP will be valid for the next 5 mins.`,
+                        key: 'textbelt',
+                    }).then(response => {
+                        res.status(200).send({
+                            success: true,
+                            message: "Account created successfully",
+                            lynchpin: { id: userId, active: false }
+                        });
+                    })
                    /* let tokenSchema = {
                         "receiver": {
                             "contacts": [

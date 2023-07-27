@@ -30,7 +30,7 @@ const sessionStore = new mysqlStore(options, conn);
 const attemptConnection = () =>
 conn.getConnection((err, connection) => {
     if (err) {
-        console.log('error connecting. retrying in 1 sec');
+        console.log(err);
         setTimeout(attemptConnection, 5000);
     } else {
         console.log('Successfully queried database.');
