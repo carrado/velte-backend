@@ -40,12 +40,6 @@ _router.post("/createaccount", function (req, res, next) {
                         .send({ success: false, message: "Error in creating User" });
                 }
                 else {
-                    res.status(200).send({
-                        success: true,
-                        message: "Account created successfully",
-                        lynchpin: { id: userId, active: false }
-                    });
-
                     axios.post('https://textbelt.com/text', {
                         phone: `${mobile}`,
                         message: `Dear customer, use this One Time Password ${tokenNo} to verify your account. This OTP will be valid for the next 5 mins.`,
