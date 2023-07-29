@@ -1,4 +1,42 @@
 import { router as _router, conn as _mysqlConn } from "../header/appHeader.js";
+import dotenv from 'dotenv'
+dotenv.config();
+
+
+
+import { Vonage } from "@vonage/server-sdk";
+
+const vonage = new Vonage({
+    apiKey: process.env.NEXMOAPI,
+    apiSecret: process.env.NEXMOSECRETKEY
+})
+
+
+
+
+async function sendSMS(mobile, token, userId, res) {
+    const from = "Velte"
+    const to = "2348163276826"
+    const text = `Dear customer, use this One Time Password ${token} to verify your account. This OTP will be valid for the next 5 mins.`
+
+    await vonage.sms.send({ to, from, text })
+        .then(resp => {
+            res.status(200).send({
+                success: true,
+                subscribed: true,
+                passcode: true,
+                message: "Passcode resent",
+                lynchpin: { id: results[0].userId, active: false }
+            })
+        })
+        .catch(err => { console.log('There was an error sending the messages.'); console.error(err); });
+}
+
+
+
+
+
+
 
 _router.post("/login", function (req, res) {
     var tokenNo = (Math.floor(Math.random() * 1000) + 9000).toString();
@@ -45,6 +83,9 @@ _router.post("/login", function (req, res) {
                  */
                 let sql_1 = `UPDATE users SET code = '${tokenNo}', tokenElapse = '${tokenExpires}' WHERE userId = '${results[0].userId}'`;
                 _mysqlConn.query(sql_1, function (err, result) {
+
+                    sendSMS(result[0].phone, tokenNo, results[0].userId, res)
+
                     /* let tokenSchema = {
                         "receiver": {
                             "contacts": [
@@ -66,14 +107,6 @@ _router.post("/login", function (req, res) {
                             Authorization: `AccessKey ${process.env.ACCESSKEY}`
                         }
                     }).then(() => {}) */
-
-                    res.status(200).send({
-                        success: true,
-                        subscribed: true,
-                        passcode: true,
-                        message: "Passcode resent",
-                        lynchpin: {id: results[0].userId, active: false}
-                    })
                 })
             }
         }

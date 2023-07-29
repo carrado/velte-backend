@@ -1,4 +1,40 @@
 import { router as _router, axios, uuidv4, conn } from "../header/appHeader.js";
+import dotenv from 'dotenv'
+dotenv.config();
+
+
+
+import { Vonage } from "@vonage/server-sdk";
+
+const vonage = new Vonage({
+    apiKey: process.env.NEXMOAPI,
+    apiSecret: process.env.NEXMOSECRETKEY
+})
+
+
+
+
+
+
+async function sendSMS(mobile, token, userId, res) {
+    const from = "Velte"
+    const to = "2348163276826"
+    const text = `Dear customer, use this One Time Password ${token} to verify your account. This OTP will be valid for the next 5 mins.`
+
+    await vonage.sms.send({ to, from, text })
+        .then(resp => {
+            res.status(200).send({
+                success: true,
+                message: "Account created successfully",
+                lynchpin: { id: userId, active: true }
+            });
+        })
+        .catch(err => { console.log('There was an error sending the messages.'); console.error(err); });
+}
+
+
+
+
 
 _router.post("/createaccount", function (req, res, next) {
     var name = req.body.names;
@@ -40,17 +76,9 @@ _router.post("/createaccount", function (req, res, next) {
                         .send({ success: false, message: "Error in creating User" });
                 }
                 else {
-                    axios.post('https://textbelt.com/text', {
-                        phone: `${mobile}`,
-                        message: `Dear customer, use this One Time Password ${tokenNo} to verify your account. This OTP will be valid for the next 5 mins.`,
-                        key: 'textbelt',
-                    }).then(response => {
-                        res.status(200).send({
-                            success: true,
-                            message: "Account created successfully",
-                            lynchpin: { id: userId, active: false }
-                        });
-                    })
+
+                    sendSMS(data.phone, tokenNo, data.userId, res)
+
                    /* let tokenSchema = {
                         "receiver": {
                             "contacts": [

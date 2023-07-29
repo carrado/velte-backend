@@ -1,5 +1,43 @@
 import { router as _router, conn as _mysqlConn } from "../header/appHeader.js";
 
+import dotenv from 'dotenv'
+dotenv.config();
+
+
+
+import { Vonage } from "@vonage/server-sdk";
+
+const vonage = new Vonage({
+    apiKey: process.env.NEXMOAPI,
+    apiSecret: process.env.NEXMOSECRETKEY
+})
+
+
+
+
+async function sendSMS(mobile, token, res) {
+    const from = "Velte"
+    const to = "2348163276826"
+    const text = `Dear customer, use this One Time Password ${token} to verify your account. This OTP will be valid for the next 5 mins.`
+
+    await vonage.sms.send({ to, from, text })
+        .then(resp => {
+            res.status(200).send({
+                success: true,
+                subscribed: true,
+                message: "Passcode sent successfully"
+            });
+        })
+        .catch(err => { console.log('There was an error sending the messages.'); console.error(err); });
+}
+
+
+
+
+
+
+
+
 _router.patch("/verifyAccount", function (req, res, next) {
 
     var currentTime = Math.floor(Date.now() / 1000).toString();
@@ -40,6 +78,9 @@ _router.patch("/verifyAccount", function (req, res, next) {
 
 
 
+
+
+
 _router.patch("/resend-code", function (req, res, next) {
 
     var tokenNo = (Math.floor(Math.random() * 1000) + 9000).toString();
@@ -65,11 +106,7 @@ _router.patch("/resend-code", function (req, res, next) {
             });
         }
         else {
-            res.status(200).send({
-                success: true,
-                subscribed: true,
-                message: "Passcode sent successfully"
-            });
+            sendSMS(tokenNo, res);
         }
     });
 });
