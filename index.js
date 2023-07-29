@@ -53,6 +53,7 @@ import createPassword from "./authentication/password.js";
  */
 import getAllProperties from "./properties/getProperties.js";
 import searchProperties from "./properties/searchProperties.js";
+import insertProperties from "./properties/insertProperties.js";
 
 
 
@@ -87,6 +88,7 @@ app.use("/authenticate/", login);
 app.use("/create-password", createPassword);
 app.use("/properties/", getAllProperties);
 app.use("/properties/", searchProperties);
+app.use("/properties/", insertProperties);
 app.use("/geo-locator/", location);
 app.use("/agents/", agents);
 

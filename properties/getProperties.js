@@ -33,9 +33,9 @@ _router.get("/getAllProperties/:id", function (req, res, next) {
                     longtitude: element.longtitude,
                     type: element.type,
                     size: {
-                        plot: element.plots,
-                        acres: element.acres,
-                        hectares: element.hectares
+                        plot: Number(element.plots),
+                        acres: Number(element.acres),
+                        hectares: Number(element.hectares)
                     },
                     plan: element.category === 'rent' ? '/year' : null,
                     agentId: element.agentId
