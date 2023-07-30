@@ -84,7 +84,7 @@ _router.post("/login", function (req, res) {
                 let sql_1 = `UPDATE users SET code = '${tokenNo}', tokenElapse = '${tokenExpires}' WHERE userId = '${results[0].userId}'`;
                 _mysqlConn.query(sql_1, function (err, result) {
 
-                    sendSMS(result[0].phone, tokenNo, results[0].userId, res)
+                    sendSMS(results[0].phone, tokenNo, results[0].userId, res)
 
                     /* let tokenSchema = {
                         "receiver": {

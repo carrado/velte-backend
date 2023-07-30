@@ -33,7 +33,7 @@ _router.post("/insertProperties", function (req, res, next) {
                 let sql_2 = `INSERT INTO properties(title, address,
         bedrooms, bathrooms, toilets, pricing, facilities, photos, about, latitude, 
         longtitude, type, plots, acres, hectares, category, property_id, agentId) 
-        VALUES ('${req.body.title}', '${req.body.address}', '${req.body.bedrooms}', '${req.body.bathrooms}','${req.body.toilets}', '${req.body.pricing}', '${req.body.facilities}', '${req.body.photos}', '${req.body.about}', '${latitude}', '${longtitude}','${req.body.type}', '${req.body.plots}', '${req.body.acres}', '${req.body.hectares}', '${req.body.category}', '${properties_id}','${agentId}')`;
+        VALUES ('${req.body.title}', '${req.body.address}', '${req.body.bedrooms}', '${req.body.bathrooms}','${req.body.toilets}', '${req.body.pricing}', '${req.body.facilities}', '${req.body.photos}', '${req.body.about}', '${latitude}', '${longtitude}','${req.body.type}', '${req.body.plots}', '${req.body.acres}', '${req.body.hectares}', '${req.body.category}', '${properties_id}','35daa71b-1e98-43c9-a8f0-fb80ac9f7a61')`;
 
                 let fquery = conn.query(sql_2, function (err, result) {
                     if (err) {
