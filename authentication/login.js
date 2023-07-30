@@ -26,7 +26,7 @@ async function sendSMS(mobile, token, userId, res) {
                 subscribed: true,
                 passcode: true,
                 message: "Passcode resent",
-                lynchpin: { id: results[0].userId, active: false }
+                lynchpin: { id: userId, active: false }
             })
         })
         .catch(err => { console.log('There was an error sending the messages.'); console.error(err); });
@@ -81,32 +81,11 @@ _router.post("/login", function (req, res) {
                  * Set another token for user to verify
                  * Send an SMS to enable account verification
                  */
+
+                sendSMS(results[0].phone, tokenNo, results[0].userId, res);
+
                 let sql_1 = `UPDATE users SET code = '${tokenNo}', tokenElapse = '${tokenExpires}' WHERE userId = '${results[0].userId}'`;
                 _mysqlConn.query(sql_1, function (err, result) {
-
-                    sendSMS(results[0].phone, tokenNo, results[0].userId, res)
-
-                    /* let tokenSchema = {
-                        "receiver": {
-                            "contacts": [
-                                {
-                                    "identifierValue": `${result[0].phone}`
-                                }
-                            ]
-                        },
-                        "body": {
-                            "type": "text",
-                            "text": {
-                                "text": `Dear customer, use this One Time Password ${tokenNo} to verify your account. This OTP will be valid for the next 5 mins.`
-                            }
-                        }
-                    }
-       
-                    axios.post(`https://nest.messagebird.com/workspaces/${process.env.WORKSPACE_ID}/channels/${process.env.SMS_CHANNEL}/messages`, tokenSchema, {
-                        headers: {
-                            Authorization: `AccessKey ${process.env.ACCESSKEY}`
-                        }
-                    }).then(() => {}) */
                 })
             }
         }
