@@ -1,66 +1,87 @@
 import { router as _router, conn as _mysqlConn } from "../header/appHeader.js";
+import { Client } from "@googlemaps/google-maps-services-js";
+
+const client = new Client({});
+
 
 _router.get("/search-properties", function (req, res, next) {
-    let arrayData = [];
-    let filteredArr = [];
-    let sql = '';
+
+    let latitude = '';
+    let longtitude = '';
+
+    const args = {
+        params: {
+            key: `${process.env.GOOGLE_KEY}`,
+            address: `${req.query.search}`,
+        }
+    };
+
+    client.geocode(args).then(gcResponse => {
+        //  res.status(200).send({ data: gcResponse.data.results[0].geometry });
+        latitude = gcResponse.data.results[0].geometry.location.lat;
+        longtitude = gcResponse.data.results[0].geometry.location.lng;
+
+        let arrayData = [];
+        let filteredArr = [];
+        let sql = '';
     
-    sql = `SELECT * FROM properties WHERE (address LIKE '%${req.query.search}%' OR location = '${req.query.search}') AND category = '${req.query.category}'`;
+        sql = `SELECT * FROM properties WHERE (address LIKE '%${req.query.search}%' OR location = '${req.query.search}') AND category = '${req.query.category}'`;
 
-    let fquery = _mysqlConn.query(sql, (err, results) => {
-        if (results.length > 0) {
+        let fquery = _mysqlConn.query(sql, (err, results) => {
+            if (results.length > 0) {
             
-            filteredArr = results;
+                filteredArr = results;
 
-            filteredArr.forEach(element => {
-                let photosArr = [];
-                const photos = element.photos.split(',');
+                filteredArr.forEach(element => {
+                    let photosArr = [];
+                    const photos = element.photos.split(',');
 
-                photos.forEach(photo => {
-                    photosArr.push(photo.replace("\r\n", ''));
+                    photos.forEach(photo => {
+                        photosArr.push(photo.replace("\r\n", ''));
+                    });
+
+                    arrayData.push({
+                        id: element.property_id,
+                        title: element.title,
+                        address: element.address,
+                        utility: {
+                            bedrooms: Number(element.bedrooms),
+                            bathrooms: Number(element.bathrooms),
+                            toilets: Number(element.toilets)
+                        },
+                        price: Number(element.pricing),
+                        facilities: element.facilities,
+                        photos: photosArr,
+                        info: element.about,
+                        latitude: element.latitude,
+                        longtitude: element.longtitude,
+                        type: element.type,
+                        size: {
+                            plot: element.plots,
+                            acres: element.acres,
+                            hectares: element.hectares
+                        },
+                        plan: element.category === 'rent' ? '/year' : null,
+                        agentId: element.agentId
+                    })
                 });
 
-                arrayData.push({
-                    id: element.property_id,
-                    title: element.title,
-                    address: element.address,
-                    utility: {
-                        bedrooms: Number(element.bedrooms),
-                        bathrooms: Number(element.bathrooms),
-                        toilets: Number(element.toilets)
-                    },
-                    price: Number(element.pricing),
-                    facilities: element.facilities,
-                    photos: photosArr,
-                    info: element.about,
-                    latitude: element.latitude,
-                    longtitude: element.longtitude,
-                    type: element.type,
-                    size: {
-                        plot: element.plots,
-                        acres: element.acres,
-                        hectares: element.hectares
-                    },
-                    plan: element.category === 'rent' ? '/year' : null,
-                    agentId: element.agentId
+                res.status(200).send({
+                    success: true,
+                    message: 'Data retrieved',
+                    data: arrayData,
+                    geoCode: { lat: latitude, lng: longtitude }
+                });
+            }
+            else {
+                res.status(405).send({
+                    success: false,
+                    message: 'Could not retrieve data',
+                    data: null
                 })
-            });
-
-            res.status(200).send({
-                success: true,
-                message: 'Data retrieved',
-                data: arrayData
-            });
-        }
-        else {
-            res.status(405).send({
-                success: false,
-                message: 'Could not retrieve data',
-                data: null
-            })
-        }
-    })
-
+            }
+        })
+    });
 });
 
 
