@@ -26,7 +26,7 @@ async function sendSMS(mobile, token, userId, res) {
             res.status(200).send({
                 success: true,
                 message: "Account created successfully",
-                lynchpin: { id: userId, active: true }
+                lynchpin: { id: userId, active: false }
             });
         })
         .catch(err => { console.log('There was an error sending the messages.'); console.error(err); });
