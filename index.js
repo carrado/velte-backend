@@ -14,7 +14,7 @@ app.post('/users', async (req, res) => {
 
     try {
         const user = await User.create({ name, email, accountType, username, password, subscription: false });
-        return res.json(user)
+        return res.status(200).json({ message: 'Account Created Successfully', user })
     }
     catch (error) {
         console.log(error)

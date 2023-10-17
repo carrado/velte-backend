@@ -12,6 +12,10 @@ module.exports = (sequelize, DataTypes) => {
     static associate(models) {
       // define association here
     }
+
+    toJSON() {
+      return { ...this.get(), id: undefined }; // Here we hide the id field from being returned during response
+    }
   }
   User.init({
     uuid: {
