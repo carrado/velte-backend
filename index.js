@@ -1,110 +1,29 @@
-import express, { urlencoded, json } from "express";
-var app = express();
-import sharp from "sharp";
-import path from "path";
-import cookieParser from 'cookie-parser';
-import cors from "cors";
-import dotenv from "dotenv";
-dotenv.config()
+const express = require('express');
+const cors = require('cors');
+const { sequelize, User } = require("./models");
 
-//To parse URL encoded data
-app.use(urlencoded({ extended: false }));
+const app = express();
 
-//To parse json data
-app.use(json());
+app.use(express.json());
 
-// cookie parser middleware
-app.use(cookieParser());
+app.use(cors({ origin: "*" }));
 
 
-const corsOptions = {
-    origin: '*',
-    credentials: true,
-    optionSuccessStatus: 200
-}
+app.post('/users', async (req, res) => {
+    const { name, email, accountType, username, password } = req.body;
 
-app.use(cors(corsOptions));
-
-
-app.use(express.static("public"));
-app.use("/images", express.static("public/media/t/v16"));
-
-
-
-/**
- * Route to authentication Endpoints
- */
+    try {
+        const user = await User.create({ name, email, accountType, username, password, subscription: false });
+        return res.json(user)
+    }
+    catch (error) {
+        console.log(error)
+        res.status(500).json(error)
+    }
+})
 
 
-import createaccount from "./authentication/signup.js";
-
-import verifyAccount from "./authentication/verifyAccount.js";
-
-import login from "./authentication/login.js";
-
-import createPassword from "./authentication/password.js";
-
-
-
-
-
-/**
- * Route to get, Post Properties
- */
-import getAllProperties from "./properties/getProperties.js";
-import searchProperties from "./properties/searchProperties.js";
-import insertProperties from "./properties/insertProperties.js";
-
-
-
-
-
-
-/**
- * Routes for geo Locator
- */
-
-import location from "./locationAPI/setLocator.js"
-
-
-
-
-
-
-/**
- * Route for Pricing and Subscription
- */
-
-import agents from "./realtors/accounts.js"
-
-
-
-
-
-
-app.use("/authenticate/", createaccount);
-app.use("/authenticate/", verifyAccount);
-app.use("/authenticate/", login);
-app.use("/create-password", createPassword);
-app.use("/properties/", getAllProperties);
-app.use("/properties/", searchProperties);
-app.use("/properties/", insertProperties);
-app.use("/geo-locator/", location);
-app.use("/agents/", agents);
-
-
-
-/* import onBoard from "./onboarding/init.js";
-
-app.use("/onboarding", onBoard);
-
-uuidv4();
-*/
-
-
-// Other routes here
-/* app.get("*", function (req, res) {
-    res.status(404).send("Sorry, this is an invalid URL.");
-}); */
-
-export default app
+app.listen({ port: 7000 }, async () => {
+    await sequelize.authenticate();
+    console.log('Server connected')
+})
