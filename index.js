@@ -2,15 +2,20 @@ const express = require('express');
 const cors = require('cors');
 const { sequelize } = require("./models");
 const authenticate = require("./routes/authentication.js")
+const {
+    GoogleGenerativeAI,
+    HarmCategory,
+    HarmBlockThreshold,
+} = require("@google/generative-ai");
+
+const MODEL_NAME = "gemini-pro";
+const API_KEY = "AIzaSyCQP7r3dQl7bECxGTQQu-BwEyZ_c9LKjKc";
 
 const app = express();
 
 app.use(express.json());
 
 app.use(cors({ origin: "*" }));
-
-app.use('/authenticate/', authenticate)
-
 
 /*app.get('/users', async (req, res) => {
     try {
@@ -38,6 +43,53 @@ app.get('/users/:id', async (req, res) => {
         res.status(500).json(error)
     }
 }); */
+
+
+
+app.post('/christmas', async (req, res) => {
+    const genAI = new GoogleGenerativeAI(API_KEY);
+    const model = genAI.getGenerativeModel({ model: MODEL_NAME });
+
+    const generationConfig = {
+        temperature: 0.9,
+        topK: 1,
+        topP: 1,
+        maxOutputTokens: 2048,
+    };
+
+    const safetySettings = [
+        {
+            category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+            threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+        },
+        {
+            category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+            threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+        },
+        {
+            category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+            threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+        },
+        {
+            category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+            threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+        },
+    ];
+
+    const parts = [
+        { text: `${req.body.content}` },
+    ];
+
+    const result = await model.generateContent({
+        contents: [{ role: "user", parts }],
+        generationConfig,
+        safetySettings,
+    });
+
+    const response = result.response;
+    return res.status(200).json({response})
+  // console.log(response.text());
+})
 
 
 
