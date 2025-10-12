@@ -25,10 +25,52 @@ const userSchema = new mongoose.Schema({
     default: 'customer'
   },
   profile: {
-    avatar: String,
-    bio: String,
-    phone: String,
-    company: String
+    avatar: {
+        type: String,
+        default: null,
+    },
+    coverPhoto: {
+        type: String,
+        default: null
+    },
+    followers: {
+        type: Number,
+        default: 0
+    },
+    following: {
+        type: Number,
+        default: 0
+    },
+    bio: {
+        type: String,
+        default: null,
+    },
+    location: {
+      country: {
+        type: String,
+        default: 'NGA'
+      },
+      state: {
+        type: String,
+        default: null
+      },
+      city: {
+        type: String,
+        default: null
+      }
+    },
+    phone: {
+        type: String,
+        default: null,
+    },
+    company: {
+        type: String,
+        default: null,
+    },
+    verified: {
+        type: Boolean,
+        default: false
+    }
   },
   kycStatus: {
     type: String,

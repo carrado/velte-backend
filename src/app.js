@@ -2,7 +2,7 @@ import express from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
 import dotenv from 'dotenv-flow';
-import userRoutes from './routes/Users.js';
+import authRoutes from './routes/auth.js';
 
 dotenv.config();
 
@@ -14,7 +14,8 @@ const env = process.env.NODE_ENV || 'development';
 // Middleware
 app.use(
   cors({
-    origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
+    // origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
+    origin: '*',
     credentials: true,
   })
 );
@@ -39,7 +40,7 @@ mongoose
   .catch((err) => console.error('❌ MongoDB connection error:', err.message));
 
 // Routes
-app.use('/api/users', userRoutes);
+app.use('/api/auth', authRoutes);
 // app.use('/api/events', eventRoutes);
 // app.use('/api/tickets', ticketRoutes);
 
