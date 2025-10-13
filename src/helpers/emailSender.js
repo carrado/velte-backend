@@ -2,7 +2,7 @@ import sgMail from "@sendgrid/mail";
 import fs from "fs";
 import path from "path";
 
-sgMail.setApiKey(`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`);
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 export const sendVerificationEmail = async (to, name, token) => {
 // Load the HTML template
