@@ -1,4 +1,8 @@
 import sgMail from "@sendgrid/mail";
+import dotenv from 'dotenv-flow';
+
+dotenv.config();
+
 import fs from "fs";
 import path from "path";
 
