@@ -60,6 +60,15 @@ export const register = async (req, res) => {
       },
     });
 
+    // Create a verification token (valid for 1 day)
+    const verificationToken = jwt.sign(
+      { userId: user._id },
+      process.env.JWT_SECRET,
+      { expiresIn: "1d" }
+    );
+
+    await sendVerificationEmail(email, name, verificationToken);
+
     await user.save();
 
     const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, {
@@ -84,14 +93,6 @@ export const register = async (req, res) => {
       },
     };
 
-    // Create a verification token (valid for 1 day)
-    const verificationToken = jwt.sign(
-      { userId: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: "1d" }
-    );
-
-    await sendVerificationEmail(email, name, verificationToken);
 
     // ✅ 9. Return response
     res.status(201).json({
