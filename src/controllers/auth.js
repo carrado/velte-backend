@@ -13,40 +13,30 @@ export const register = async (req, res) => {
       companyName,
       country,
       state,
-      city,
     } = req.body;
 
-    // Validate compulsory fields
-    if (
-      !name ||
-      !email ||
-      !password ||
-      !accountType ||
-      !country ||
-      !state ||
-      !city
-    ) {
+    if (!name || !email || !password || !accountType || !country || !state) {
       return res.status(400).json({
         message:
-          "Name, email, password, accountType, country, state and city are required fields",
+          "Name, email, password, accountType, country and state are required fields",
       });
     }
 
     if (!["customer", "vendor"].includes(accountType)) {
       return res.status(400).json({
-        message: 'accountType must be either "customer" or "vendor"',
+        message: 'Account Type must be either "customer" or "vendor"',
       });
     }
 
     if (accountType === "vendor" && !companyName) {
       return res.status(400).json({
-        message: "companyName is required for vendor accounts",
+        message: "Company name is required for vendor accounts",
       });
     }
 
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res.status(400).json({ message: "User already exists" });
+      return res.status(400).json({ message: "User with email address already exists" });
     }
 
     const user = new User({
@@ -56,11 +46,10 @@ export const register = async (req, res) => {
       accountType,
       profile: {
         company: accountType === "vendor" ? companyName : null,
-        location: { country, state, city },
+        location: { country, state },
       },
     });
 
-    // Create a verification token (valid for 1 day)
     const verificationToken = jwt.sign(
       { userId: user._id },
       process.env.JWT_SECRET,
@@ -68,40 +57,35 @@ export const register = async (req, res) => {
     );
 
     await sendVerificationEmail(email, name, verificationToken);
-
     await user.save();
 
+    // 🔹 Create main token for authentication
     const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, {
       expiresIn: "7d",
     });
 
+    // ✅ Set token as HttpOnly cookie
+    res.cookie("auth_token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production", // true for HTTPS
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      domain: process.env.NODE_ENV === 'production' ? '.velte.ng' : 'localhost',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+
     const userData = {
-      token,
-      user: {
-        id: user._id.toString(),
-        name: user.name,
-        email: user.email,
-        accountType: user.accountType,
-        profile: {
-          company: user.profile.company,
-          location: {
-            country: user.profile.location.country,
-            state: user.profile.location.state,
-            city: user.profile.location.city,
-          },
-        },
-      },
+      id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      accountType: user.accountType,
+      profile: user.profile,
     };
 
-
-    // ✅ 9. Return response
     res.status(201).json({
       success: true,
-      data: {
-        message:
-          "Account created successfully. Please check your email for verification.",
-        data: userData,
-      },
+      message:
+        "Account created successfully. Please check your email for verification.",
+      user: userData,
     });
   } catch (error) {
     console.error("Registration error:", error);
@@ -128,29 +112,30 @@ export const login = async (req, res) => {
       expiresIn: "7d",
     });
 
+    // ✅ Set token in HttpOnly cookie
+    res.cookie("auth_token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production", // true for HTTPS
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      domain: process.env.NODE_ENV === 'production' ? '.velte.ng' : 'localhost',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+
     const userData = {
-      token,
-      user: {
-        id: user._id.toString(),
-        name: user.name,
-        email: user.email,
-        accountType: user.accountType,
-        profile: {
-          company: user.profile.company,
-          location: {
-            country: user.profile.country,
-            state: user.profile.state,
-            city: user.profile.city,
-          },
-        },
-      },
+      id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      accountType: user.accountType,
+      profile: user.profile,
     };
 
-    res.status(201).json({
+    res.status(200).json({
       success: true,
-      data: userData,
+      message: "Login successful",
+      user: userData,
     });
   } catch (error) {
+    console.error("Login error:", error);
     res.status(500).json({ message: error.message });
   }
 };

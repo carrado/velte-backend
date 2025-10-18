@@ -1,33 +1,38 @@
-import dotenv from 'dotenv-flow';
+import dotenv from "dotenv-flow";
 
 dotenv.config();
 
-import express from 'express';
-import mongoose from 'mongoose';
-import cors from 'cors';
-import authRoutes from './routes/auth.js';
-
+import express from "express";
+import mongoose from "mongoose";
+import cookieParser from "cookie-parser";
+import cors from "cors";
+import authRoutes from "./routes/auth.js";
 
 const app = express();
 
 // Detect current environment
-const env = process.env.NODE_ENV || 'development';
+const env = process.env.NODE_ENV || "development";
 
 // Middleware
 app.use(
   cors({
     // origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
-    origin: '*',
+    origin: [
+      "http://localhost:5173",
+      "https://velte-staging.netlify.app",
+      "https://velte.ng",
+    ],
     credentials: true,
   })
 );
 app.use(express.json());
+app.use(cookieParser());
 app.use(express.urlencoded({ extended: true }));
 
 // Determine which MongoDB URI to use
-let dbUri = '';
+let dbUri = "";
 
-if (env === 'production') {
+if (env === "production") {
   // Live site (velte.ng)
   dbUri = process.env.MONGODB_URI_PRODUCTION;
 } else {
@@ -39,27 +44,27 @@ if (env === 'production') {
 mongoose
   .connect(dbUri)
   .then(() => console.log(`✅ Connected to MongoDB (${env})`))
-  .catch((err) => console.error('❌ MongoDB connection error:', err.message));
+  .catch((err) => console.error("❌ MongoDB connection error:", err.message));
 
 // Routes
-app.use('/api/auth', authRoutes);
+app.use("/api/auth", authRoutes);
 // app.use('/api/events', eventRoutes);
 // app.use('/api/tickets', ticketRoutes);
 
 // Health check route
-app.get('/api/health', (req, res) => {
+app.get("/api/health", (req, res) => {
   res.json({
-    status: 'OK',
+    status: "OK",
     environment: env,
-    database: env === 'production' ? 'Production DB' : 'Staging DB',
+    database: env === "production" ? "Production DB" : "Staging DB",
     timestamp: new Date().toISOString(),
   });
 });
 
 // Global error handler
 app.use((err, req, res, next) => {
-  console.error('Server Error:', err.stack);
-  res.status(500).json({ message: 'Something went wrong!' });
+  console.error("Server Error:", err.stack);
+  res.status(500).json({ message: "Something went wrong!" });
 });
 
 // Start server

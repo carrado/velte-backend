@@ -4,6 +4,8 @@ import {
   login
 } from '../controllers/auth.js';
 import { verifyEmail } from '../controllers/verifyEmail.js';
+import { verifyAuth } from "../middleware/auth.js";
+import { profile } from '../controllers/userProfile.js';
 
 const router = express.Router();
 
@@ -11,5 +13,6 @@ const router = express.Router();
 router.post('/register', register);
 router.post('/login', login);
 router.post("/verify", verifyEmail);
+router.get("/me", verifyAuth, profile)
 
 export default router;
