@@ -1,31 +1,17 @@
-import jwt from 'jsonwebtoken';
-import User from '../models/Users.js';
+// middlewares/authMiddleware.js
+import jwt from "jsonwebtoken";
 
-export const auth = async (req, res, next) => {
+export const verifyAuth = (req, res, next) => {
+  const token = req.cookies.auth_token;
+  if (!token) {
+    return res.status(401).json({ message: "Not authenticated" });
+  }
+
   try {
-    const token = req.header('Authorization')?.replace('Bearer ', '');
-    
-    if (!token) {
-      return res.status(401).json({ message: 'No token, authorization denied' });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
-    const user = await User.findById(decoded.userId).select('-password');
-    
-    if (!user) {
-      return res.status(401).json({ message: 'Token is not valid' });
-    }
-
-    req.user = user;
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
     next();
-  } catch (error) {
-    res.status(401).json({ message: 'Token is not valid' });
+  } catch (err) {
+    return res.status(403).json({ message: "Invalid or expired token" });
   }
-};
-
-export const organizerOnly = (req, res, next) => {
-  if (req.user.role !== 'organizer' && req.user.role !== 'admin') {
-    return res.status(403).json({ message: 'Organizer access required' });
-  }
-  next();
 };

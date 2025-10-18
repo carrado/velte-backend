@@ -53,10 +53,6 @@ const userSchema = new mongoose.Schema({
       state: {
         type: String,
         default: null
-      },
-      city: {
-        type: String,
-        default: null
       }
     },
     phone: {
@@ -81,6 +77,7 @@ const userSchema = new mongoose.Schema({
     categories: [String],
     notifications: {
       email: { type: Boolean, default: true },
+      inApp: { type: Boolean, default: false },
     }
   }
 }, {
