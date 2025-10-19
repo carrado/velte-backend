@@ -1,36 +1,138 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Verify Your Velte Account</title>
+    <style>
+      body {
+        font-family: "Segoe UI", Arial, sans-serif;
+        background-color: #f7f9fc;
+        margin: 0;
+        padding: 20px;
+        color: #1e293b;
+      }
+
+      .container {
+        max-width: 600px;
+        margin: 0 auto;
+        background: #ffffff;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+      }
+
+      .header {
+        background: rgba(247, 107, 16, 1);
+        padding: 25px 20px;
+        text-align: center;
+      }
+
+      .header h1 {
+        color: #ffffff;
+        font-size: 28px;
+        margin: 0;
+        letter-spacing: 0.5px;
+      }
+
+      .body {
+        padding: 35px 30px;
+        text-align: left;
+        background-color: #ffffff;
+      }
+
+      .body h2 {
+        color: #0f172a;
+        font-size: 22px;
+        margin-bottom: 15px;
+      }
+
+      .body p {
+        color: #475569;
+        font-size: 15px;
+        line-height: 1.6;
+        margin: 0 0 18px;
+      }
+
+      .otp-box {
+        background-color: #f1f5f9;
+        border: 1px solid #e2e8f0;
+        color: #0f172a;
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: 6px;
+        text-align: center;
+        padding: 15px 0;
+        border-radius: 8px;
+        margin: 25px 0;
+      }
+
+      .verify-button {
+        display: inline-block;
+        background: rgba(247, 107, 16, 1);
+        color: #ffffff !important;
+        padding: 14px 32px;
+        border-radius: 6px;
+        text-decoration: none;
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: 0.3px;
+      }
+
+      .footer {
+        background: #f1f5f9;
+        padding: 18px 20px;
+        text-align: center;
+        font-size: 12px;
+        color: #64748b;
+      }
+
+      @media (max-width: 600px) {
+        .body {
+          padding: 25px 20px;
+        }
+      }
+    </style>
   </head>
-  <body style="font-family: Arial, sans-serif; background-color: #f7f9fc; padding: 20px;">
-    <table align="center" width="100%" style="max-width: 600px; background: #fff; border-radius: 8px; overflow: hidden;">
-      <tr>
-        <td style="background: rgba(247, 107, 16, 1); padding: 20px; text-align: center;">
-          <h1 style="color: #fff; margin: 0;">Velte</h1>
-        </td>
-      </tr>
-      <tr>
-        <td style="padding: 30px;">
-          <h2 style="color: #0f172a;">Verify Your Email Address</h2>
-          <p style="font-size: 15px; color: #555;">
-            Hi <strong>{{name}}</strong>,<br /><br />
-            Welcome to Velte 🎉. Please verify your email by clicking the button below.
-          </p>
-          <div style="text-align: center; margin: 30px 0;">
-            <a href="{{verificationLink}}" style="background: rgba(247, 107, 16, 1); color: #fff; padding: 14px 28px; border-radius: 6px; text-decoration: none;">Verify My Email</a>
-          </div>
-          <p style="font-size: 14px; color: #666;">
-            If you didn’t create an account, please ignore this email.
-          </p>
-        </td>
-      </tr>
-      <tr>
-        <td style="background: #f1f5f9; padding: 15px; text-align: center; font-size: 12px; color: #777;">
-          © 2025 Velte Technologies Ltd, Enugu, Nigeria
-        </td>
-      </tr>
-    </table>
+  <body>
+    <div class="container">
+      <!-- Header -->
+      <div class="header">
+        <h1>Velte</h1>
+      </div>
+
+      <!-- Body -->
+      <div class="body">
+        <h2>Verify Your Email Address</h2>
+        <p>Hi <strong>{{name}}</strong>,</p>
+        <p>
+          Welcome to <strong>Velte</strong> 🎉<br />
+          To complete your registration, please verify your email address using the code below.
+        </p>
+
+        <div class="otp-box">{{otp}}</div>
+
+        <p style="text-align: center; margin: 30px 0;">
+          <a
+            href="{{clientUrl}}/auth/verify-email?email={{email}}"
+            class="verify-button"
+            target="_blank"
+          >
+            Verify My Email
+          </a>
+        </p>
+
+        <p>
+          Clicking the button above will take you to a page where you can enter your verification code.
+          This code will expire in <strong>10 minutes</strong>. If you didn’t request this, you can safely ignore this email.
+        </p>
+      </div>
+
+      <!-- Footer -->
+      <div class="footer">
+        © 2025 Velte Technologies Ltd, Enugu, Nigeria<br />
+        This is an automated message. Please do not reply.
+      </div>
+    </div>
   </body>
 </html>

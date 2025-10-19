@@ -68,6 +68,16 @@ const userSchema = new mongoose.Schema({
         default: false
     }
   },
+  emailOtp: {
+    code: {
+      type: Number,
+      default: null
+    },
+    expiresAt: {
+      type: Number,
+      default: null
+    }
+  },
   kycStatus: {
     type: String,
     required: false,

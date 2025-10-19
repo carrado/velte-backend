@@ -6,29 +6,44 @@ dotenv.config();
 import fs from "fs";
 import path from "path";
 
+
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-export const sendVerificationEmail = async (to, name, token) => {
-// Load the HTML template
-    const templatePath = path.join(process.cwd(), "src", "emailTemplates", "verifyEmail.html");
+export const sendVerificationEmail = async (to, name, otp) => {
+  try {
+    // Load the updated HTML template
+    const templatePath = path.join(
+      process.cwd(),
+      "src",
+      "emailTemplates",
+      "verifyEmail.html"
+    );
+
     let htmlContent = fs.readFileSync(templatePath, "utf8");
 
     // Replace placeholders
     htmlContent = htmlContent
       .replace(/{{name}}/g, name)
-      .replace(/{{verificationLink}}/g, `${process.env.CLIENT_URL}/verify?token=${token}`);
+      .replace(/{{otp}}/g, otp)
+      .replace(/{{email}}/g, encodeURIComponent(to))
+      .replace(/{{clientUrl}}/g, process.env.CLIENT_URL);
 
+    // Build email message
+    const msg = {
+      to,
+      from: "no-reply@devcamp.com.ng", // ✅ use verified sender in SendGrid
+      subject: "Verify Your Velte Account",
+      html: htmlContent,
+    };
 
-  const msg = {
-    to,
-    from: `no-reply@devcamp.com.ng`, // Must be verified in SendGrid if using a free plan
-    subject: "Verify your Velte Account",
-    html: htmlContent
-  };
-
-  await sgMail.send(msg);
+    // Send the email
+    await sgMail.send(msg);
+    console.log(`✅ Verification email sent to ${to}`);
+  } catch (error) {
+    console.error("❌ Error sending verification email:", error);
+    throw new Error("Failed to send verification email");
+  }
 };
-
 
 // import { Resend } from "resend";
 // const resend = new Resend(`re_YPkbha3v_9h5c266cSxJP7QCEz3JZwWjS`);
