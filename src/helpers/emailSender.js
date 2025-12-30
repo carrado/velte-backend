@@ -1,13 +1,14 @@
-import sgMail from "@sendgrid/mail";
+// import sgMail from "@sendgrid/mail";
 import dotenv from 'dotenv-flow';
-
+import { Resend } from "resend";
 dotenv.config();
 
 import fs from "fs";
 import path from "path";
 
 
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+// sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 export const sendVerificationEmail = async (to, name, otp) => {
   try {
@@ -37,7 +38,7 @@ export const sendVerificationEmail = async (to, name, otp) => {
     };
 
     // Send the email
-    await sgMail.send(msg);
+    await resend.emails.send(msg);
     console.log(`✅ Verification email sent to ${to}`);
   } catch (error) {
     console.error("❌ Error sending verification email:", error);

@@ -18,8 +18,8 @@ app.use(
   cors({
     // origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
     origin: [
-      "http://localhost:5173",
-      "https://velte-staging.netlify.app",
+      "http://localhost:5001",
+      "https://velte-frontend.netlify.app",
       "https://velte.ng",
     ],
     credentials: true,
