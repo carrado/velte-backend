@@ -11,15 +11,16 @@ export const register = async (req, res) => {
       password,
       accountType,
       companyName,
-      country,
-      state,
+      location,
+      services,
+      agreeToTerms
     } = req.body;
 
     // 🔹 Validate required fields
-    if (!name || !email || !password || !accountType || !country || !state) {
+    if (!name || !email || !password || !accountType || !location) {
       return res.status(400).json({
         message:
-          "Name, email, password, accountType, country and state are required fields",
+          "Name, email, password, accountType and location are required fields",
       });
     }
 
@@ -74,7 +75,8 @@ export const register = async (req, res) => {
       accountType,
       profile: {
         company: accountType === "vendor" ? companyName : null,
-        location: { country, state },
+        location: location,
+        services: services,
         verified: false,
       },
       emailOtp: {
