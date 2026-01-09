@@ -7,134 +7,164 @@
     <style>
       body {
         font-family: "Segoe UI", Arial, sans-serif;
-        background-color: #f7f9fc;
+        background-color: #f8fafc;
         margin: 0;
         padding: 20px;
         color: #1e293b;
       }
 
       .container {
-        max-width: 600px;
+        max-width: 620px;
         margin: 0 auto;
-        background: #ffffff;
+        background-color: #ffffff;
         border-radius: 12px;
         overflow: hidden;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
       }
 
       .header {
-        background: rgba(247, 107, 16, 1);
-        padding: 25px 20px;
+        background-color: rgba(247, 107, 16, 1);
+        padding: 28px 20px;
         text-align: center;
       }
 
-      .header h1 {
-        color: #ffffff;
-        font-size: 28px;
-        margin: 0;
-        letter-spacing: 0.5px;
+      .header img {
+        width: 100px;
       }
 
       .body {
-        padding: 35px 30px;
-        text-align: left;
+        padding: 40px 36px;
         background-color: #ffffff;
       }
 
       .body h2 {
+        font-size: 24px;
+        font-weight: 600;
         color: #0f172a;
-        font-size: 22px;
-        margin-bottom: 15px;
+        margin-bottom: 18px;
       }
 
       .body p {
-        color: #475569;
         font-size: 15px;
-        line-height: 1.6;
-        margin: 0 0 18px;
+        line-height: 1.65;
+        color: #475569;
+        margin-bottom: 16px;
+      }
+
+      .otp-wrapper {
+        text-align: center;
+        margin: 32px 0;
       }
 
       .otp-box {
+        display: inline-block;
         background-color: #f1f5f9;
         border: 1px solid #e2e8f0;
         color: #0f172a;
-        font-size: 22px;
+        font-size: 26px;
         font-weight: 700;
-        letter-spacing: 6px;
+        letter-spacing: 8px;
+        padding: 16px 28px;
+        border-radius: 10px;
+      }
+
+      .cta-wrapper {
         text-align: center;
-        padding: 15px 0;
-        border-radius: 8px;
-        margin: 25px 0;
+        margin: 34px 0 28px;
       }
 
       .verify-button {
         display: inline-block;
-        background: rgba(247, 107, 16, 1);
+        background-color: rgba(247, 107, 16, 1);
         color: #ffffff !important;
-        padding: 14px 32px;
-        border-radius: 6px;
+        padding: 14px 34px;
+        border-radius: 8px;
         text-decoration: none;
         font-size: 16px;
         font-weight: 600;
-        letter-spacing: 0.3px;
+      }
+
+      .divider {
+        height: 1px;
+        background-color: #e5e7eb;
+        margin: 30px 0;
       }
 
       .footer {
-        background: #f1f5f9;
-        padding: 18px 20px;
+        background-color: #f1f5f9;
+        padding: 20px;
         text-align: center;
         font-size: 12px;
         color: #64748b;
+        line-height: 1.5;
       }
 
       @media (max-width: 600px) {
         .body {
-          padding: 25px 20px;
+          padding: 28px 22px;
         }
       }
     </style>
   </head>
+
   <body>
     <div class="container">
       <!-- Header -->
       <div class="header">
         <img
-            src="https://res.cloudinary.com/dbhpul04t/image/upload/v1766001844/velte_ijulb7ijulb7ijul-removebg-preview_h3d6xw.png"
-            alt="Velte Platform Logo"
-            style="width: 96px;" />
+          src="https://res.cloudinary.com/dbhpul04t/image/upload/v1766001844/velte_ijulb7ijulb7ijul-removebg-preview_h3d6xw.png"
+          alt="Velte"
+        />
       </div>
 
       <!-- Body -->
       <div class="body">
-        <h2>Verify Your Email Address</h2>
-        <p>Hi <strong>{{name}}</strong>,</p>
+        <h2>Email Verification Required</h2>
+
+        <p>Hello <strong>{{name}}</strong>,</p>
+
         <p>
-          Welcome to <strong>Velte</strong> 🎉<br />
-          To complete your registration, please verify your email address using the code below.
+          Welcome to <strong>Velte</strong>. To complete your account setup and
+          secure your profile, please verify your email address using the
+          verification code below.
         </p>
 
-        <div class="otp-box">{{otp}}</div>
+        <div class="otp-wrapper">
+          <div class="otp-box">{{otp}}</div>
+        </div>
 
-        <p style="text-align: center; margin: 30px 0;">
+        <p style="text-align: center;">
+          Alternatively, you may verify your email by clicking the button below.
+        </p>
+
+        <div class="cta-wrapper">
           <a
             href="{{clientUrl}}/verify-email?email={{email}}"
             class="verify-button"
             target="_blank"
           >
-            Verify My Email
+            Verify Email Address
           </a>
+        </div>
+
+        <div class="divider"></div>
+
+        <p>
+          This verification code will expire in <strong>10 minutes</strong>.
+          If you did not initiate this request, no action is required — your
+          account remains secure.
         </p>
 
         <p>
-          Clicking the button above will take you to a page where you can enter your verification code.
-          This code will expire in <strong>10 minutes</strong>. If you didn’t request this, you can safely ignore this email.
+          For assistance, please contact our support team through the Velte
+          platform.
         </p>
       </div>
 
       <!-- Footer -->
       <div class="footer">
         © 2025 Velte Technologies Ltd, Nigeria<br />
-        This is an automated message. Please do not reply.
+        This email was sent automatically. Please do not reply.
       </div>
     </div>
   </body>

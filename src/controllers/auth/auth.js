@@ -188,3 +188,259 @@ export const login = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+
+
+export const logout = async (req, res) => {
+  try {
+    res.clearCookie("auth_token", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      domain: process.env.NODE_ENV === "production" ? ".velte.ng" : "localhost",
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Logout successful",
+    });
+  } catch (error) {
+    console.error("Logout error:", error);
+    return res.status(500).json({
+      message: "Internal server error",
+    });
+  }
+};
+
+
+export const verifyEmail = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ message: "Email and OTP are required" });
+    }
+
+    // Find the user by email
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Check if OTP exists and matches
+    if (!user.emailOtp || user.emailOtp.code !== Number(otp)) {
+      return res.status(400).json({ message: "Invalid OTP" });
+    }
+
+    // Check if OTP is expired
+    const now = new Date();
+    if (user.emailOtp.expiresAt < now) {
+      return res.status(400).json({ message: "OTP has expired" });
+    }
+
+    // Mark user as verified
+    user.profile.verified = true;
+
+    // Remove OTP after verification (optional)
+    user.emailOtp = undefined;
+
+    await user.save();
+
+    res.status(201).json({ message: "Account verified successfully" });
+  } catch (err) {
+    console.error("Email verification error:", err);
+    res.status(500).json({ message: "Something went wrong" });
+  }
+};
+
+
+export const deleteAccount = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { password } = req.body; // Get password from request body
+    
+    if (!userId) {
+      return res.status(401).json({ 
+        success: false, 
+        message: "Authentication required" 
+      });
+    }
+
+    if (!password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Password is required for account deletion" 
+      });
+    }
+
+    const user = await User.findById(userId);
+    
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "User not found" 
+      });
+    }
+
+    // Verify password
+    const isPasswordValid = await user.comparePassword(password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ 
+        success: false, 
+        message: "Incorrect password" 
+      });
+    }
+
+    // Set accountStatus to false (soft delete)
+    user.activeStatus = false;
+    await user.save();
+
+    // Clear the auth cookie
+    res.clearCookie("auth_token", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      domain: process.env.NODE_ENV === "production" ? ".velte.ng" : "localhost",
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Account deactivated successfully.",
+    });
+  } catch (error) {
+    console.error("Delete account error:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred while deactivating your account",
+      error: error.message,
+    });
+  }
+};
+
+
+export const verifyPasswordOTP = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ message: "Email and OTP are required" });
+    }
+
+    // Find the user by email
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Check if OTP exists and matches
+    if (!user.emailOtp || user.emailOtp.code !== Number(otp)) {
+      return res.status(400).json({ message: "Invalid OTP" });
+    }
+
+    // Check if OTP is expired
+    const now = new Date();
+    if (user.emailOtp.expiresAt < now) {
+      return res.status(400).json({ message: "OTP has expired" });
+    }
+
+    // Remove OTP after verification (optional)
+    user.emailOtp = undefined;
+
+    await user.save();
+
+    res.status(201).json({ message: "OTP verified successfully" });
+  } catch (err) {
+    console.error("Email verification error:", err);
+    res.status(500).json({ message: "Something went wrong" });
+  }
+};
+
+
+export const resetPassword = async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+
+    // 🔹 Validate required fields
+    if (!email || !otp || !newPassword) {
+      return res.status(400).json({ 
+        message: "Email, OTP, and new password are required" 
+      });
+    }
+
+    // 🔹 Validate new password length
+    if (newPassword.length < 8) {
+      return res.status(400).json({ 
+        message: "Password must be at least 8 characters long" 
+      });
+    }
+
+    // 🔹 Find the user by email
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({ 
+        success: false,
+        message: "User not found" 
+      });
+    }
+
+    // 🔹 Check if OTP exists and matches
+    if (!user.emailOtp || user.emailOtp.code !== Number(otp)) {
+      return res.status(400).json({ 
+        success: false,
+        message: "Invalid OTP" 
+      });
+    }
+
+    // 🔹 Check if OTP is expired
+    const now = Date.now();
+    if (user.emailOtp.expiresAt < now) {
+      return res.status(400).json({ 
+        success: false,
+        message: "OTP has expired. Please request a new one." 
+      });
+    }
+
+    // 🔹 Check if new password is same as old password
+    const isSamePassword = await user.comparePassword(newPassword);
+    if (isSamePassword) {
+      return res.status(400).json({ 
+        success: false,
+        message: "New password cannot be the same as old password" 
+      });
+    }
+
+    // 🔹 Update password
+    user.password = newPassword;
+    
+    // 🔹 Clear OTP after successful password reset
+    user.emailOtp = undefined;
+    
+    // 🔹 Save user (password will be hashed by pre-save hook)
+    await user.save();
+
+    // 🔹 Send success response
+    res.status(200).json({ 
+      success: true,
+      message: "Password reset successful. You can now login with your new password." 
+    });
+
+  } catch (error) {
+    console.error("Password reset error:", error);
+    
+    // Handle specific errors
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ 
+        success: false,
+        message: "Invalid input data" 
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false,
+      message: "An error occurred while resetting password",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
