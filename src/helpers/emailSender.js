@@ -46,23 +46,38 @@ export const sendVerificationEmail = async (to, name, otp) => {
   }
 };
 
-// import { Resend } from "resend";
-// const resend = new Resend(`re_YPkbha3v_9h5c266cSxJP7QCEz3JZwWjS`);
 
-// export const sendVerificationEmail = async (to, name, token) => {
-//   const verificationUrl = `${process.env.CLIENT_URL}/verify?token=${token}`;
 
-//   await resend.emails.send({
-//     from: "Velte <no-reply@velte.ng>",
-//     to: [to],
-//     subject: "Verify your Velte account",
-//     html: `
-//         <h2>Welcome to Velte, ${name}!</h2>
-//       <p>Click the button below to verify your account:</p>
-//       <a href="${verificationUrl}" 
-//          style="display:inline-block;padding:10px 20px;background:#4F46E5;color:white;text-decoration:none;border-radius:8px;">
-//          Verify Account
-//       </a>
-//     `,
-//   });
-// };
+export const sendPasswordResetEmail = async (to, name, otp) => {
+  try {
+    // Load the updated HTML template
+    const templatePath = path.join(
+      process.cwd(),
+      "src",
+      "emailTemplates",
+      "passwordReset.html"
+    );
+
+    let htmlContent = fs.readFileSync(templatePath, "utf8");
+
+    // Replace placeholders
+    htmlContent = htmlContent
+      .replace(/{{name}}/g, name)
+      .replace(/{{otp}}/g, otp)
+
+    // Build email message
+    const msg = {
+      to,
+      from: "no-reply@devcamp.com.ng", // ✅ use verified sender in SendGrid
+      subject: "Password Reset",
+      html: htmlContent,
+    };
+
+    // Send the email
+    await resend.emails.send(msg);
+    console.log(`✅ Password Reset email sent to ${to}`);
+  } catch (error) {
+    console.error("❌ Error sending password reset email:", error);
+    throw new Error("Failed to send password reser email");
+  }
+};

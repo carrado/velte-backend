@@ -76,6 +76,10 @@ const userSchema = new mongoose.Schema({
       default: null
     }
   },
+  activeStatus: {
+    type: Boolean,
+    default: true
+  },
   kycStatus: {
     type: String,
     required: false,
