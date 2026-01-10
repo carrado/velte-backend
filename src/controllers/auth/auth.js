@@ -344,9 +344,6 @@ export const verifyPasswordOTP = async (req, res) => {
       return res.status(400).json({ message: "OTP has expired" });
     }
 
-    // Remove OTP after verification (optional)
-    user.emailOtp = undefined;
-
     await user.save();
 
     res.status(201).json({ message: "OTP verified successfully" });
