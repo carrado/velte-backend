@@ -51,9 +51,11 @@ app.use("/api/auth", authRoutes);
 
 
 // Health check route
-app.get("/api/health", (req, res) => {
+app.get("/health", (req, res) => {
   res.json({
     status: "OK",
+    hasToken: !!req.cookies.auth_token,
+    authToken: req.cookies.auth_token || null,
     environment: env,
     database: env === "production" ? "Production DB" : "Staging DB",
     timestamp: new Date().toISOString(),
