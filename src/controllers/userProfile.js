@@ -1,8 +1,8 @@
 import User from "../models/Users.js";
 
 export const profile = async (req, res) => {
-  try {
-    const user = await User.findById(req.user.userId)
+  try {  
+    const user = await User.findById(req.user._id)
       .select("-password -emailOtp"); // exclude sensitive fields
 
     if (!user) {

@@ -19,41 +19,16 @@ const userSchema = new mongoose.Schema({
     required: true,
     minlength: 6
   },
-  accountType: {
+  company: {
+    name: {
     type: String,
-    enum: ['customer', 'vendor'],
-    default: 'customer'
-  },
-  profile: {
-    avatar: {
-      type: String,
-      default: null,
-    },
-    coverPhoto: {
-      type: String,
-      default: null
-    },
-    followers: {
-      type: Number,
-      default: 0
-    },
-    following: {
-      type: Number,
-      default: 0
-    },
-    bio: {
-      type: String,
-      default: null,
+    default: null,
     },
     location: {
-      type: Object,
-      default: null
+      type: String,
+      default: null,  
     },
     phone: {
-      type: String,
-      default: null,
-    },
-    company: {
       type: String,
       default: null,
     },
@@ -61,10 +36,18 @@ const userSchema = new mongoose.Schema({
       type: [String],
       default: null
     },
-    verified: {
-      type: Boolean,
-      default: false
-    }
+  },
+  country: {
+    type: String,
+    default: null
+  },
+  avatar: {
+      type: String,
+      default: null,
+  },
+  username: {
+    type: String,
+    default: null,
   },
   emailOtp: {
     code: {
@@ -76,9 +59,9 @@ const userSchema = new mongoose.Schema({
       default: null
     }
   },
-  activeStatus: {
+  accountVerified: {
     type: Boolean,
-    default: true
+    default: false
   },
   kycStatus: {
     type: String,
@@ -86,10 +69,13 @@ const userSchema = new mongoose.Schema({
     default: 'not-verified'
   },
   preferences: {
-    categories: [String],
     notifications: {
       email: { type: Boolean, default: true },
       inApp: { type: Boolean, default: false },
+    },
+    defaultCurrency: {
+      type: String,
+      default: '₦'
     }
   }
 }, {
