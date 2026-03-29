@@ -3,6 +3,7 @@ import User from "../../models/Users.js";
 import { sendVerificationEmail } from "../../helpers/emailSender.js";
 import Subscription from "../../models/Subscriptions.js";
 
+
 export const register = async (req, res) => {
   try {
     const {
@@ -83,25 +84,6 @@ export const register = async (req, res) => {
     // 🔹 Send verification email
     await sendVerificationEmail(email, name, otp);
 
-    // 🔹 Generate auth token
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, {
-      expiresIn: "7d",
-    });
-
-    // 🔹 Set HttpOnly cookie
-    res.cookie("auth_token", token, {
-      httpOnly: true,
-      secure:
-        process.env.NODE_ENV === "production" ||
-        process.env.NODE_ENV === "staging",
-      sameSite:
-        process.env.NODE_ENV === "production" ||
-        process.env.NODE_ENV === "staging"
-          ? "none"
-          : "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
-
     await Subscription.create({
       businessId: user._id,
       plan: "free",
@@ -121,7 +103,8 @@ export const register = async (req, res) => {
           name: user.company?.name,
           location: user.company?.location,
           services: user.company?.services || [],
-        },  
+        },
+        accountVerified: user.accountVerified,
         username: user.username,
       },
       message:
@@ -137,6 +120,9 @@ export const register = async (req, res) => {
   }
 };
 
+
+
+
 // Login controller
 export const login = async (req, res) => {
   try {
@@ -149,7 +135,7 @@ export const login = async (req, res) => {
     }
 
     // 🔹 Check if user is verified
-    if (!user.profile?.verified) {
+    if (!user.accountVerified) {
       // Generate new OTP
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -257,7 +243,7 @@ export const verifyEmail = async (req, res) => {
     }
 
     // Mark user as verified
-    user.profile.verified = true;
+    user.accountVerified = true;
 
     // Remove OTP after verification (optional)
     user.emailOtp = undefined;

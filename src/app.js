@@ -19,7 +19,7 @@ app.use(
     // origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
     origin: [
       "http://localhost:4001",
-      "https://velte-dev.vercel.app/",
+      "https://velte-dev.vercel.app",
       "https://velte.ng",
     ],
     credentials: true,
@@ -48,8 +48,7 @@ mongoose
 
 // Routes
 app.use("/api/auth", authRoutes);
-// app.use('/api/events', eventRoutes);
-// app.use('/api/tickets', ticketRoutes);
+
 
 // Health check route
 app.get("/api/health", (req, res) => {
@@ -60,6 +59,7 @@ app.get("/api/health", (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
 
 // Global error handler
 app.use((err, req, res, next) => {
