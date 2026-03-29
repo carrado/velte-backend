@@ -19,7 +19,7 @@ app.use(
     // origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
     origin: [
       "http://localhost:4001",
-      "https://velte-frontend.netlify.app",
+      "https://velte-dev.vercel.app/",
       "https://velte.ng",
     ],
     credentials: true,
