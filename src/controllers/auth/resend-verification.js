@@ -7,6 +7,13 @@ export const resendOTP = async (req, res) => {
 
     // 🔹 Find user
     const user = await User.findOne({ email });
+
+
+    if (user.accountVerified) {
+      return res.status(400).json({ message: "The user is already verified." });
+    }
+
+
     if (!user) {
       return res.status(401).json({ message: "Invalid email address" });
     }
