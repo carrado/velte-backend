@@ -387,19 +387,24 @@ export const verifyPasswordOTP = async (req, res) => {
   }
 };
 
+
+
+
+
+
 export const resetPassword = async (req, res) => {
   try {
-    const { email, otp, newPassword } = req.body;
+    const { email, otp, password } = req.body;
 
     // 🔹 Validate required fields
-    if (!email || !otp || !newPassword) {
+    if (!email || !otp || !password) {
       return res.status(400).json({
         message: "Email, OTP, and new password are required",
       });
     }
 
     // 🔹 Validate new password length
-    if (newPassword.length < 8) {
+    if (password.length < 8) {
       return res.status(400).json({
         message: "Password must be at least 8 characters long",
       });
@@ -433,16 +438,16 @@ export const resetPassword = async (req, res) => {
     }
 
     // 🔹 Check if new password is same as old password
-    const isSamePassword = await user.comparePassword(newPassword);
+    const isSamePassword = await user.comparePassword(password);
     if (isSamePassword) {
       return res.status(400).json({
         success: false,
-        message: "New password cannot be the same as old password",
+        message: "Unable to reset password. Please try again.",
       });
     }
 
     // 🔹 Update password
-    user.password = newPassword;
+    user.password = password;
 
     // 🔹 Clear OTP after successful password reset
     user.emailOtp = undefined;
