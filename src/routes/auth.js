@@ -19,7 +19,7 @@ router.post('/register', register);
 router.post('/login', login);
 router.post("/verify", verifyEmail);
 router.post("/resend-verification", resendOTP)
-router.post("/resetOTP", passwordResetOTP)
+router.post("/getPasswordOTP", passwordResetOTP)
 router.post("/logout", logout)
 router.delete("/delete-account", verifyAuth, deleteAccount)
 // router.put("/profile", verifyAuth, updateProfile)
