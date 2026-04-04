@@ -94,19 +94,6 @@ export const register = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        country: user.country,
-        company: {
-          name: user.company?.name,
-          location: user.company?.location,
-          services: user.company?.services || [],
-        },
-        accountVerified: user.accountVerified,
-        username: user.username,
-      },
       message:
         "Account created successfully. Please check your email for the 6-digit verification code.",
     });
@@ -187,6 +174,19 @@ export const login = async (req, res) => {
     // 🔹 Success response
     res.status(200).json({
       success: true,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        country: user.country,
+        company: {
+          name: user.company?.name,
+          location: user.company?.location,
+          services: user.company?.services || [],
+        },
+        accountVerified: user.accountVerified,
+        username: user.username,
+      },
       message: "Login successful",
     });
   } catch (error) {
