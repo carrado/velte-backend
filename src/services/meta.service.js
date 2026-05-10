@@ -31,33 +31,6 @@ export async function exchangeSDKToken(shortLivedToken) {
   };
 }
 
-
-/**
- * Exchange an authorization code (mobile OAuth redirect) for a long-lived token.
- * Only used for the mobile flow — redirect-based codes are exchangeable server-side,
- * unlike PKCE codes from the JS SDK.
- */
-export async function exchangeCodeForToken(code, redirectUri) {
-  const params = new URLSearchParams({
-    client_id: process.env.META_APP_ID,
-    client_secret: process.env.META_APP_SECRET,
-    redirect_uri: redirectUri,
-    code,
-  });
-
-  const res = await fetch(`${GRAPH_BASE}/oauth/access_token?${params}`);
-  const data = await res.json();
-
-  if (!res.ok || data.error) {
-    throw new Error(data.error?.message || "Failed to exchange code for token");
-  }
-
-  return getLongLivedToken(data.access_token);
-}
-
-
-
-
 /**
  * Verify a user token is genuine and belongs to OUR specific app.
  * This prevents token injection where an attacker passes a token from another app.
