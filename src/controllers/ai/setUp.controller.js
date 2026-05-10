@@ -44,16 +44,22 @@ export async function getStatus(req, res, next) {
 
 export async function configureWABA(req, res, next) {
   try {
-    const { accessToken:sdkToken } = req.body;
+    const { accessToken: sdkToken, code } = req.body;
 
-    if (!sdkToken) {
-      throw new AppError("Access Token is required.", 400);
+    if (!sdkToken && !code) {
+      throw new AppError("accessToken or code is required.", 400);
     }
-
-    // 1. Exchange token for longer Meta access token
-
-    const { accessToken, expiresIn } = await exchangeSDKToken(sdkToken);
-
+    
+    let accessToken, expiresIn;
+    
+    if (code) {
+      // Mobile redirect: exchange the code server-side
+      const redirectUri = `${process.env.FRONTEND_URL}/auth/facebook/callback`;
+      ({ accessToken, expiresIn } = await exchangeCodeForToken(code, redirectUri));
+    } else {
+      // Desktop SDK: upgrade the short-lived token
+      ({ accessToken, expiresIn } = await exchangeSDKToken(sdkToken));
+    }
     const expiresAt = new Date(Date.now() + expiresIn * 1000);
 
     // 2. Get user's Meta businesses
