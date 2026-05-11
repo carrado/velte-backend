@@ -12,6 +12,7 @@ import mongoSanitize from "express-mongo-sanitize";
 import hpp from "hpp";
 import authRoutes from "./routes/auth.js";
 import aiSetupRoutes from "./routes/aiSetup.routes.js";
+import subscriptionRoutes from "./routes/subscription.routes.js";
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
 
 const app = express();
@@ -77,6 +78,7 @@ mongoose
 // Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/ai-setup", aiSetupRoutes);
+app.use("/api/subscription", subscriptionRoutes);
 
 
 // Health check route
