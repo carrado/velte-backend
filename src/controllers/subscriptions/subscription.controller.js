@@ -1,9 +1,4 @@
 // src/controllers/subscription/subscription.controller.js
-//
-// Follows the NEW controller style (ai-setup pattern):
-//   - AppError(message, statusCode) thrown and forwarded with next(err)
-//   - req.user.userId  (what verifyAuth actually sets on the JWT)
-//   - Responses: res.json({ success: true, data: { ... } })
 
 import crypto from "crypto";
 import Subscription from "../../models/Subscriptions.js";
@@ -15,22 +10,39 @@ import {
   validateWebhookSignature,
 } from "../../services/paystack.service.js";
 
-// ── Pricing ───────────────────────────────────────────────────────────────────
-// Centralise pricing here so it's easy to update.
-// Amount is in NGN (naira) — the service multiplies by 100 for kobo.
-
 const PLANS = {
-  monthly: { amount: 5000, label: "Monthly Plan" },
-  annual:  { amount: 50000, label: "Annual Plan" },
+  monthly: { amount: 8500, label: "Monthly Plan" },
+  annual: { amount: 85000, label: "Annual Plan" },
 };
 
 const DEFAULT_PLAN = "monthly";
+
+function getPeriodEnd(planKey, startDate = new Date()) {
+  const periodEnd = new Date(startDate);
+
+  if (planKey === "annual") {
+    periodEnd.setFullYear(periodEnd.getFullYear() + 1);
+  } else {
+    periodEnd.setMonth(periodEnd.getMonth() + 1);
+  }
+
+  return periodEnd;
+}
+
+function formatTransactions(transactions = []) {
+  return transactions.map((item) => ({
+    id: item._id,
+    amount: item.amount,
+    reference: item.reference,
+    status: item.status,
+    paidAt: item.paidAt,
+  }));
+}
 
 // ── GET /subscription/status ──────────────────────────────────────────────────
 
 export async function getStatus(req, res, next) {
   try {
-    // getOrCreate so the endpoint is always safe to call
     let subscription = await Subscription.findOne({ userId: req.user.userId });
 
     if (!subscription) {
@@ -43,7 +55,11 @@ export async function getStatus(req, res, next) {
         isSubscribed: subscription.isSubscribed,
         trialEndsAt: subscription.trialEndsAt?.toISOString() ?? null,
         plan: subscription.plan ?? null,
+        currentPeriodStart:
+          subscription.currentPeriodStart?.toISOString() ?? null,
         currentPeriodEnd: subscription.currentPeriodEnd?.toISOString() ?? null,
+
+        transactions: formatTransactions(subscription.transactions),
       },
     });
   } catch (err) {
@@ -51,9 +67,7 @@ export async function getStatus(req, res, next) {
   }
 }
 
-// ── POST /subscription/initialize ────────────────────────────────────────────
-// Creates a Paystack transaction and returns the checkout URL to the client.
-// The client opens it in a popup via openPaystackPopup().
+// ── POST /subscription/initialize ─────────────────────────────────────────────
 
 export async function initializeSubscription(req, res, next) {
   try {
@@ -67,11 +81,17 @@ export async function initializeSubscription(req, res, next) {
       );
     }
 
-    const user = await User.findById(req.user.userId).select("email firstName lastName");
-    if (!user) throw new AppError("User not found.", 404);
+    const user = await User.findById(req.user.userId).select(
+      "email firstName lastName",
+    );
 
-    // Unique reference per attempt — Paystack rejects duplicate references
-    const reference = `velte_${req.user.userId}_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+    if (!user) {
+      throw new AppError("User not found.", 404);
+    }
+
+    const reference = `velte_${req.user.userId}_${Date.now()}_${crypto
+      .randomBytes(4)
+      .toString("hex")}`;
 
     const transaction = await initializeTransaction({
       email: user.email,
@@ -82,10 +102,22 @@ export async function initializeSubscription(req, res, next) {
         plan: planKey,
         userName: `${user.firstName ?? ""} ${user.lastName ?? ""}`.trim(),
       },
-      // The popup flow doesn't need a callback URL but Paystack requires one
-      // for redirect flows — set it to the dashboard as a safe fallback.
-      callbackUrl: `${process.env.FRONTEND_URL}/{id}/dashboard`,
     });
+
+    await Subscription.findOneAndUpdate(
+      { userId: req.user.userId },
+      {
+        $push: {
+          transactions: {
+            amount: plan.amount * 100, // store in kobo to match Paystack
+            reference,
+            status: "pending",
+            paidAt: new Date(),
+          },
+        },
+      },
+      { upsert: true, new: true },
+    );
 
     res.json({
       success: true,
@@ -100,73 +132,121 @@ export async function initializeSubscription(req, res, next) {
 }
 
 // ── POST /subscription/verify ─────────────────────────────────────────────────
-// Called by the client after the Paystack popup closes.
-// Verifies the payment with Paystack and activates the subscription.
 
 export async function verifySubscription(req, res, next) {
   try {
     const { reference } = req.body;
-    if (!reference) throw new AppError("Payment reference is required.", 400);
 
-    // Prevent replaying the same reference
+    if (!reference) {
+      throw new AppError("Payment reference is required.", 400);
+    }
+
     const existing = await Subscription.findOne({
       userId: req.user.userId,
       lastPaystackReference: reference,
     }).select("+lastPaystackReference");
 
     if (existing) {
-      // Already processed — return current state idempotently
       return res.json({
         success: true,
-        data: { isSubscribed: existing.isSubscribed },
+        data: {
+          isSubscribed: existing.isSubscribed,
+          transactions: formatTransactions(existing.transactions),
+        },
       });
     }
 
-    // Verify with Paystack
     const transaction = await verifyTransaction(reference);
 
-    // Ensure this payment belongs to THIS user — prevents reference hijacking
     if (transaction.metadata?.userId !== req.user.userId.toString()) {
-      throw new AppError("Payment reference does not belong to this account.", 403);
-    }
-
-    if (transaction.status !== "success") {
-      return res.json({
-        success: true,
-        data: { isSubscribed: false },
-      });
+      throw new AppError(
+        "Payment reference does not belong to this account.",
+        403,
+      );
     }
 
     const planKey = transaction.metadata?.plan ?? DEFAULT_PLAN;
-    const now = new Date();
 
-    // Set period end based on plan
-    const periodEnd = new Date(now);
-    if (planKey === "annual") {
-      periodEnd.setFullYear(periodEnd.getFullYear() + 1);
-    } else {
-      periodEnd.setMonth(periodEnd.getMonth() + 1);
+    if (transaction.status !== "success") {
+      const subscription = await Subscription.findOneAndUpdate(
+        {
+          userId: req.user.userId,
+          "transactions.reference": reference,
+        },
+        {
+          $set: {
+            "transactions.$.status": "failed",
+            "transactions.$.paidAt": new Date(),
+          },
+        },
+        { new: true },
+      );
+
+      return res.json({
+        success: true,
+        data: {
+          isSubscribed: false,
+          transactions: formatTransactions(subscription?.transactions),
+        },
+      });
     }
 
-    await Subscription.findOneAndUpdate(
-      { userId: req.user.userId },
+    const now = new Date();
+    const periodEnd = getPeriodEnd(planKey, now);
+
+    let subscription = await Subscription.findOneAndUpdate(
+      {
+        userId: req.user.userId,
+        "transactions.reference": reference,
+      },
       {
         $set: {
           isSubscribed: true,
           plan: planKey,
           currentPeriodStart: now,
           currentPeriodEnd: periodEnd,
-          // Store the Paystack customer code for future charges
           paystackCustomerCode: transaction.customer?.customer_code ?? null,
           lastPaystackReference: reference,
+
+          "transactions.$.amount": transaction.amount,
+          "transactions.$.status": "success",
+          "transactions.$.paidAt": new Date(transaction.paid_at ?? now),
         },
       },
-      { upsert: true, new: true },
+      { new: true },
     );
+
+    if (!subscription) {
+      subscription = await Subscription.findOneAndUpdate(
+        { userId: req.user.userId },
+        {
+          $set: {
+            isSubscribed: true,
+            plan: planKey,
+            currentPeriodStart: now,
+            currentPeriodEnd: periodEnd,
+            paystackCustomerCode: transaction.customer?.customer_code ?? null,
+            lastPaystackReference: reference,
+          },
+          $push: {
+            transactions: {
+              amount: transaction.amount,
+              reference,
+              status: "success",
+              paidAt: new Date(transaction.paid_at ?? now),
+            },
+          },
+        },
+        { upsert: true, new: true },
+      );
+    }
 
     res.json({
       success: true,
-      data: { isSubscribed: true },
+      data: {
+        isSubscribed: true,
+        transactions: formatTransactions(subscription.transactions),
+      },
     });
   } catch (err) {
     next(err);
@@ -174,37 +254,26 @@ export async function verifySubscription(req, res, next) {
 }
 
 // ── POST /subscription/webhook ────────────────────────────────────────────────
-// Receives Paystack webhook events.
-// Paystack signs the body with HMAC-SHA512 — always verify first.
-// Must be registered with raw body parser (not JSON) to verify signature.
-//
-// Events handled:
-//   charge.success          — one-off payment succeeded
-//   subscription.create     — managed subscription created
-//   subscription.disable    — managed subscription cancelled
-//   invoice.payment_failed  — recurring payment failed
 
 export async function handleWebhook(req, res, next) {
   try {
     const signature = req.headers["x-paystack-signature"];
+
     if (!signature) {
       throw new AppError("Missing webhook signature.", 401);
     }
 
-    // req.body is a raw Buffer when using express.raw() on this route
     const rawBody = req.body;
     const isValid = validateWebhookSignature(rawBody, signature);
+
     if (!isValid) {
       throw new AppError("Invalid webhook signature.", 401);
     }
 
-    // Parse the raw body now that we've verified it
     const event = JSON.parse(rawBody.toString());
 
-    // Acknowledge immediately — Paystack retries if we take > 5s
     res.status(200).json({ received: true });
 
-    // Process asynchronously after responding
     await processWebhookEvent(event);
   } catch (err) {
     next(err);
@@ -215,8 +284,6 @@ async function processWebhookEvent(event) {
   const { event: eventType, data } = event;
 
   switch (eventType) {
-
-    // ── Successful one-off charge ─────────────────────────────────────────────
     case "charge.success": {
       const userId = data.metadata?.userId;
       if (!userId) break;
@@ -224,23 +291,21 @@ async function processWebhookEvent(event) {
       const reference = data.reference;
       const planKey = data.metadata?.plan ?? DEFAULT_PLAN;
 
-      // Guard against duplicate webhook delivery
       const alreadyProcessed = await Subscription.findOne({
         userId,
         lastPaystackReference: reference,
       }).select("+lastPaystackReference");
+
       if (alreadyProcessed) break;
 
       const now = new Date();
-      const periodEnd = new Date(now);
-      if (planKey === "annual") {
-        periodEnd.setFullYear(periodEnd.getFullYear() + 1);
-      } else {
-        periodEnd.setMonth(periodEnd.getMonth() + 1);
-      }
+      const periodEnd = getPeriodEnd(planKey, now);
 
-      await Subscription.findOneAndUpdate(
-        { userId },
+      let subscription = await Subscription.findOneAndUpdate(
+        {
+          userId,
+          "transactions.reference": reference,
+        },
         {
           $set: {
             isSubscribed: true,
@@ -248,22 +313,71 @@ async function processWebhookEvent(event) {
             currentPeriodStart: now,
             currentPeriodEnd: periodEnd,
             paystackCustomerCode: data.customer?.customer_code ?? null,
-            paystackAuthorizationCode: data.authorization?.authorization_code ?? null,
+            paystackAuthorizationCode:
+              data.authorization?.authorization_code ?? null,
             lastPaystackReference: reference,
+
+            "transactions.$.amount": data.amount,
+            "transactions.$.status": "success",
+            "transactions.$.paidAt": new Date(data.paid_at ?? now),
           },
         },
-        { upsert: true },
+        { new: true },
       );
+
+      if (!subscription) {
+        await Subscription.findOneAndUpdate(
+          { userId },
+          {
+            $set: {
+              isSubscribed: true,
+              plan: planKey,
+              currentPeriodStart: now,
+              currentPeriodEnd: periodEnd,
+              paystackCustomerCode: data.customer?.customer_code ?? null,
+              paystackAuthorizationCode:
+                data.authorization?.authorization_code ?? null,
+              lastPaystackReference: reference,
+            },
+            $push: {
+              transactions: {
+                amount: data.amount,
+                reference,
+                status: "success",
+                paidAt: new Date(data.paid_at ?? now),
+              },
+            },
+          },
+          { upsert: true },
+        );
+      }
+
       break;
     }
 
-    // ── Recurring subscription created by Paystack ────────────────────────────
+    case "charge.failed": {
+      const userId = data.metadata?.userId;
+      if (!userId) break;
+
+      await Subscription.findOneAndUpdate(
+        {
+          userId,
+          "transactions.reference": data.reference,
+        },
+        {
+          $set: {
+            "transactions.$.status": "failed",
+            "transactions.$.paidAt": new Date(),
+          },
+        },
+      );
+
+      break;
+    }
+
     case "subscription.create": {
       const customerCode = data.customer?.customer_code;
       if (!customerCode) break;
-
-      const sub = await Subscription.findOne({ paystackCustomerCode: customerCode });
-      if (!sub) break;
 
       await Subscription.findOneAndUpdate(
         { paystackCustomerCode: customerCode },
@@ -275,10 +389,10 @@ async function processWebhookEvent(event) {
           },
         },
       );
+
       break;
     }
 
-    // ── Subscription disabled / cancelled ─────────────────────────────────────
     case "subscription.disable": {
       const subscriptionCode = data.subscription_code;
       if (!subscriptionCode) break;
@@ -292,10 +406,10 @@ async function processWebhookEvent(event) {
           },
         },
       );
+
       break;
     }
 
-    // ── Invoice payment failed — mark as not subscribed ───────────────────────
     case "invoice.payment_failed": {
       const customerCode = data.customer?.customer_code;
       if (!customerCode) break;
@@ -304,11 +418,11 @@ async function processWebhookEvent(event) {
         { paystackCustomerCode: customerCode },
         { $set: { isSubscribed: false } },
       );
+
       break;
     }
 
     default:
-      // Unhandled event — log and move on
       console.log(`[webhook] unhandled Paystack event: ${eventType}`);
   }
 }

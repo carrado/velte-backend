@@ -35,7 +35,7 @@ async function paystackFetch(path, options = {}) {
 // Creates a Paystack checkout session.
 // Returns { authorization_url, access_code, reference }
 
-export async function initializeTransaction({ email, amount, reference, metadata = {}, callbackUrl }) {
+export async function initializeTransaction({ email, amount, reference, metadata = {} }) {
   return paystackFetch("/transaction/initialize", {
     method: "POST",
     body: JSON.stringify({
@@ -44,7 +44,7 @@ export async function initializeTransaction({ email, amount, reference, metadata
       amount: Math.round(amount * 100),
       reference,
       metadata,
-      callback_url: callbackUrl,
+      channels: ["card"],
     }),
   });
 }
