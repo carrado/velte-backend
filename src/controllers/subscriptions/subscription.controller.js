@@ -17,8 +17,19 @@ const PLANS = {
 
 const DEFAULT_PLAN = "monthly";
 
-function getPeriodEnd(planKey, startDate = new Date()) {
-  const periodEnd = new Date(startDate);
+function getPeriodEnd(planKey, subscription = null) {
+  const now = new Date();
+  
+  const isActiveSubscription =
+    subscription?.isSubscribed &&
+    subscription?.currentPeriodEnd &&
+    new Date(subscription.currentPeriodEnd) > now;
+
+  const startFrom = isActiveSubscription
+    ? new Date(subscription.currentPeriodEnd)
+    : now;
+
+  const periodEnd = new Date(startFrom);
 
   if (planKey === "annual") {
     periodEnd.setFullYear(periodEnd.getFullYear() + 1);
@@ -26,7 +37,7 @@ function getPeriodEnd(planKey, startDate = new Date()) {
     periodEnd.setMonth(periodEnd.getMonth() + 1);
   }
 
-  return periodEnd;
+  return { periodStart: isActiveSubscription ? subscription.currentPeriodStart : now, periodEnd };
 }
 
 function formatTransactions(transactions = []) {
@@ -97,6 +108,7 @@ export async function initializeSubscription(req, res, next) {
       email: user.email,
       amount: plan.amount,
       reference,
+      callbackUrl: `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}`,
       metadata: {
         userId: req.user.userId.toString(),
         plan: planKey,
@@ -169,10 +181,7 @@ export async function verifySubscription(req, res, next) {
 
     if (transaction.status !== "success") {
       const subscription = await Subscription.findOneAndUpdate(
-        {
-          userId: req.user.userId,
-          "transactions.reference": reference,
-        },
+        { userId: req.user.userId, "transactions.reference": reference },
         {
           $set: {
             "transactions.$.status": "failed",
@@ -191,26 +200,24 @@ export async function verifySubscription(req, res, next) {
       });
     }
 
-    const now = new Date();
-    const periodEnd = getPeriodEnd(planKey, now);
+    // Fetch current subscription to determine whether this is a renewal
+    // or a fresh activation (expired / trial)
+    const currentSub = await Subscription.findOne({ userId: req.user.userId });
+    const { periodStart, periodEnd } = getPeriodEnd(planKey, currentSub);
 
     let subscription = await Subscription.findOneAndUpdate(
-      {
-        userId: req.user.userId,
-        "transactions.reference": reference,
-      },
+      { userId: req.user.userId, "transactions.reference": reference },
       {
         $set: {
           isSubscribed: true,
           plan: planKey,
-          currentPeriodStart: now,
-          currentPeriodEnd: periodEnd,
+          currentPeriodStart: periodStart,   // ← unchanged on renewal, reset on fresh
+          currentPeriodEnd: periodEnd,        // ← extended from old end on renewal
           paystackCustomerCode: transaction.customer?.customer_code ?? null,
           lastPaystackReference: reference,
-
           "transactions.$.amount": transaction.amount,
           "transactions.$.status": "success",
-          "transactions.$.paidAt": new Date(transaction.paid_at ?? now),
+          "transactions.$.paidAt": new Date(transaction.paid_at ?? new Date()),
         },
       },
       { new: true },
@@ -223,7 +230,7 @@ export async function verifySubscription(req, res, next) {
           $set: {
             isSubscribed: true,
             plan: planKey,
-            currentPeriodStart: now,
+            currentPeriodStart: periodStart,
             currentPeriodEnd: periodEnd,
             paystackCustomerCode: transaction.customer?.customer_code ?? null,
             lastPaystackReference: reference,
@@ -233,7 +240,7 @@ export async function verifySubscription(req, res, next) {
               amount: transaction.amount,
               reference,
               status: "success",
-              paidAt: new Date(transaction.paid_at ?? now),
+              paidAt: new Date(transaction.paid_at ?? new Date()),
             },
           },
         },
@@ -252,6 +259,7 @@ export async function verifySubscription(req, res, next) {
     next(err);
   }
 }
+
 
 // ── POST /subscription/webhook ────────────────────────────────────────────────
 
@@ -287,44 +295,40 @@ async function processWebhookEvent(event) {
     case "charge.success": {
       const userId = data.metadata?.userId;
       if (!userId) break;
-
+    
       const reference = data.reference;
       const planKey = data.metadata?.plan ?? DEFAULT_PLAN;
-
+    
       const alreadyProcessed = await Subscription.findOne({
         userId,
         lastPaystackReference: reference,
       }).select("+lastPaystackReference");
-
+    
       if (alreadyProcessed) break;
-
-      const now = new Date();
-      const periodEnd = getPeriodEnd(planKey, now);
-
+    
+      // Fetch current sub to determine renewal vs fresh start
+      const currentSub = await Subscription.findOne({ userId });
+      const { periodStart, periodEnd } = getPeriodEnd(planKey, currentSub);
+    
       let subscription = await Subscription.findOneAndUpdate(
-        {
-          userId,
-          "transactions.reference": reference,
-        },
+        { userId, "transactions.reference": reference },
         {
           $set: {
             isSubscribed: true,
             plan: planKey,
-            currentPeriodStart: now,
+            currentPeriodStart: periodStart,
             currentPeriodEnd: periodEnd,
             paystackCustomerCode: data.customer?.customer_code ?? null,
-            paystackAuthorizationCode:
-              data.authorization?.authorization_code ?? null,
+            paystackAuthorizationCode: data.authorization?.authorization_code ?? null,
             lastPaystackReference: reference,
-
             "transactions.$.amount": data.amount,
             "transactions.$.status": "success",
-            "transactions.$.paidAt": new Date(data.paid_at ?? now),
+            "transactions.$.paidAt": new Date(data.paid_at ?? new Date()),
           },
         },
         { new: true },
       );
-
+    
       if (!subscription) {
         await Subscription.findOneAndUpdate(
           { userId },
@@ -332,11 +336,10 @@ async function processWebhookEvent(event) {
             $set: {
               isSubscribed: true,
               plan: planKey,
-              currentPeriodStart: now,
+              currentPeriodStart: periodStart,
               currentPeriodEnd: periodEnd,
               paystackCustomerCode: data.customer?.customer_code ?? null,
-              paystackAuthorizationCode:
-                data.authorization?.authorization_code ?? null,
+              paystackAuthorizationCode: data.authorization?.authorization_code ?? null,
               lastPaystackReference: reference,
             },
             $push: {
@@ -344,14 +347,14 @@ async function processWebhookEvent(event) {
                 amount: data.amount,
                 reference,
                 status: "success",
-                paidAt: new Date(data.paid_at ?? now),
+                paidAt: new Date(data.paid_at ?? new Date()),
               },
             },
           },
           { upsert: true },
         );
       }
-
+    
       break;
     }
 
