@@ -14,6 +14,7 @@ import authRoutes from "./routes/auth.js";
 import aiSetupRoutes from "./routes/aiSetup.routes.js";
 import subscriptionRoutes from "./routes/subscription.routes.js";
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
+import transactionRoutes from "./routes/transactions.routes.js";
 
 const app = express();
 
@@ -79,6 +80,7 @@ mongoose
 app.use("/api/auth", authRoutes);
 app.use("/api/ai-setup", aiSetupRoutes);
 app.use("/api/subscription", subscriptionRoutes);
+app.use("/api/transactions", transactionRoutes);
 
 
 // Health check route
