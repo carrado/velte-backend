@@ -1,7 +1,46 @@
 import Transaction from "../../models/Transactions.model.js";
 import PaymentLink from "../../models/Paymentlink.model.js";
 import { AppError } from "../../middleware/errorHandler.js";
+import { setSubaccountActive } from "../../services/paystack.service.js";
 import crypto from "crypto";
+
+function formatPaymentLink(link) {
+  return {
+    id: link._id.toString(),
+    url: link.url,
+    bankCode: link.bankCode,
+    bankName: link.bankName,
+    accountNumber: link.accountNumber,
+    accountName: link.accountName,
+    amount: link.amount,
+    description: link.description,
+    isActive: link.isActive,
+    createdAt: link.createdAt,
+  };
+}
+
+async function getOwnedPaymentLink(userId, linkId) {
+  const link = await PaymentLink.findOne({
+    _id: linkId,
+    userId,
+    deletedAt: null,
+  });
+
+  if (!link) {
+    throw new AppError("Payment link not found", 404);
+  }
+
+  return link;
+}
+
+async function syncPaystackSubaccount(link, active) {
+  const code = link.subaccountCode || link.paystackSubaccountId;
+  if (!code) {
+    throw new AppError("Payment link is missing Paystack subaccount details", 422);
+  }
+
+  await setSubaccountActive(code, active);
+}
 
 let banksCache = null;
 let banksCachedAt = null;
@@ -207,7 +246,7 @@ export const getTransactions = async (req, res, next) => {
         .lean({ transform: true }),
       Transaction.countDocuments(filter),
       PaymentLink.findOne(
-        { userId, isActive: true },
+        { userId, deletedAt: null },
         null,
         { sort: { createdAt: -1 } },
       ).lean(),
@@ -282,20 +321,79 @@ export const getTransactions = async (req, res, next) => {
         },
         stats,
         paymentLink: latestPaymentLink
-        ? {
-            id: latestPaymentLink._id.toString(),
-            url: latestPaymentLink.url,
-            bankCode: latestPaymentLink.bankCode,
-            bankName: latestPaymentLink.bankName,
-            accountNumber: latestPaymentLink.accountNumber,
-            accountName: latestPaymentLink.accountName,
-            amount: latestPaymentLink.amount,
-            description: latestPaymentLink.description,
-            isActive: latestPaymentLink.isActive,
-            createdAt: latestPaymentLink.createdAt,
-          }
-        : null,
+          ? formatPaymentLink(latestPaymentLink)
+          : null,
       },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ── PATCH /api/transactions/payment-link/:id/deactivate ───────────────────────
+export const deactivatePaymentLink = async (req, res, next) => {
+  try {
+    const link = await getOwnedPaymentLink(req.user.userId, req.params.id);
+
+    if (!link.isActive) {
+      throw new AppError("Payment link is already inactive", 400);
+    }
+
+    await syncPaystackSubaccount(link, false);
+
+    link.isActive = false;
+    await link.save();
+
+    res.json({
+      success: true,
+      data: formatPaymentLink(link),
+      message: "Payment link deactivated",
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ── PATCH /api/transactions/payment-link/:id/reactivate ───────────────────────
+export const reactivatePaymentLink = async (req, res, next) => {
+  try {
+    const link = await getOwnedPaymentLink(req.user.userId, req.params.id);
+
+    if (link.isActive) {
+      throw new AppError("Payment link is already active", 400);
+    }
+
+    await syncPaystackSubaccount(link, true);
+
+    link.isActive = true;
+    await link.save();
+
+    res.json({
+      success: true,
+      data: formatPaymentLink(link),
+      message: "Payment link reactivated",
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ── DELETE /api/transactions/payment-link/:id ─────────────────────────────────
+export const deletePaymentLink = async (req, res, next) => {
+  try {
+    const link = await getOwnedPaymentLink(req.user.userId, req.params.id);
+
+    if (link.isActive) {
+      await syncPaystackSubaccount(link, false);
+    }
+
+    link.isActive = false;
+    link.deletedAt = new Date();
+    await link.save();
+
+    res.json({
+      success: true,
+      message: "Payment link deleted",
     });
   } catch (err) {
     next(err);

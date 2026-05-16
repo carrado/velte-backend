@@ -1,12 +1,15 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
-import { body, query } from "express-validator";
+import { body, param, query } from "express-validator";
 import { validate } from "../middleware/validate.js";
 import { verifyAuth } from "../middleware/auth.js";
 import {
   getBanks,
   resolveAccount,
   generatePaymentLink,
+  deactivatePaymentLink,
+  reactivatePaymentLink,
+  deletePaymentLink,
   getTransactions,
   createTransaction,
 } from "../controllers/transaction/transaction.controller.js";
@@ -28,6 +31,19 @@ const generateLinkLimiter = rateLimit({
     message: "Payment link limit reached. Try again later.",
   },
 });
+
+const paymentLinkActionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: {
+    success: false,
+    message: "Too many payment link actions. Try again later.",
+  },
+});
+
+const paymentLinkIdValidation = [
+  param("id").isMongoId().withMessage("Invalid payment link id"),
+];
 
 // ── Validation chains ─────────────────────────────────────────────────────────
 const generateLinkValidation = [
@@ -92,6 +108,33 @@ router.post(
   generateLinkValidation,
   validate,
   generatePaymentLink,
+);
+
+router.patch(
+  "/payment-link/:id/deactivate",
+  verifyAuth,
+  paymentLinkActionLimiter,
+  paymentLinkIdValidation,
+  validate,
+  deactivatePaymentLink,
+);
+
+router.patch(
+  "/payment-link/:id/reactivate",
+  verifyAuth,
+  paymentLinkActionLimiter,
+  paymentLinkIdValidation,
+  validate,
+  reactivatePaymentLink,
+);
+
+router.delete(
+  "/payment-link/:id",
+  verifyAuth,
+  paymentLinkActionLimiter,
+  paymentLinkIdValidation,
+  validate,
+  deletePaymentLink,
 );
 
 // List transactions

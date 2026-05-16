@@ -73,6 +73,20 @@ export async function createCustomer({ email, firstName, lastName }) {
   });
 }
 
+// ── Subaccount lifecycle ───────────────────────────────────────────────────────
+// Paystack has no delete endpoint — deactivate via active: false.
+
+export async function updateSubaccount(idOrCode, payload) {
+  return paystackFetch(`/subaccount/${encodeURIComponent(idOrCode)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function setSubaccountActive(idOrCode, active) {
+  return updateSubaccount(idOrCode, { active });
+}
+
 // ── Validate webhook signature ────────────────────────────────────────────────
 // Paystack signs webhook payloads with HMAC-SHA512.
 // Always call this before trusting any webhook body.
