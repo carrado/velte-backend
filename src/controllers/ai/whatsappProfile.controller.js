@@ -116,6 +116,7 @@ export async function saveWhatsAppProfile(req, res, next) {
       vertical,
       services,
       featuredProducts,
+      profilePictureUrl,
     } = req.body;
 
     const setup = await getSetupWithMeta(req.user.userId);
@@ -129,22 +130,35 @@ export async function saveWhatsAppProfile(req, res, next) {
     // Fetch user avatar before any Meta calls so we have it for photo sync.
     const user = await User.findById(req.user.userId).select("company avatar");
 
-    // Send all profile fields directly to Meta — nothing saved to DB here.
-    await updateWhatsAppBusinessProfile(phoneNumberId, accessToken, {
-      about: about?.slice(0, 139) ?? "",
-      address: address ?? "",
-      description,
-      email: email || undefined,
-      websites,
-      vertical: vertical || "RETAIL",
-    });
+    // Only call the profile text update if at least one text field was provided.
+    // Sending about:"" causes Meta to reject with (#131000).
+    const hasTextFields =
+      about !== undefined ||
+      address !== undefined ||
+      website !== undefined ||
+      email !== undefined ||
+      vertical !== undefined;
 
-    // Sync user avatar → WhatsApp Business Profile picture (non-blocking).
+    if (hasTextFields) {
+      await updateWhatsAppBusinessProfile(phoneNumberId, accessToken, {
+        about: about?.slice(0, 139) ?? "",
+        address: address ?? "",
+        description,
+        email: email || undefined,
+        websites,
+        vertical: vertical || "RETAIL",
+      });
+    }
+
+    // Use the explicitly supplied URL first, fall back to the stored user avatar.
+    const photoUrl = profilePictureUrl || user?.avatar;
+
+    // Sync profile picture → WhatsApp Business Profile (non-blocking).
     let photoSynced = false;
     let photoError = null;
-    if (user?.avatar) {
+    if (photoUrl) {
       try {
-        await uploadWhatsAppProfilePhoto(user.avatar, phoneNumberId, accessToken);
+        await uploadWhatsAppProfilePhoto(photoUrl, phoneNumberId, accessToken);
         photoSynced = true;
       } catch (err) {
         console.warn("Profile photo sync failed:", err.message);
