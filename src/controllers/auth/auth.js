@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 import User from "../../models/Users.js";
 import { sendVerificationEmail } from "../../helpers/emailSender.js";
+import Subscription from "../../models/Subscriptions.js";
 
 
 export const register = async (req, res) => {
@@ -9,38 +10,27 @@ export const register = async (req, res) => {
       name,
       email,
       password,
-      accountType,
-      companyName,
-      location,
+      businessName,
       services,
-      agreeToTerms
+      country,
+      address,
+      username,
+      agreeToTerms,
     } = req.body;
 
     // 🔹 Validate required fields
-    if (!name || !email || !password || !accountType || !location) {
+    if (!name || !email || !password || !businessName || !username) {
       return res.status(400).json({
         message:
-          "Name, email, password, accountType and location are required fields",
+          "Name, email, password, business name and username are required fields",
       });
-    }
-
-    if (!["customer", "vendor"].includes(accountType)) {
-      return res
-        .status(400)
-        .json({ message: 'Account type must be either "customer" or "vendor"' });
-    }
-
-    if (accountType === "vendor" && !companyName) {
-      return res
-        .status(400)
-        .json({ message: "Company name is required for vendor accounts" });
     }
 
     // 🔹 Check if user already exists
     const existingUser = await User.findOne({ email });
 
     if (existingUser) {
-      if (existingUser.profile?.verified) {
+      if (existingUser.accountVerified) {
         // ✅ User already verified — block registration
         return res.status(400).json({
           message: "User with this email already exists and is verified.",
@@ -72,13 +62,13 @@ export const register = async (req, res) => {
       name,
       email,
       password,
-      accountType,
-      profile: {
-        company: accountType === "vendor" ? companyName : null,
-        location: location,
+      company: {
+        name: businessName,
+        location: address,
         services: services,
-        verified: false,
       },
+      username,
+      country: country,
       emailOtp: {
         code: otp,
         expiresAt: new Date(Date.now() + 10 * 60 * 1000),
@@ -87,20 +77,19 @@ export const register = async (req, res) => {
 
     await user.save();
 
+    const startsAt = new Date();
+    const expiresAt = new Date(startsAt);
+    expiresAt.setDate(expiresAt.getDate() + 2);
+
     // 🔹 Send verification email
     await sendVerificationEmail(email, name, otp);
 
-    // 🔹 Generate auth token
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, {
-      expiresIn: "7d",
-    });
-
-    // 🔹 Set HttpOnly cookie
-    res.cookie("auth_token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production" || process.env.NODE_ENV === 'staging',
-      sameSite: process.env.NODE_ENV === "production" || process.env.NODE_ENV === 'staging' ? "none" : "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+    await Subscription.create({
+      businessId: user._id,
+      plan: "free",
+      status: "active",
+      startsAt,
+      expiresAt,
     });
 
     res.status(201).json({
@@ -120,6 +109,7 @@ export const register = async (req, res) => {
 
 
 
+
 // Login controller
 export const login = async (req, res) => {
   try {
@@ -132,7 +122,7 @@ export const login = async (req, res) => {
     }
 
     // 🔹 Check if user is verified
-    if (!user.profile?.verified) {
+    if (!user.accountVerified) {
       // Generate new OTP
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -170,14 +160,33 @@ export const login = async (req, res) => {
     // 🔹 Set token in HttpOnly cookie
     res.cookie("auth_token", token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production" || process.env.NODE_ENV === 'staging',
-      sameSite: process.env.NODE_ENV === "production" || process.env.NODE_ENV === 'staging' ? "none" : "lax",
+      secure:
+        process.env.NODE_ENV === "production" ||
+        process.env.NODE_ENV === "staging",
+      sameSite:
+        process.env.NODE_ENV === "production" ||
+        process.env.NODE_ENV === "staging"
+          ? "none"
+          : "lax",
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
 
     // 🔹 Success response
     res.status(200).json({
       success: true,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        country: user.country,
+        company: {
+          name: user.company?.name,
+          location: user.company?.location,
+          services: user.company?.services || [],
+        },
+        accountVerified: user.accountVerified,
+        username: user.username,
+      },
       message: "Login successful",
     });
   } catch (error) {
@@ -187,13 +196,17 @@ export const login = async (req, res) => {
 };
 
 
+
+
+
+
+
 export const logout = async (req, res) => {
   try {
     res.clearCookie("auth_token", {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      domain: process.env.NODE_ENV === "production" ? ".velte.ng" : "localhost",
     });
 
     return res.status(200).json({
@@ -209,6 +222,13 @@ export const logout = async (req, res) => {
 };
 
 
+
+
+
+
+
+
+
 export const verifyEmail = async (req, res) => {
   try {
     const { email, otp } = req.body;
@@ -219,6 +239,11 @@ export const verifyEmail = async (req, res) => {
 
     // Find the user by email
     const user = await User.findOne({ email });
+
+    if (user.accountVerified) {
+      return res.status(400).json({ message: "The user is already verified." });
+    }
+
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
@@ -236,7 +261,7 @@ export const verifyEmail = async (req, res) => {
     }
 
     // Mark user as verified
-    user.profile.verified = true;
+    user.accountVerified = true;
 
     // Remove OTP after verification (optional)
     user.emailOtp = undefined;
@@ -251,40 +276,45 @@ export const verifyEmail = async (req, res) => {
 };
 
 
+
+
+
+
+
 export const deleteAccount = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { password } = req.body; // Get password from request body
-    
+
     if (!userId) {
-      return res.status(401).json({ 
-        success: false, 
-        message: "Authentication required" 
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
       });
     }
 
     if (!password) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Password is required for account deletion" 
+      return res.status(400).json({
+        success: false,
+        message: "Password is required for account deletion",
       });
     }
 
     const user = await User.findById(userId);
-    
+
     if (!user) {
-      return res.status(404).json({ 
-        success: false, 
-        message: "User not found" 
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
       });
     }
 
     // Verify password
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
-      return res.status(401).json({ 
-        success: false, 
-        message: "Incorrect password" 
+      return res.status(401).json({
+        success: false,
+        message: "Incorrect password",
       });
     }
 
@@ -313,6 +343,12 @@ export const deleteAccount = async (req, res) => {
     });
   }
 };
+
+
+
+
+
+
 
 
 export const verifyPasswordOTP = async (req, res) => {
@@ -351,21 +387,25 @@ export const verifyPasswordOTP = async (req, res) => {
 };
 
 
+
+
+
+
 export const resetPassword = async (req, res) => {
   try {
-    const { email, otp, newPassword } = req.body;
+    const { email, otp, password } = req.body;
 
     // 🔹 Validate required fields
-    if (!email || !otp || !newPassword) {
-      return res.status(400).json({ 
-        message: "Email, OTP, and new password are required" 
+    if (!email || !otp || !password) {
+      return res.status(400).json({
+        message: "Email, OTP, and new password are required",
       });
     }
 
     // 🔹 Validate new password length
-    if (newPassword.length < 8) {
-      return res.status(400).json({ 
-        message: "Password must be at least 8 characters long" 
+    if (password.length < 8) {
+      return res.status(400).json({
+        message: "Password must be at least 8 characters long",
       });
     }
 
@@ -373,68 +413,68 @@ export const resetPassword = async (req, res) => {
     const user = await User.findOne({ email });
 
     if (!user) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        message: "User not found" 
+        message: "User not found",
       });
     }
 
     // 🔹 Check if OTP exists and matches
     if (!user.emailOtp || user.emailOtp.code !== Number(otp)) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        message: "Invalid OTP" 
+        message: "Invalid OTP",
       });
     }
 
     // 🔹 Check if OTP is expired
     const now = Date.now();
     if (user.emailOtp.expiresAt < now) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        message: "OTP has expired. Please request a new one." 
+        message: "OTP has expired. Please request a new one.",
       });
     }
 
     // 🔹 Check if new password is same as old password
-    const isSamePassword = await user.comparePassword(newPassword);
+    const isSamePassword = await user.comparePassword(password);
     if (isSamePassword) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        message: "New password cannot be the same as old password" 
+        message: "Unable to reset password. Please try again.",
       });
     }
 
     // 🔹 Update password
-    user.password = newPassword;
-    
+    user.password = password;
+
     // 🔹 Clear OTP after successful password reset
     user.emailOtp = undefined;
-    
+
     // 🔹 Save user (password will be hashed by pre-save hook)
     await user.save();
 
     // 🔹 Send success response
-    res.status(200).json({ 
+    res.status(200).json({
       success: true,
-      message: "Password reset successful. You can now login with your new password." 
+      message:
+        "Password reset successful. You can now login with your new password.",
     });
-
   } catch (error) {
     console.error("Password reset error:", error);
-    
+
     // Handle specific errors
-    if (error.name === 'ValidationError') {
-      return res.status(400).json({ 
+    if (error.name === "ValidationError") {
+      return res.status(400).json({
         success: false,
-        message: "Invalid input data" 
+        message: "Invalid input data",
       });
     }
-    
-    res.status(500).json({ 
+
+    res.status(500).json({
       success: false,
       message: "An error occurred while resetting password",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };

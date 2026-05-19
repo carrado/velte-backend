@@ -10,7 +10,10 @@ import {
 } from '../controllers/auth/auth.js';
 import { verifyAuth } from "../middleware/auth.js";
 import { profile } from '../controllers/userProfile.js';
+import { updateProfile } from '../controllers/auth/updateProfile.js';
 import { passwordResetOTP, resendOTP } from '../controllers/auth/resend-verification.js';
+import { requestPasswordChange, confirmPasswordChange } from '../controllers/auth/changePassword.js';
+import { getNotificationSettings, saveNotificationSettings } from '../controllers/auth/notificationSettings.js';
 
 const router = express.Router();
 
@@ -19,12 +22,20 @@ router.post('/register', register);
 router.post('/login', login);
 router.post("/verify", verifyEmail);
 router.post("/resend-verification", resendOTP)
-router.post("/resetOTP", passwordResetOTP)
+router.post("/getPasswordOTP", passwordResetOTP)
 router.post("/logout", logout)
 router.delete("/delete-account", verifyAuth, deleteAccount)
-// router.put("/profile", verifyAuth, updateProfile)
+router.put("/profile", verifyAuth, updateProfile);
 router.post("/verify-reset-otp", verifyPasswordOTP)
 router.post("/reset-password", resetPassword);
 router.get("/me", verifyAuth, profile)
+
+// Account settings — password change (two-step)
+router.post("/change-password/request", verifyAuth, requestPasswordChange);
+router.post("/change-password/confirm", verifyAuth, confirmPasswordChange);
+
+// Account settings — notification preferences
+router.get("/notifications", verifyAuth, getNotificationSettings);
+router.put("/notifications", verifyAuth, saveNotificationSettings);
 
 export default router;
