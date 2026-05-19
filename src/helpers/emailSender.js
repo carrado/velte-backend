@@ -48,6 +48,36 @@ export const sendVerificationEmail = async (to, name, otp) => {
 
 
 
+export const sendPasswordChangeEmail = async (to, name, otp) => {
+  try {
+    const templatePath = path.join(
+      process.cwd(),
+      "src",
+      "emailTemplates",
+      "passwordChange.html"
+    );
+
+    let htmlContent = fs.readFileSync(templatePath, "utf8");
+
+    htmlContent = htmlContent
+      .replace(/{{name}}/g, name)
+      .replace(/{{otp}}/g, otp);
+
+    await resend.emails.send({
+      to,
+      from: "no-reply@devcamp.com.ng",
+      subject: "Velte Password Change Verification",
+      html: htmlContent,
+    });
+
+    console.log(`✅ Password change email sent to ${to}`);
+  } catch (error) {
+    console.error("❌ Error sending password change email:", error);
+    throw new Error("Failed to send password change email");
+  }
+};
+
+
 export const sendPasswordResetEmail = async (to, name, otp) => {
   try {
     // Load the updated HTML template

@@ -6,6 +6,7 @@ import {
   validateMetaConnect,
   validateSelectNumber,
   validateAIConfig,
+  validateWhatsAppProfile,
 } from "../middleware/validate.js";
 import {
   getStatus,
@@ -16,6 +17,10 @@ import {
   activateAI,
   disconnectAI,
 } from "../controllers/ai/setUp.controller.js";
+import {
+  getWhatsAppProfile,
+  saveWhatsAppProfile,
+} from "../controllers/ai/whatsappProfile.controller.js";
 
 const router = Router();
 
@@ -86,6 +91,18 @@ router.post("/numbers/select", validateSelectNumber, selectNumber);
  * Saves AI configuration (can also be called post-setup to update settings).
  */
 router.put("/config", validateAIConfig, updateConfig);
+
+/**
+ * GET /api/ai-setup/whatsapp-profile
+ * Loads Meta business profile + saved featured products.
+ */
+router.get("/whatsapp-profile", getWhatsAppProfile);
+
+/**
+ * PUT /api/ai-setup/whatsapp-profile
+ * Updates Meta business profile, user services, and catalog products (max 3).
+ */
+router.put("/whatsapp-profile", validateWhatsAppProfile, saveWhatsAppProfile);
 
 /**
  * POST /api/ai-setup/activate

@@ -155,3 +155,281 @@ function normaliseStatus(metaStatus) {
   if (s === "PENDING") return "pending";
   return "unverified";
 }
+
+async function graphGet(path, accessToken) {
+  const res = await fetch(`${GRAPH_BASE}${path}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    throw new Error(data.error?.message || `Meta API GET failed: ${path}`);
+  }
+  return data;
+}
+
+async function graphPost(path, accessToken, body) {
+  const res = await fetch(`${GRAPH_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    throw new Error(data.error?.message || `Meta API POST failed: ${path}`);
+  }
+  return data;
+}
+
+/**
+ * Fetch WhatsApp business profile for a phone number.
+ */
+export async function getWhatsAppBusinessProfile(phoneNumberId, accessToken) {
+  const fields =
+    "about,address,description,email,profile_picture_url,websites,vertical";
+  const data = await graphGet(
+    `/${phoneNumberId}/whatsapp_business_profile?fields=${fields}`,
+    accessToken,
+  );
+  return data.data?.[0] ?? null;
+}
+
+/**
+ * Update WhatsApp business profile (about, address, websites, vertical, etc.).
+ */
+export async function updateWhatsAppBusinessProfile(
+  phoneNumberId,
+  accessToken,
+  profile,
+) {
+  const payload = {
+    messaging_product: "whatsapp",
+    about: profile.about,
+    address: profile.address || "",
+    description: profile.description || "",
+    vertical: profile.vertical || "RETAIL",
+    // Always send websites — an empty array explicitly clears existing entries on Meta.
+    // Omitting the field entirely leaves the old value in place.
+    websites: profile.websites ?? [],
+  };
+
+  if (profile.email) payload.email = profile.email;
+
+  return graphPost(
+    `/${phoneNumberId}/whatsapp_business_profile`,
+    accessToken,
+    payload,
+  );
+}
+
+/**
+ * Return the first catalog ID linked to a WABA, or null if none / no permission.
+ */
+export async function getWABACatalogId(wabaId, accessToken) {
+  try {
+    const data = await graphGet(
+      `/${wabaId}/product_catalogs?fields=id,name`,
+      accessToken,
+    );
+    return data.data?.[0]?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch products from a catalog.
+ */
+export async function getCatalogItems(catalogId, accessToken) {
+  const data = await graphGet(
+    `/${catalogId}/products?fields=retailer_id,name,price,availability`,
+    accessToken,
+  );
+  return data.data ?? [];
+}
+
+/**
+ * Enable catalog visibility on the business phone number.
+ */
+export async function setWhatsAppCommerceSettings(
+  phoneNumberId,
+  accessToken,
+  { isCatalogVisible = true, isCartEnabled = true } = {},
+) {
+  const params = new URLSearchParams();
+  if (isCatalogVisible !== undefined) {
+    params.set("is_catalog_visible", String(isCatalogVisible));
+  }
+  if (isCartEnabled !== undefined) {
+    params.set("is_cart_enabled", String(isCartEnabled));
+  }
+
+  const res = await fetch(
+    `${GRAPH_BASE}/${phoneNumberId}/whatsapp_commerce_settings?${params}`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+  );
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    throw new Error(
+      data.error?.message || "Failed to update WhatsApp commerce settings",
+    );
+  }
+  return data;
+}
+
+/**
+ * Resolve catalog ID linked to WABA, or create & link one.
+ */
+export async function getOrCreateWABACatalog(
+  wabaId,
+  accessToken,
+  { businessId, catalogName = "Velte Product Catalog" } = {},
+) {
+  const existing = await graphGet(
+    `/${wabaId}/product_catalogs?fields=id,name`,
+    accessToken,
+  );
+  if (existing.data?.length) {
+    return { catalogId: existing.data[0].id, created: false };
+  }
+
+  let resolvedBusinessId = businessId;
+  if (!resolvedBusinessId) {
+    const businesses = await graphGet("/me/businesses?fields=id,name", accessToken);
+    resolvedBusinessId = businesses.data?.[0]?.id;
+  }
+  if (!resolvedBusinessId) {
+    throw new Error(
+      "No Meta Business account found. Connect WhatsApp in AI Setup first.",
+    );
+  }
+
+  const created = await graphPost(
+    `/${resolvedBusinessId}/owned_product_catalogs`,
+    accessToken,
+    { name: catalogName, vertical: "commerce" },
+  );
+
+  const catalogId = created.id;
+  await graphPost(`/${wabaId}/product_catalogs`, accessToken, {
+    catalog_id: catalogId,
+  });
+
+  return { catalogId, created: true, businessId: resolvedBusinessId };
+}
+
+/**
+ * Upload a profile photo to WhatsApp Business Profile via Meta Resumable Upload API.
+ *
+ * Flow:
+ *   1. Download the image from a public URL (Cloudinary).
+ *   2. Open a Meta upload session to get a session ID.
+ *   3. POST the binary to the session endpoint to get a file handle.
+ *   4. Set the handle as the profile picture on the phone number.
+ */
+export async function uploadWhatsAppProfilePhoto(avatarUrl, phoneNumberId, accessToken) {
+  // 1. Fetch image binary from Cloudinary
+  const imgRes = await fetch(avatarUrl);
+  if (!imgRes.ok) throw new Error("Failed to fetch avatar from Cloudinary");
+  const buffer = await imgRes.arrayBuffer();
+  const contentType = imgRes.headers.get("content-type") || "image/jpeg";
+  const fileSize = buffer.byteLength;
+
+  // 2. Create a resumable upload session
+  const sessionParams = new URLSearchParams({
+    file_length: fileSize,
+    file_type: contentType,
+    access_token: accessToken,
+  });
+  const sessionRes = await fetch(
+    `${GRAPH_BASE}/${process.env.META_APP_ID}/uploads?${sessionParams}`,
+    { method: "POST" },
+  );
+  const sessionData = await sessionRes.json();
+  if (!sessionRes.ok || sessionData.error) {
+    throw new Error(sessionData.error?.message || "Failed to start photo upload session");
+  }
+  const uploadSessionId = sessionData.id; // "upload:AYAd..."
+
+  // 3. Upload the binary — session ID is used directly as the path segment
+  const uploadRes = await fetch(`${GRAPH_BASE}/${uploadSessionId}`, {
+    method: "POST",
+    headers: {
+      Authorization: `OAuth ${accessToken}`,
+      "Content-Type": contentType,
+      file_offset: "0",
+    },
+    body: buffer,
+  });
+  const uploadData = await uploadRes.json();
+  if (!uploadRes.ok || uploadData.error) {
+    throw new Error(uploadData.error?.message || "Failed to upload profile photo binary");
+  }
+
+  const handle = uploadData.h;
+  if (!handle) throw new Error("Meta upload did not return a file handle");
+
+  // 4. Set the profile picture on the phone number
+  await graphPost(`/${phoneNumberId}/whatsapp_business_profile`, accessToken, {
+    messaging_product: "whatsapp",
+    profile_picture_handle: handle,
+  });
+}
+
+/**
+ * Sync up to 3 products to Meta catalog via items_batch (CREATE/UPDATE).
+ */
+export async function syncCatalogProducts(
+  catalogId,
+  accessToken,
+  products,
+  { currency = "NGN" } = {},
+) {
+  if (!products.length) return { handles: [], validation_status: [] };
+
+  const requests = products.map((p) => ({
+    method: "UPDATE",
+    data: {
+      id: p.retailerId,
+      title: p.name,
+      description: p.description || p.name,
+      availability: p.inStock > 0 ? "in stock" : "out of stock",
+      condition: "new",
+      price: `${p.price} ${currency}`,
+      image_link: p.imageUrl,
+      link: p.link || "https://velte.ng",
+    },
+  }));
+
+  const res = await fetch(`${GRAPH_BASE}/${catalogId}/items_batch`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      item_type: "PRODUCT_ITEM",
+      requests,
+      allow_upsert: true,
+    }),
+  });
+
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    throw new Error(data.error?.message || "Failed to sync catalog products");
+  }
+
+  const errors = (data.validation_status || []).flatMap((v) => v.errors || []);
+  if (errors.length) {
+    throw new Error(
+      errors.map((e) => e.message).join("; ") || "Catalog validation failed",
+    );
+  }
+
+  return data;
+}

@@ -42,8 +42,12 @@ const userSchema = new mongoose.Schema({
     default: null
   },
   avatar: {
-      type: String,
-      default: null,
+    type: String,
+    default: null,
+  },
+  phone: {
+    type: String,
+    default: null,
   },
   username: {
     type: String,
@@ -59,6 +63,16 @@ const userSchema = new mongoose.Schema({
       default: null
     }
   },
+  changePasswordOtp: {
+    code: {
+      type: Number,
+      default: null
+    },
+    expiresAt: {
+      type: Date,
+      default: null
+    }
+  },
   accountVerified: {
     type: Boolean,
     default: false
@@ -70,8 +84,13 @@ const userSchema = new mongoose.Schema({
   },
   preferences: {
     notifications: {
-      email: { type: Boolean, default: true },
-      inApp: { type: Boolean, default: false },
+      email:            { type: Boolean, default: true },
+      inApp:            { type: Boolean, default: false },
+      orders:           { type: Boolean, default: true },
+      invoices:         { type: Boolean, default: false },
+      invoiceThreshold: { type: Number,  default: 0, min: 0 },
+      productUpdates:   { type: Boolean, default: false },
+      push:             { type: Boolean, default: true },
     },
     defaultCurrency: {
       type: String,

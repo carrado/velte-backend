@@ -13,6 +13,7 @@ import {
   getTransactions,
   createTransaction,
 } from "../controllers/transaction/transaction.controller.js";
+import { initiateOrderRefund } from "../controllers/orders/orderRefund.controller.js";
 
 const router = express.Router();
 
@@ -39,6 +40,15 @@ const paymentLinkActionLimiter = rateLimit({
     success: false,
     message: "Too many payment link actions. Try again later.",
   },
+});
+
+// 10 refund attempts per hour per IP — matches the Meta auth limiter pattern
+const refundLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: { success: false, message: "Too many refund requests, please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 const paymentLinkIdValidation = [
@@ -84,6 +94,31 @@ const createTransactionValidation = [
     .isIn(["Complete", "Pending", "Canceled"])
     .withMessage("status must be Complete, Pending, or Canceled"),
 ];
+
+// ── Validation chain for POST /order-refund ───────────────────────────────────
+const validateOrderRefund = [
+  body("orderId")
+    .trim()
+    .notEmpty()
+    .withMessage("orderId is required.")
+    .isString()
+    .withMessage("orderId must be a string."),
+
+  body("amount")
+    .notEmpty()
+    .withMessage("amount is required.")
+    .isFloat({ min: 1, max: 10_000_000 })
+    .withMessage("amount must be a positive number not exceeding ₦10,000,000."),
+
+  body("reason")
+    .optional()
+    .trim()
+    .isString()
+    .withMessage("reason must be a string.")
+    .isLength({ max: 200 })
+    .withMessage("reason must not exceed 200 characters."),
+];
+
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
@@ -148,5 +183,15 @@ router.post(
   validate,
   createTransaction,
 );
+
+
+router.post(
+  "/order-refund",
+  refundLimiter,
+  verifyAuth,
+  validateOrderRefund,
+  initiateOrderRefund,
+);
+
 
 export default router;

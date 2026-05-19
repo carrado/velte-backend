@@ -64,6 +64,18 @@ const aiSetupSchema = new mongoose.Schema(
     // Step 4 — AI configuration
     aiConfig: { type: aiConfigSchema, default: () => ({}) },
 
+    // WhatsApp business profile & catalog (settings)
+    metaCatalogId: { type: String, default: null },
+    metaBusinessId: { type: String, default: null },
+    featuredProductIds: {
+      type: [String],
+      default: [],
+      validate: {
+        validator: (v) => v.length <= 3,
+        message: "At most 3 featured catalog products allowed",
+      },
+    },
+
     // Final activation
     isComplete: { type: Boolean, default: false },
     webhookUrl: { type: String },
