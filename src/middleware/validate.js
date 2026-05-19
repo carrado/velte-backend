@@ -77,6 +77,29 @@ export const validateAIConfig = [
   validate,
 ];
 
+export const validateWhatsAppProfile = [
+  body("about")
+    .optional()
+    .isString()
+    .isLength({ max: 139 })
+    .withMessage("About cannot exceed 139 characters"),
+  body("address").optional().isString().isLength({ max: 256 }),
+  body("website").optional().isString().isLength({ max: 256 }),
+  body("email").optional().isEmail().withMessage("Invalid email"),
+  body("vertical").optional().isString().isLength({ max: 50 }),
+  body("services").optional().isArray({ max: 20 }),
+  body("services.*").optional().isString().isLength({ max: 80 }),
+  body("featuredProducts").optional().isArray({ max: 3 }),
+  body("featuredProducts.*.id").optional().isString(),
+  body("featuredProducts.*.name").optional().isString(),
+  body("featuredProducts.*.price")
+    .optional()
+    .isNumeric()
+    .withMessage("Product price must be numeric"),
+  body("featuredProducts.*.inStock").optional().isInt({ min: 0 }),
+  validate,
+];
+
 export const validateWebhook = [
   // Verify Meta's hub.verify_token matches our secret
   param("mode")

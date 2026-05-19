@@ -1,19 +1,18 @@
 import User from "../models/Users.js";
 
 export const profile = async (req, res) => {
-  try {  
-    const user = await User.findById(req.user._id)
-      .select("-password -emailOtp"); // exclude sensitive fields
+  try {
+    const user = await User.findById(req.user.userId).select("-password -emailOtp");
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    if (!user.profile?.verified) {
+    if (!user.accountVerified) {
       return res.status(403).json({
         success: false,
         message: "Your account is not verified. Please verify your email.",
-        email: user.email
+        email: user.email,
       });
     }
 
