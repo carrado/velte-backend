@@ -15,6 +15,8 @@ import aiSetupRoutes from "./routes/aiSetup.routes.js";
 import subscriptionRoutes from "./routes/subscription.routes.js";
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
 import transactionRoutes from "./routes/transactions.routes.js";
+import pushRoutes from "./routes/push.routes.js";
+import notificationRoutes from "./routes/notifications.routes.js";
 
 const app = express();
 
@@ -81,6 +83,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/ai-setup", aiSetupRoutes);
 app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/transactions", transactionRoutes);
+app.use("/api/push", pushRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 
 // Health check route
