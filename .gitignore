@@ -43,3 +43,4 @@ coverage/
 *.pid.lock
 
 CLAUDE.md
+*.md
