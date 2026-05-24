@@ -17,6 +17,7 @@ import { errorHandler, notFound } from "./middleware/errorHandler.js";
 import transactionRoutes from "./routes/transactions.routes.js";
 import pushRoutes from "./routes/push.routes.js";
 import notificationRoutes from "./routes/notifications.routes.js";
+import usersRoutes from "./routes/users.routes.js";
 
 const app = express();
 
@@ -85,6 +86,7 @@ app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/transactions", transactionRoutes);
 app.use("/api/push", pushRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/users", usersRoutes);
 
 
 // Health check route

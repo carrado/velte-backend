@@ -77,20 +77,10 @@ export const register = async (req, res) => {
 
     await user.save();
 
-    const startsAt = new Date();
-    const expiresAt = new Date(startsAt);
-    expiresAt.setDate(expiresAt.getDate() + 2);
-
     // 🔹 Send verification email
     await sendVerificationEmail(email, name, otp);
 
-    await Subscription.create({
-      businessId: user._id,
-      plan: "free",
-      status: "active",
-      startsAt,
-      expiresAt,
-    });
+    await Subscription.create({ userId: user._id });
 
     res.status(201).json({
       success: true,
@@ -187,6 +177,7 @@ export const login = async (req, res) => {
         },
         accountVerified: user.accountVerified,
         username: user.username,
+        onboarding: user.onboarding,
       },
       message: "Login successful",
     });

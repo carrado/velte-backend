@@ -82,6 +82,10 @@ const userSchema = new mongoose.Schema({
     required: false,
     default: 'not-verified'
   },
+  onboarding: {
+    type: Boolean,
+    default: true
+  },
   preferences: {
     notifications: {
       email:            { type: Boolean, default: true },

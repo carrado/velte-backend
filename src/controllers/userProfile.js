@@ -2,7 +2,7 @@ import User from "../models/Users.js";
 
 export const profile = async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId).select("-password -emailOtp");
+    const user = await User.findById(req.user.userId).select("-password -emailOtp -changePasswordOtp");
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });

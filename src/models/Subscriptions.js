@@ -52,7 +52,7 @@ const subscriptionSchema = new mongoose.Schema(
 
     trialEndsAt: {
       type: Date,
-      default: () => new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+      default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     },
 
     // ── Subscription State ───────────────────────────────────────────────────

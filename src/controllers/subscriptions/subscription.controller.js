@@ -11,8 +11,8 @@ import {
 } from "../../services/paystack.service.js";
 
 const PLANS = {
-  monthly: { amount: 8500, label: "Monthly Plan" },
-  annual: { amount: 85000, label: "Annual Plan" },
+  monthly: { amount: 9000, label: "Monthly Plan" },
+  annual: { amount: 90000, label: "Annual Plan" },
 };
 
 const DEFAULT_PLAN = "monthly";
