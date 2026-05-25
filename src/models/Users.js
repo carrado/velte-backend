@@ -86,6 +86,11 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  businessType: {
+    type: String,
+    enum: ['retail', 'food'],
+    default: 'retail',
+  },
   preferences: {
     notifications: {
       email:            { type: Boolean, default: true },
@@ -99,8 +104,12 @@ const userSchema = new mongoose.Schema({
     defaultCurrency: {
       type: String,
       default: '₦'
-    }
-  }
+    },
+    foodSettings: {
+      estimatedPrepMins: { type: Number, default: 20 },
+      autoAccept:        { type: Boolean, default: false },
+    },
+  },
 }, {
   timestamps: true
 });
