@@ -16,6 +16,7 @@ export const register = async (req, res) => {
       address,
       username,
       agreeToTerms,
+      businessType,
     } = req.body;
 
     // 🔹 Validate required fields
@@ -24,6 +25,10 @@ export const register = async (req, res) => {
         message:
           "Name, email, password, business name and username are required fields",
       });
+    }
+
+    if (businessType !== undefined && !['retail', 'food'].includes(businessType)) {
+      return res.status(400).json({ message: "businessType must be 'retail' or 'food'" });
     }
 
     // 🔹 Check if user already exists
@@ -69,6 +74,7 @@ export const register = async (req, res) => {
       },
       username,
       country: country,
+      businessType: businessType || 'retail',
       emailOtp: {
         code: otp,
         expiresAt: new Date(Date.now() + 10 * 60 * 1000),

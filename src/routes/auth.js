@@ -14,6 +14,7 @@ import { updateProfile } from '../controllers/auth/updateProfile.js';
 import { passwordResetOTP, resendOTP } from '../controllers/auth/resend-verification.js';
 import { requestPasswordChange, confirmPasswordChange } from '../controllers/auth/changePassword.js';
 import { getNotificationSettings, saveNotificationSettings } from '../controllers/auth/notificationSettings.js';
+import { updateBusinessType, updateFoodSettings } from '../controllers/auth/businessType.js';
 
 const router = express.Router();
 
@@ -37,5 +38,11 @@ router.post("/change-password/confirm", verifyAuth, confirmPasswordChange);
 // Account settings — notification preferences
 router.get("/notifications", verifyAuth, getNotificationSettings);
 router.put("/notifications", verifyAuth, saveNotificationSettings);
+
+// Business type
+router.patch("/business-type", verifyAuth, updateBusinessType);
+
+// Food vendor settings
+router.put("/settings/food", verifyAuth, updateFoodSettings);
 
 export default router;
