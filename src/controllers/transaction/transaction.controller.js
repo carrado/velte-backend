@@ -167,7 +167,7 @@ export const generatePaymentLink = async (req, res, next) => {
     // ── 2. Generate link ───────────────────────────────────────────────────
     const linkId = crypto.randomBytes(8).toString("hex");
     const baseUrl = process.env.FRONTEND_URL || "https://velte.ng";
-    const url = `${baseUrl}pay/${linkId}`;
+    const url = `${baseUrl}/pay/${linkId}`;
 
     const paymentLink = await PaymentLink.create({
       userId: req.user.userId,
