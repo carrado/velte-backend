@@ -88,13 +88,24 @@ export async function handleOrderCharge(data) {
     // ── Notify Staffly ────────────────────────────────────────────────────────
     const aiSetup = await AISetup.findOne({ userId: merchantId }).select("selectedNumberId");
     if (aiSetup?.selectedNumberId) {
+      // A link the customer can revisit to view/track this order: the pay page
+      // renders the order summary and its status (now "paid") when given the
+      // merchant's linkId plus the order ref. Built only when both are known.
+      const frontendBase = (process.env.FRONTEND_URL || "https://velte.ng").replace(/\/$/, "");
+      const trackingUrl =
+        meta.linkId && stafflyOrderId
+          ? `${frontendBase}/pay/${meta.linkId}?ref=${encodeURIComponent(stafflyOrderId)}`
+          : null;
+
       dispatchToStaffly("order.paid", aiSetup.selectedNumberId, {
         stafflyOrderId,
         orderId: order.orderId ?? order._id.toString(),
         reference,
+        product: items[0]?.name ?? meta.product ?? null,
         customerName: order.customerName,
         customerPhone: order.customerPhone,
         amount: Math.round((data.amount ?? 0) / 100), // Paystack kobo → Naira
+        trackingUrl,
       });
     } else {
       console.warn(
