@@ -20,7 +20,9 @@ export async function dispatchToStaffly(event, phoneNumberId, data) {
     'sha256=' + crypto.createHmac('sha256', secret).update(body).digest('hex');
 
   try {
-    await axios.post(url, JSON.parse(body), {
+    // Send the EXACT bytes we signed (not a re-serialized object) so the HMAC
+    // Staffly computes over the raw body always matches this signature.
+    await axios.post(url, body, {
       headers: {
         'x-velte-signature': signature,
         'Content-Type': 'application/json',

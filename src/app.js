@@ -46,6 +46,15 @@ app.use(
   })
 );
 
+// Paystack posts webhooks as application/json and signs the RAW request body.
+// This route MUST see the unparsed bytes to verify the HMAC signature, so it has
+// to bypass the global express.json() below — otherwise the JSON parser consumes
+// the stream first, req.body becomes a parsed object, the signature check runs
+// over the wrong data, fails (401), and no order is ever created. Mounting
+// express.raw() for this exact path first leaves req.body as a Buffer and flags
+// the body as already read, so the global express.json() then skips it.
+app.use("/api/subscription/webhook", express.raw({ type: "application/json" }));
+
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use(cookieParser());
