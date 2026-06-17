@@ -35,18 +35,37 @@ async function paystackFetch(path, options = {}) {
 // Creates a Paystack checkout session.
 // Returns { authorization_url, access_code, reference }
 
-export async function initializeTransaction({ email, amount, reference, metadata = {}, callbackUrl }) {
+export async function initializeTransaction({
+  email,
+  amount,
+  reference,
+  metadata = {},
+  callbackUrl,
+  subaccount,            // Paystack subaccount CODE (ACCT_...) — routes funds to a merchant
+  channels = ["card"],   // default preserves subscription behaviour
+}) {
+  const payload = {
+    email,
+    // Paystack amount is in kobo (NGN) — multiply by 100
+    amount: Math.round(amount * 100),
+    reference,
+    metadata,
+    callback_url: callbackUrl,
+    channels,
+  };
+
+  // Payment-link charges settle into the merchant's subaccount. The subaccount
+  // was created with percentage_charge: 0 (platform takes nothing), and we make
+  // the subaccount bear the Paystack fee so the platform account isn't charged
+  // for a payment it doesn't keep. Adjust `bearer` if the fee model changes.
+  if (subaccount) {
+    payload.subaccount = subaccount;
+    payload.bearer = "subaccount";
+  }
+
   return paystackFetch("/transaction/initialize", {
     method: "POST",
-    body: JSON.stringify({
-      email,
-      // Paystack amount is in kobo (NGN) — multiply by 100
-      amount: Math.round(amount * 100),
-      reference,
-      metadata,
-      callback_url: callbackUrl,
-      channels: ["card"],
-    }),
+    body: JSON.stringify(payload),
   });
 }
 

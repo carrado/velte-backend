@@ -1,6 +1,6 @@
 // src/models/Subscriptions.js
 // One subscription document per user.
-// Created automatically at registration with a 14-day free trial.
+// Created automatically at registration with a 7-day free trial.
 
 import mongoose from "mongoose";
 
@@ -62,10 +62,18 @@ const subscriptionSchema = new mongoose.Schema(
       default: false,
     },
 
-    // Extendable for future plans
+    // Billing period of the active subscription
     plan: {
       type: String,
       enum: ["monthly", "annual", null],
+      default: null,
+    },
+
+    // Product tier the user is subscribed to.
+    // Null while on trial / never subscribed.
+    tier: {
+      type: String,
+      enum: ["basic", "pro", null],
       default: null,
     },
 

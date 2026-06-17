@@ -64,7 +64,9 @@ router.get("/status", getStatus);
 
 /**
  * POST /api/subscription/initialize
- * Body: { plan?: "monthly" | "annual" }
+ * Body: { tier?: "basic" | "pro", plan?: "monthly" | "annual" }
+ *   tier = product tier (defaults to "basic")
+ *   plan = billing period (defaults to "monthly")
  * Creates a Paystack transaction and returns { authorization_url, reference }.
  */
 router.post("/initialize", initLimiter, validateInitialize, initializeSubscription);

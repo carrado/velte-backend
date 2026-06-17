@@ -19,6 +19,7 @@ import pushRoutes from "./routes/push.routes.js";
 import notificationRoutes from "./routes/notifications.routes.js";
 import usersRoutes from "./routes/users.routes.js";
 import ordersRoutes from "./routes/orders.routes.js";
+import payRoutes from "./routes/pay.routes.js";
 import productsRoutes from "./routes/products.routes.js";
 import modifiersRoutes from "./routes/modifiers.routes.js";
 import categoriesRoutes from "./routes/categories.routes.js";
@@ -92,6 +93,7 @@ app.use("/api/push", pushRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/orders", ordersRoutes);
+app.use("/api/pay", payRoutes); // public pay-page endpoints (no auth)
 app.use("/api/products",   productsRoutes);
 app.use("/api/modifiers",  modifiersRoutes);
 app.use("/api/categories", categoriesRoutes);

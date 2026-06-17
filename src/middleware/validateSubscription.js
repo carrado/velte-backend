@@ -19,6 +19,10 @@ export const validateInitialize = [
     .optional()
     .isIn(["monthly", "annual"])
     .withMessage("plan must be 'monthly' or 'annual'"),
+  body("tier")
+    .optional()
+    .isIn(["basic", "pro"])
+    .withMessage("tier must be 'basic' or 'pro'"),
   validate,
 ];
 

@@ -3,7 +3,9 @@ import ModifierOption from '../../models/ModifierOption.model.js';
 import Category from '../../models/Category.model.js';
 import Order from '../../models/Order.model.js';
 import User from '../../models/Users.js';
+import AISetup from '../../models/AiSetup.model.js';
 import { errRes } from '../../helpers/apiResponse.js';
+import { dispatchToStaffly } from '../../utils/stafflyWebhook.js';
 
 // ── formatters ────────────────────────────────────────────────────────────────
 
@@ -522,6 +524,19 @@ export const restockProduct = async (req, res) => {
 
     product.stockQuantity = product.stockQuantity === 0 ? quantity : product.stockQuantity + quantity;
     await product.save();
+
+    const { customerPhone } = req.body;
+    if (customerPhone) {
+      AISetup.findOne({ userId: req.user.userId }).select('selectedNumberId').then((aiSetup) => {
+        if (aiSetup?.selectedNumberId) {
+          dispatchToStaffly('product.restocked', aiSetup.selectedNumberId, {
+            productName: product.name,
+            newStock: product.stockQuantity,
+            customerPhone,
+          });
+        }
+      }).catch(() => {});
+    }
 
     return res.json({ success: true, data: formatProduct(product) });
   } catch (err) {
