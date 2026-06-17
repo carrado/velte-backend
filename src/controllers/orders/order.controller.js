@@ -1,5 +1,7 @@
 import Order, { RETAIL_TRANSITIONS, FOOD_TRANSITIONS } from "../../models/Order.model.js";
 import User from "../../models/Users.js";
+import AISetup from "../../models/AiSetup.model.js";
+import { dispatchToStaffly } from "../../utils/stafflyWebhook.js";
 
 export const createOrder = async (req, res) => {
   try {
@@ -21,6 +23,18 @@ export const createOrder = async (req, res) => {
       customerBank,
       notes,
     });
+
+    AISetup.findOne({ userId: merchantId }).select('selectedNumberId').then((aiSetup) => {
+      if (aiSetup?.selectedNumberId) {
+        dispatchToStaffly('order.created', aiSetup.selectedNumberId, {
+          orderId: order.orderId ?? order._id.toString(),
+          customerName,
+          customerPhone,
+          items: items.map((i) => ({ name: i.name, quantity: i.quantity, lineTotal: i.lineTotal ?? 0 })),
+          amount,
+        });
+      }
+    }).catch(() => {});
 
     res.status(201).json({ success: true, order });
   } catch (error) {
@@ -92,8 +106,23 @@ export const updateOrderStatus = async (req, res) => {
       return res.status(422).json({ message: "Invalid status for food vendor" });
     }
 
+    const previousStatus = order.status;
     order.status = status;
     await order.save();
+
+    AISetup.findOne({ userId: req.user.userId }).select('selectedNumberId').then((aiSetup) => {
+      if (aiSetup?.selectedNumberId) {
+        dispatchToStaffly('order.status_changed', aiSetup.selectedNumberId, {
+          orderId: order.orderId ?? order._id.toString(),
+          customerPhone: order.customerPhone,
+          newStatus: status,
+          previousStatus,
+          ...(status === 'Cancelled' && req.body.cancellationReason
+            ? { cancellationReason: req.body.cancellationReason }
+            : {}),
+        });
+      }
+    }).catch(() => {});
 
     res.status(200).json({ success: true, order });
   } catch (error) {

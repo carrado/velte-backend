@@ -59,6 +59,10 @@ const orderSchema = new mongoose.Schema({
     bankName:      { type: String, default: null },
   },
   notes: { type: String, default: null },
+  // Paystack transaction reference for orders paid online (via a velte pay link).
+  // Unique + sparse so it dedupes webhook retries while leaving merchant-created
+  // orders (no online payment) free to omit it.
+  paystackReference: { type: String, unique: true, sparse: true },
 }, {
   timestamps: true,
 });

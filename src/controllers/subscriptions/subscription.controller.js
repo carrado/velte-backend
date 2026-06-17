@@ -9,13 +9,30 @@ import {
   verifyTransaction,
   validateWebhookSignature,
 } from "../../services/paystack.service.js";
+import { handleOrderCharge } from "../orders/orderPayment.controller.js";
 
-const PLANS = {
-  monthly: { amount: 9000, label: "Monthly Plan" },
-  annual: { amount: 90000, label: "Annual Plan" },
+// Product tiers and their monthly price in Naira.
+// Must stay in sync with the frontend `plans` source of truth (src/lib/plans.ts).
+const TIERS = {
+  basic: { monthlyPrice: 9000, label: "Basic" },
+  pro: { monthlyPrice: 14000, label: "Pro" },
 };
 
-const DEFAULT_PLAN = "monthly";
+const PERIODS = ["monthly", "annual"];
+
+// Annual billing applies this discount to (monthlyPrice × 12).
+const ANNUAL_DISCOUNT = 0.2;
+
+const DEFAULT_TIER = "basic";
+const DEFAULT_PLAN = "monthly"; // billing period
+
+// Charged amount (in Naira) for a tier over the chosen billing period.
+function getChargeAmount(tierKey, periodKey) {
+  const monthly = TIERS[tierKey].monthlyPrice;
+  return periodKey === "annual"
+    ? Math.round(monthly * 12 * (1 - ANNUAL_DISCOUNT))
+    : monthly;
+}
 
 function getPeriodEnd(planKey, subscription = null) {
   const now = new Date();
@@ -66,6 +83,7 @@ export async function getStatus(req, res, next) {
         isSubscribed: subscription.isSubscribed,
         trialEndsAt: subscription.trialEndsAt?.toISOString() ?? null,
         plan: subscription.plan ?? null,
+        tier: subscription.tier ?? null,
         currentPeriodStart:
           subscription.currentPeriodStart?.toISOString() ?? null,
         currentPeriodEnd: subscription.currentPeriodEnd?.toISOString() ?? null,
@@ -82,15 +100,24 @@ export async function getStatus(req, res, next) {
 
 export async function initializeSubscription(req, res, next) {
   try {
-    const planKey = req.body?.plan ?? DEFAULT_PLAN;
-    const plan = PLANS[planKey];
+    const tierKey = req.body?.tier ?? DEFAULT_TIER;
+    const planKey = req.body?.plan ?? DEFAULT_PLAN; // billing period
 
-    if (!plan) {
+    if (!TIERS[tierKey]) {
       throw new AppError(
-        `Invalid plan. Choose one of: ${Object.keys(PLANS).join(", ")}`,
+        `Invalid tier. Choose one of: ${Object.keys(TIERS).join(", ")}`,
         400,
       );
     }
+
+    if (!PERIODS.includes(planKey)) {
+      throw new AppError(
+        `Invalid plan. Choose one of: ${PERIODS.join(", ")}`,
+        400,
+      );
+    }
+
+    const amount = getChargeAmount(tierKey, planKey);
 
     const user = await User.findById(req.user.userId).select(
       "email firstName lastName",
@@ -106,12 +133,13 @@ export async function initializeSubscription(req, res, next) {
 
     const transaction = await initializeTransaction({
       email: user.email,
-      amount: plan.amount,
+      amount,
       reference,
       callbackUrl: `${process.env.FRONTEND_URL}/payment/callback?reference=${reference}`,
       metadata: {
         userId: req.user.userId.toString(),
         plan: planKey,
+        tier: tierKey,
         userName: `${user.firstName ?? ""} ${user.lastName ?? ""}`.trim(),
       },
     });
@@ -121,7 +149,7 @@ export async function initializeSubscription(req, res, next) {
       {
         $push: {
           transactions: {
-            amount: plan.amount * 100, // store in kobo to match Paystack
+            amount: amount * 100, // store in kobo to match Paystack
             reference,
             status: "pending",
             paidAt: new Date(),
@@ -178,6 +206,7 @@ export async function verifySubscription(req, res, next) {
     }
 
     const planKey = transaction.metadata?.plan ?? DEFAULT_PLAN;
+    const tierKey = transaction.metadata?.tier ?? DEFAULT_TIER;
 
     if (transaction.status !== "success") {
       const subscription = await Subscription.findOneAndUpdate(
@@ -211,6 +240,7 @@ export async function verifySubscription(req, res, next) {
         $set: {
           isSubscribed: true,
           plan: planKey,
+          tier: tierKey,
           currentPeriodStart: periodStart,   // ← unchanged on renewal, reset on fresh
           currentPeriodEnd: periodEnd,        // ← extended from old end on renewal
           paystackCustomerCode: transaction.customer?.customer_code ?? null,
@@ -230,6 +260,7 @@ export async function verifySubscription(req, res, next) {
           $set: {
             isSubscribed: true,
             plan: planKey,
+            tier: tierKey,
             currentPeriodStart: periodStart,
             currentPeriodEnd: periodEnd,
             paystackCustomerCode: transaction.customer?.customer_code ?? null,
@@ -293,12 +324,24 @@ async function processWebhookEvent(event) {
 
   switch (eventType) {
     case "charge.success": {
+      // Paystack funnels every event to this one webhook URL, so order payments
+      // and subscription payments both arrive here — discriminate by metadata.
+      // An order payment creates the merchant's order and notifies Staffly.
+      const meta = data.metadata || {};
+      const isOrderPayment =
+        meta.type === "order" || !!meta.stafflyOrderId || (!!meta.merchantId && !meta.userId);
+      if (isOrderPayment) {
+        await handleOrderCharge(data);
+        break;
+      }
+
       const userId = data.metadata?.userId;
       if (!userId) break;
-    
+
       const reference = data.reference;
       const planKey = data.metadata?.plan ?? DEFAULT_PLAN;
-    
+      const tierKey = data.metadata?.tier ?? DEFAULT_TIER;
+
       const alreadyProcessed = await Subscription.findOne({
         userId,
         lastPaystackReference: reference,
@@ -316,6 +359,7 @@ async function processWebhookEvent(event) {
           $set: {
             isSubscribed: true,
             plan: planKey,
+            tier: tierKey,
             currentPeriodStart: periodStart,
             currentPeriodEnd: periodEnd,
             paystackCustomerCode: data.customer?.customer_code ?? null,
@@ -336,6 +380,7 @@ async function processWebhookEvent(event) {
             $set: {
               isSubscribed: true,
               plan: planKey,
+              tier: tierKey,
               currentPeriodStart: periodStart,
               currentPeriodEnd: periodEnd,
               paystackCustomerCode: data.customer?.customer_code ?? null,
