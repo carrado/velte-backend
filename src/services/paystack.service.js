@@ -77,6 +77,25 @@ export async function verifyTransaction(reference) {
   return paystackFetch(`/transaction/verify/${encodeURIComponent(reference)}`);
 }
 
+// ── Refund a transaction ───────────────────────────────────────────────────────
+// Reverses a charge back to the customer's ORIGINAL payment source (card/bank).
+// No customer bank details required — Paystack routes the refund to however they
+// paid. Omit `amountKobo` for a full refund.
+//
+// Returns the Paystack refund object: { id, status, transaction, amount, ... }.
+// `status` progresses pending → processing → processed (or failed).
+
+export async function refundTransaction({ reference, amountKobo, reason }) {
+  const payload = { transaction: reference };
+  if (amountKobo != null) payload.amount = Math.round(amountKobo);
+  if (reason) payload.merchant_note = reason;
+
+  return paystackFetch("/refund", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 // ── Fetch customer ────────────────────────────────────────────────────────────
 
 export async function fetchCustomer(emailOrCode) {
