@@ -134,9 +134,15 @@ export async function initializePayLink(req, res, next) {
             stafflyOrderId: order.orderId,
             customerName: order.customerName ?? null,
             customerPhone: order.customerNumber ?? null,
+            customerEmail: order.customerEmail ?? null,
+            // Delivery address captured during the WhatsApp checkout — carried
+            // through so the velte order can display it.
+            deliveryAddress: order.location ?? null,
             items: [
               {
+                productId: order.productId ?? undefined,
                 name: order.product || "Order",
+                image: order.productImage ?? null,
                 quantity: 1,
                 basePrice: order.amount,
                 lineTotal: order.amount,

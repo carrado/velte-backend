@@ -1,94 +1,97 @@
 // src/controllers/orders/orderRefund.controller.js
-// Temporary test version — Order lookup commented out, hardcoded bank details used directly.
-// TODO: uncomment the Order lookup block when Order model has customerBank field.
+//
+// Refunds a cancelled order back to the customer's ORIGINAL Paystack payment
+// source (card/bank). We deliberately do NOT collect or transfer to customer bank
+// details — the buyer paid online, so Paystack reverses that exact charge.
+//
+// This is the privileged, money-moving step. The frontend calls it BEFORE moving
+// the order to `cancelled` (see orders-api.md). It is idempotent: a second attempt
+// on an already-refunded order is a no-op success.
 
 import { validationResult } from "express-validator";
-import crypto from "crypto";
 import { AppError } from "../../middleware/errorHandler.js";
-import {
-  createTransferRecipient,
-  initiateTransfer,
-} from "../../services/paystack.service.js";
+import Order from "../../models/Order.model.js";
+import { refundTransaction } from "../../services/paystack.service.js";
 
 export async function initiateOrderRefund(req, res, next) {
   try {
-    // ── 1. Validation ──────────────────────────────────────────────────────
+    // ── 1. Validation ──────────────────────────────────────────────────────────
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return next(new AppError(errors.array()[0].msg, 400));
     }
 
     const { orderId, amount, reason } = req.body;
+    const merchantId = req.user.userId;
 
-    // ── 2. TODO: Replace this block with real Order lookup ─────────────────
-    // Uncomment once your Order model has the customerBank field:
-    //
-    // const userId = req.user.userId;
-    // const order = await Order.findOne({ _id: orderId, merchantId: userId })
-    //   .select("status customerBank orderId amount")
-    //   .lean();
-    //
-    // if (!order) return next(new AppError("Order not found.", 404));
-    // if (order.status !== "Cancelled")
-    //   return next(new AppError("Refunds can only be issued for cancelled orders.", 400));
-    //
-    // const { customerBank } = order;
-    // if (!customerBank?.accountNumber || !customerBank?.bankCode || !customerBank?.accountName)
-    //   return next(new AppError("No customer bank details on this order.", 422));
+    // ── 2. Resolve & authorize the order ───────────────────────────────────────
+    let order;
+    try {
+      order = await Order.findOne({ _id: orderId, merchantId });
+    } catch (err) {
+      if (err?.name === "CastError") return next(new AppError("Order not found.", 404));
+      throw err;
+    }
+    if (!order) return next(new AppError("Order not found.", 404));
 
-    // ── Hardcoded test values (remove once Order lookup above is active) ───
-    const customerBank = {
-      accountName: "CHUKWUEMEKA ISIDOR ANYANWU",
-      accountNumber: "0788180507",
-      bankCode: "044",
-      bankName: "Access Bank",
+    // Only online (Paystack) payments can be refunded to source.
+    if (order.paymentStatus !== "paid" || !order.paystackReference) {
+      return next(
+        new AppError("This order has no online payment to refund.", 422),
+      );
+    }
+
+    // ── 3. Idempotency ─────────────────────────────────────────────────────────
+    // A refund already in flight or done → don't fire a second one.
+    if (order.refund?.status === "processed" || order.refund?.status === "pending") {
+      return res.status(200).json({
+        success: true,
+        message: "Refund already initiated for this order.",
+        data: {
+          refundReference: order.refund.reference,
+          amount: order.refund.amount ?? amount,
+          status: order.refund.status,
+        },
+      });
+    }
+
+    // ── 4. Issue the refund to the original payment source ─────────────────────
+    let refund;
+    try {
+      refund = await refundTransaction({
+        reference: order.paystackReference,
+        amountKobo: Math.round(amount * 100), // request body amount is in Naira
+        reason: reason ?? `Refund for order ${order.orderId ?? order._id}`,
+      });
+    } catch (err) {
+      // Record the failure so the UI can show it, then surface the error.
+      order.refund = {
+        ...(order.refund?.toObject?.() ?? order.refund ?? {}),
+        status: "failed",
+      };
+      await order.save().catch(() => {});
+      return next(new AppError(`Refund failed: ${err.message}`, 502));
+    }
+
+    // ── 5. Persist refund state ────────────────────────────────────────────────
+    // Paystack refund status: pending | processing | processed | failed.
+    const status = refund?.status === "processed" ? "processed" : "pending";
+    order.refund = {
+      status,
+      reference: refund?.id ? String(refund.id) : order.paystackReference,
+      amount,
+      refundedAt: new Date(),
     };
+    await order.save();
 
-    // ── 3. Create Paystack transfer recipient for the customer ─────────────
-    let recipientCode;
-    try {
-      recipientCode = await createTransferRecipient({
-        accountName: customerBank.accountName,
-        accountNumber: customerBank.accountNumber,
-        bankCode: customerBank.bankCode,
-      });
-    } catch (err) {
-      return next(
-        new AppError(`Could not create transfer recipient: ${err.message}`, 502),
-      );
-    }
-
-    // ── 4. Build idempotency reference and initiate transfer ───────────────
-    const reference = `refund-${orderId}-${crypto.randomBytes(6).toString("hex")}`;
-
-    let transferResult;
-    try {
-      transferResult = await initiateTransfer({
-        recipientCode,
-        amountNaira: amount,
-        reason: reason ?? `Refund for order ${orderId}`,
-        reference,
-      });
-    } catch (err) {
-      return next(
-        new AppError(`Transfer initiation failed: ${err.message}`, 502),
-      );
-    }
-
-    // ── 5. Respond ─────────────────────────────────────────────────────────
+    // ── 6. Respond ─────────────────────────────────────────────────────────────
     return res.status(200).json({
       success: true,
-      message: "Refund transfer initiated successfully.",
+      message: "Refund initiated successfully.",
       data: {
-        transferCode: transferResult.transferCode,
-        transferReference: reference,
+        refundReference: order.refund.reference,
         amount,
-        status: transferResult.status,
-        bankName: customerBank.bankName,
-        accountNumber: customerBank.accountNumber.replace(
-          /(\d{3})\d{4}(\d{3})/,
-          "$1****$2",
-        ),
+        status,
       },
     });
   } catch (err) {

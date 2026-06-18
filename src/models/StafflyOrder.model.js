@@ -16,11 +16,13 @@ const StafflyOrderSchema = new mongoose.Schema(
     businessId: String,
     customerNumber: String,
     product: String,
+    productId: String,    // underlying products._id, so the velte order can snapshot the photo
+    productImage: String, // Product.mainImageUrl at checkout time
     amount: Number,
     status: String, // pending | paid | failed
     customerName: String,
     customerEmail: String,
-    location: String,
+    location: String, // delivery address gathered during WhatsApp checkout
   },
   { collection: "staffly_orders", timestamps: true },
 );

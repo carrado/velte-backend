@@ -69,8 +69,15 @@ export async function handleOrderCharge(data) {
         items,
         amount,
         status: "Pending", // paid; fulfilment starts here
+        paymentStatus: "paid", // settled via Paystack
+        paymentMethod: "Credit / Debit Card",
         customerName: meta.customerName ?? null,
         customerPhone: meta.customerPhone ?? null,
+        customerEmail: meta.customerEmail ?? null,
+        // Same delivery address on both the customer record and the fulfilment
+        // block so either UI lookup (customer.address / fulfillment.address) resolves.
+        customerAddress: meta.deliveryAddress ?? null,
+        deliveryAddress: meta.deliveryAddress ?? null,
         notes: meta.notes ?? null,
         paystackReference: reference,
       });
@@ -129,6 +136,7 @@ function normalizeItems(meta, data) {
     return meta.items.map((i) => ({
       productId: i.productId || undefined,
       name: i.name || "Item",
+      image: i.image ?? null,
       quantity: i.quantity ?? 1,
       basePrice: i.basePrice ?? i.lineTotal ?? 0,
       chosenModifiers: Array.isArray(i.chosenModifiers) ? i.chosenModifiers : [],
