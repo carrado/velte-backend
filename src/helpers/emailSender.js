@@ -78,6 +78,45 @@ export const sendPasswordChangeEmail = async (to, name, otp) => {
 };
 
 
+/**
+ * Emails the customer the secret key for the public order-tracking page. Sent on
+ * order creation. The matching tracking link is delivered separately to the
+ * customer's WhatsApp (via staffly) — the customer needs both to view the order.
+ *
+ * Throws on failure; callers should fire-and-forget so a mail outage never blocks
+ * order creation or the Paystack webhook.
+ */
+export const sendOrderTrackingEmail = async (to, name, key, orderRef) => {
+  try {
+    const templatePath = path.join(
+      process.cwd(),
+      "src",
+      "emailTemplates",
+      "orderTracking.html"
+    );
+
+    let htmlContent = fs.readFileSync(templatePath, "utf8");
+
+    htmlContent = htmlContent
+      .replace(/{{name}}/g, name || "there")
+      .replace(/{{key}}/g, key)
+      .replace(/{{orderRef}}/g, orderRef || "");
+
+    await resend.emails.send({
+      to,
+      from: "no-reply@devcamp.com.ng",
+      subject: "Your order tracking key",
+      html: htmlContent,
+    });
+
+    console.log(`✅ Order tracking email sent to ${to}`);
+  } catch (error) {
+    console.error("❌ Error sending order tracking email:", error);
+    throw new Error("Failed to send order tracking email");
+  }
+};
+
+
 export const sendPasswordResetEmail = async (to, name, otp) => {
   try {
     // Load the updated HTML template

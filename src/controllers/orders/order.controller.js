@@ -9,6 +9,7 @@ import User from "../../models/Users.js";
 import Product from "../../models/Product.model.js";
 import AISetup from "../../models/AiSetup.model.js";
 import { dispatchToStaffly } from "../../utils/stafflyWebhook.js";
+import { sendOrderTrackingEmail } from "../../helpers/emailSender.js";
 import {
   serializeOrderRow,
   serializeOrderDetail,
@@ -48,7 +49,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const createOrder = async (req, res) => {
   try {
     const merchantId = req.user.userId;
-    const { items, customerName, customerPhone, customerBank, notes } = req.body;
+    const { items, customerName, customerPhone, customerEmail, customerBank, notes } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: "Order must have at least one item" });
@@ -62,9 +63,19 @@ export const createOrder = async (req, res) => {
       amount,
       customerName,
       customerPhone,
+      customerEmail,
       customerBank,
       notes,
     });
+
+    const orderRef = order.orderId ?? `#ORD-${order._id.toString().slice(-6).toUpperCase()}`;
+
+    // Email the customer their tracking key on order creation (fire-and-forget).
+    if (order.customerEmail) {
+      sendOrderTrackingEmail(order.customerEmail, order.customerName, order.trackingKey, orderRef).catch(
+        (e) => console.error("Create order tracking email failed:", e.message),
+      );
+    }
 
     AISetup.findOne({ userId: merchantId }).select('selectedNumberId').then((aiSetup) => {
       if (aiSetup?.selectedNumberId) {
