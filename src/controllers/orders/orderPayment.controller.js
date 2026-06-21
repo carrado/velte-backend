@@ -1,6 +1,8 @@
 import Order from "../../models/Order.model.js";
 import AISetup from "../../models/AiSetup.model.js";
 import { dispatchToStaffly } from "../../utils/stafflyWebhook.js";
+import { sendOrderTrackingEmail } from "../../helpers/emailSender.js";
+import { generateOrderReceipt } from "../../services/documents.service.js";
 
 /**
  * Handle a Paystack `charge.success` event for an ORDER payment (as opposed to a
@@ -92,17 +94,25 @@ export async function handleOrderCharge(data) {
       throw err;
     }
 
+    const orderRef = order.orderId ?? `#ORD-${order._id.toString().slice(-6).toUpperCase()}`;
+
+    // ── Email the customer their tracking key ───────────────────────────────────
+    // The secret key goes to email; the matching tracking link goes to WhatsApp
+    // (below). Fire-and-forget — a mail failure must not fail the webhook.
+    if (order.customerEmail) {
+      sendOrderTrackingEmail(order.customerEmail, order.customerName, order.trackingKey, orderRef).catch(
+        (e) => console.error("[OrderPayment] tracking email failed:", e.message),
+      );
+    }
+
     // ── Notify Staffly ────────────────────────────────────────────────────────
     const aiSetup = await AISetup.findOne({ userId: merchantId }).select("selectedNumberId");
     if (aiSetup?.selectedNumberId) {
-      // A link the customer can revisit to view/track this order: the pay page
-      // renders the order summary and its status (now "paid") when given the
-      // merchant's linkId plus the order ref. Built only when both are known.
+      // The key-gated public tracking page for this order. The customer opens this
+      // link (from WhatsApp) and enters the key we emailed them. The token alone
+      // reveals nothing without the key.
       const frontendBase = (process.env.FRONTEND_URL || "https://velte.ng").replace(/\/$/, "");
-      const trackingUrl =
-        meta.linkId && stafflyOrderId
-          ? `${frontendBase}/pay/${meta.linkId}?ref=${encodeURIComponent(stafflyOrderId)}`
-          : null;
+      const trackingUrl = `${frontendBase}/track/${order.trackingToken}`;
 
       dispatchToStaffly("order.paid", aiSetup.selectedNumberId, {
         stafflyOrderId,
@@ -120,9 +130,42 @@ export async function handleOrderCharge(data) {
       );
     }
 
+    // ── Generate the receipt PDF and send it ────────────────────────────────────
+    // Render the merchant's receipt template filled with this order's real
+    // products/amount/buyer, store it on the order, and dispatch `receipt.ready`
+    // so Staffly WhatsApps the PDF link. Fire-and-forget: PDF/CDN work is heavy
+    // and must never delay or fail the Paystack webhook ack.
+    generateAndSendReceipt(order, aiSetup?.selectedNumberId).catch((e) =>
+      console.error("[OrderPayment] receipt generation failed:", e.message),
+    );
+
     console.log(`[OrderPayment] order ${order._id} created from charge ${reference}`);
   } catch (err) {
     console.error("[OrderPayment] failed to handle order charge:", err.message);
+  }
+}
+
+/**
+ * Render the receipt PDF for a paid order, persist its URL, and notify Staffly so
+ * the customer gets the receipt on WhatsApp. Best-effort: any failure is logged
+ * and swallowed (the order + payment are already recorded).
+ */
+async function generateAndSendReceipt(order, phoneNumberId) {
+  const result = await generateOrderReceipt(order);
+  if (!result) return; // Cloudinary not configured / nothing rendered
+  const { url: receiptUrl, receiptNumber } = result;
+
+  await Order.updateOne({ _id: order._id }, { $set: { receiptUrl, receiptNumber } });
+
+  if (phoneNumberId) {
+    dispatchToStaffly("receipt.ready", phoneNumberId, {
+      orderId: order.orderId ?? order._id.toString(),
+      receiptNumber,
+      customerPhone: order.customerPhone,
+      amount: order.amount,
+      paidAt: new Date().toISOString(),
+      receiptUrl,
+    });
   }
 }
 
