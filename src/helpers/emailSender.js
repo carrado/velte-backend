@@ -117,6 +117,66 @@ export const sendOrderTrackingEmail = async (to, name, key, orderRef) => {
 };
 
 
+/**
+ * Emails the customer their receipt after a successful payment. The rendered
+ * receipt PDF is attached so the customer keeps a copy; a "View receipt" link to
+ * the hosted PDF is also included as a fallback.
+ *
+ * Throws on failure; callers should fire-and-forget so a mail outage never blocks
+ * the Paystack webhook (the order + payment are already recorded).
+ */
+export const sendReceiptEmail = async (
+  to,
+  name,
+  { orderRef, receiptNumber, amount, receiptUrl, pdfBuffer } = {},
+) => {
+  try {
+    const templatePath = path.join(
+      process.cwd(),
+      "src",
+      "emailTemplates",
+      "orderReceipt.html"
+    );
+
+    let htmlContent = fs.readFileSync(templatePath, "utf8");
+
+    const amountText =
+      typeof amount === "number" ? `₦${amount.toLocaleString()}` : amount || "";
+
+    htmlContent = htmlContent
+      .replace(/{{name}}/g, name || "there")
+      .replace(/{{orderRef}}/g, orderRef || "")
+      .replace(/{{receiptNumber}}/g, receiptNumber || "")
+      .replace(/{{amount}}/g, amountText)
+      .replace(/{{receiptUrl}}/g, receiptUrl || "#");
+
+    const msg = {
+      to,
+      from: "no-reply@devcamp.com.ng",
+      subject: `Your receipt${orderRef ? ` for order ${orderRef}` : ""}`,
+      html: htmlContent,
+    };
+
+    // Attach the PDF when we have the rendered buffer; Resend accepts a Buffer
+    // (or base64) as the attachment content.
+    if (pdfBuffer) {
+      msg.attachments = [
+        {
+          filename: `receipt-${receiptNumber || orderRef || "velte"}.pdf`,
+          content: pdfBuffer,
+        },
+      ];
+    }
+
+    await resend.emails.send(msg);
+    console.log(`✅ Receipt email sent to ${to}`);
+  } catch (error) {
+    console.error("❌ Error sending receipt email:", error);
+    throw new Error("Failed to send receipt email");
+  }
+};
+
+
 export const sendPasswordResetEmail = async (to, name, otp) => {
   try {
     // Load the updated HTML template

@@ -116,8 +116,8 @@ export async function generateTemplates(
 /**
  * Render the REAL receipt PDF for a paid order — the merchant's receipt template
  * filled with the actual products, amount, and buyer details — upload it, and
- * return `{ url, receiptNumber }`. Caller persists both on the order and
- * dispatches them to Staffly.
+ * return `{ url, receiptNumber, pdf }`. Caller persists url/number on the order,
+ * dispatches them to Staffly, and emails the `pdf` buffer to the customer.
  *
  * The receipt number is `{BUSINESS-ABBR}-{seq}` (e.g. ASL-0001), where `seq`
  * increments per store. The barcode renders the same number. To stay idempotent
@@ -179,5 +179,5 @@ export async function generateOrderReceipt(order) {
 
   const pdf = await renderPdfFromHtml(html);
   const url = await uploadPdf(pdf, { folder: "velte/receipts", publicId: `receipt-${order._id}` });
-  return { url, receiptNumber };
+  return { url, receiptNumber, pdf };
 }

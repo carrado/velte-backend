@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Your Receipt</title>
+    <style>
+      body {
+        font-family: "Segoe UI", Arial, sans-serif;
+        background-color: #f8fafc;
+        margin: 0;
+        padding: 20px;
+        color: #1e293b;
+      }
+
+      .container {
+        max-width: 620px;
+        margin: 0 auto;
+        background-color: #ffffff;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+      }
+
+      .header {
+        background-color: rgba(247, 107, 16, 1);
+        padding: 28px 20px;
+        text-align: center;
+      }
+
+      .header img {
+        width: 100px;
+      }
+
+      .body {
+        padding: 40px 36px;
+        background-color: #ffffff;
+      }
+
+      .body h2 {
+        font-size: 24px;
+        font-weight: 600;
+        color: #0f172a;
+        margin-bottom: 18px;
+      }
+
+      .body p {
+        font-size: 15px;
+        line-height: 1.65;
+        color: #475569;
+        margin-bottom: 16px;
+      }
+
+      .summary {
+        background-color: #f1f5f9;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 20px 24px;
+        margin: 28px 0;
+      }
+
+      .summary-row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 15px;
+        padding: 6px 0;
+        color: #334155;
+      }
+
+      .summary-row .label {
+        color: #64748b;
+      }
+
+      .summary-row .value {
+        font-weight: 600;
+        color: #0f172a;
+      }
+
+      .total {
+        font-size: 18px;
+        font-weight: 700;
+        color: #0f172a;
+        border-top: 1px solid #e2e8f0;
+        padding-top: 12px;
+        margin-top: 8px;
+      }
+
+      .button-wrapper {
+        text-align: center;
+        margin: 32px 0;
+      }
+
+      .button {
+        display: inline-block;
+        background-color: rgba(247, 107, 16, 1);
+        color: #ffffff !important;
+        text-decoration: none;
+        font-size: 15px;
+        font-weight: 600;
+        padding: 14px 32px;
+        border-radius: 10px;
+      }
+
+      .divider {
+        height: 1px;
+        background-color: #e5e7eb;
+        margin: 30px 0;
+      }
+
+      .footer {
+        background-color: #f1f5f9;
+        padding: 20px;
+        text-align: center;
+        font-size: 12px;
+        color: #64748b;
+        line-height: 1.5;
+      }
+
+      @media (max-width: 600px) {
+        .body {
+          padding: 28px 22px;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <!-- Header -->
+      <div class="header">
+        <img
+          src="https://res.cloudinary.com/dbhpul04t/image/upload/v1766001844/velte_ijulb7ijulb7ijul-removebg-preview_h3d6xw.png"
+          alt="Velte"
+        />
+      </div>
+
+      <!-- Body -->
+      <div class="body">
+        <h2>Payment received 🎉</h2>
+
+        <p>Hello <strong>{{name}}</strong>,</p>
+
+        <p>
+          Thank you for your payment. Your receipt for order
+          <strong>{{orderRef}}</strong> is attached to this email as a PDF.
+        </p>
+
+        <div class="summary">
+          <div class="summary-row">
+            <span class="label">Receipt no.</span>
+            <span class="value">{{receiptNumber}}</span>
+          </div>
+          <div class="summary-row total">
+            <span class="label">Amount paid</span>
+            <span class="value">{{amount}}</span>
+          </div>
+        </div>
+
+        <div class="button-wrapper">
+          <a href="{{receiptUrl}}" class="button">View receipt</a>
+        </div>
+
+        <div class="divider"></div>
+
+        <p>
+          Keep this receipt for your records. If you didn't make this payment,
+          please contact the store right away.
+        </p>
+      </div>
+
+      <!-- Footer -->
+      <div class="footer">
+        © 2025 Velte Technologies Ltd, Nigeria<br />
+        This email was sent automatically. Please do not reply.
+      </div>
+    </div>
+  </body>
+</html>

@@ -24,13 +24,42 @@ async function getBrowser() {
 
 /**
  * Render an HTML string to a PDF buffer (A4). `printBackground` keeps the brand
- * colours; `networkidle0` waits for the logo image to load.
+ * colours.
+ *
+ * Image loading is best-effort and time-boxed: we DON'T wait on `networkidle0`,
+ * because a single slow or unreachable remote image (e.g. a merchant's logo on a
+ * sluggish host) would otherwise hang the render and throw after the timeout —
+ * silently losing the document. Instead we load the markup, then give images a
+ * short grace period to settle, and render regardless. A broken logo yields a
+ * receipt without the logo, never no receipt at all.
  */
 export async function renderPdfFromHtml(html) {
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
-    await page.setContent(html, { waitUntil: "networkidle0", timeout: 30000 });
+    await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 30000 });
+
+    // Bounded wait for images: resolves as soon as they all load/error, or after
+    // 4s — whichever comes first. Never throws.
+    await page
+      .evaluate(
+        () =>
+          Promise.race([
+            Promise.all(
+              Array.from(document.images).map((img) =>
+                img.complete
+                  ? Promise.resolve()
+                  : new Promise((res) => {
+                      img.onload = res;
+                      img.onerror = res;
+                    }),
+              ),
+            ),
+            new Promise((res) => setTimeout(res, 4000)),
+          ]),
+      )
+      .catch(() => {});
+
     return await page.pdf({
       format: "A4",
       printBackground: true,

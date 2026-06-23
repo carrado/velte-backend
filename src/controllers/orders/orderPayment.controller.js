@@ -1,7 +1,9 @@
 import Order from "../../models/Order.model.js";
 import AISetup from "../../models/AiSetup.model.js";
+import Customer from "../../models/Customer.model.js";
+import Transaction from "../../models/Transactions.model.js";
 import { dispatchToStaffly } from "../../utils/stafflyWebhook.js";
-import { sendOrderTrackingEmail } from "../../helpers/emailSender.js";
+import { sendOrderTrackingEmail, sendReceiptEmail } from "../../helpers/emailSender.js";
 import { generateOrderReceipt } from "../../services/documents.service.js";
 
 /**
@@ -96,6 +98,12 @@ export async function handleOrderCharge(data) {
 
     const orderRef = order.orderId ?? `#ORD-${order._id.toString().slice(-6).toUpperCase()}`;
 
+    // ── Record the sale: upsert the customer + write a transaction ──────────────
+    // The merchant's books need both. Awaited (these are fast local writes) but
+    // each side is independently guarded so a ledger failure never fails the
+    // webhook or blocks the customer's notifications below.
+    await recordSale(order);
+
     // ── Email the customer their tracking key ───────────────────────────────────
     // The secret key goes to email; the matching tracking link goes to WhatsApp
     // (below). Fire-and-forget — a mail failure must not fail the webhook.
@@ -136,7 +144,9 @@ export async function handleOrderCharge(data) {
     // so Staffly WhatsApps the PDF link. Fire-and-forget: PDF/CDN work is heavy
     // and must never delay or fail the Paystack webhook ack.
     generateAndSendReceipt(order, aiSetup?.selectedNumberId).catch((e) =>
-      console.error("[OrderPayment] receipt generation failed:", e.message),
+      // Full error (not just .message) — receipt failures are usually a missing
+      // Chromium/Cloudinary in the deploy env, and we need the stack to tell which.
+      console.error(`[OrderPayment] receipt generation failed for order ${order._id}:`, e),
     );
 
     console.log(`[OrderPayment] order ${order._id} created from charge ${reference}`);
@@ -146,18 +156,137 @@ export async function handleOrderCharge(data) {
 }
 
 /**
+ * Record a paid order on the merchant's books: upsert the customer (create on
+ * first purchase, otherwise increment their order count + spend) and write a
+ * completed transaction. Each side is independently guarded so a failure in one
+ * never blocks the other or the webhook. Idempotent on webhook retries — the
+ * upstream order-creation guard means this only runs once per real payment, and
+ * the transaction's unique `reference` rejects any duplicate that slips through.
+ */
+async function recordSale(order) {
+  const amount = Number(order.amount) || 0;
+  const phone = order.customerPhone || null;
+  const email = order.customerEmail || null;
+  const name = order.customerName || phone || email || "Customer";
+
+  // ── Upsert the customer (per business) ──────────────────────────────────────
+  // Key by phone when we have it (the stable WhatsApp identity), else by email.
+  // A customer with neither is anonymous — skip (nothing to dedupe on).
+  let customer = null;
+  const matchKey = phone
+    ? { userId: order.merchantId, phone }
+    : email
+      ? { userId: order.merchantId, email }
+      : null;
+
+  if (matchKey) {
+    try {
+      customer = await Customer.findOneAndUpdate(
+        matchKey,
+        {
+          $inc: { orders: 1, totalSpend: amount },
+          $set: {
+            name,
+            lastOrderAt: new Date(),
+            ...(phone ? { phone } : {}),
+            ...(email ? { email } : {}),
+          },
+          $setOnInsert: { userId: order.merchantId, status: "Active" },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
+      console.log(
+        `[OrderPayment] customer ${customer._id} now at ${customer.orders} order(s), ` +
+          `₦${customer.totalSpend.toLocaleString()} total (merchant ${order.merchantId})`,
+      );
+    } catch (err) {
+      console.error("[OrderPayment] customer upsert failed:", err.message);
+    }
+  } else {
+    console.warn(
+      `[OrderPayment] order ${order._id} has no phone or email — customer not recorded`,
+    );
+  }
+
+  // ── Write the transaction ───────────────────────────────────────────────────
+  try {
+    await Transaction.create({
+      userId: order.merchantId,
+      customerId: customer?._id?.toString() || phone || email || "unknown",
+      name,
+      date: new Date().toLocaleDateString("en-GB").replace(/\//g, "-"),
+      total: amount,
+      currency: "NGN",
+      method: "CC", // Paystack card/bank/ussd — "CC" is the closest enum value
+      status: "Complete",
+      reference: order.paystackReference,
+      metadata: {
+        orderId: order.orderId ?? order._id.toString(),
+        source: "staffly_order",
+      },
+    });
+    console.log(
+      `[OrderPayment] transaction recorded for order ${order._id} (₦${amount.toLocaleString()})`,
+    );
+  } catch (err) {
+    if (err?.code === 11000) {
+      console.log(
+        `[OrderPayment] transaction for ${order.paystackReference} already recorded — skipping`,
+      );
+    } else {
+      console.error("[OrderPayment] transaction record failed:", err.message);
+    }
+  }
+}
+
+/**
  * Render the receipt PDF for a paid order, persist its URL, and notify Staffly so
  * the customer gets the receipt on WhatsApp. Best-effort: any failure is logged
  * and swallowed (the order + payment are already recorded).
  */
 async function generateAndSendReceipt(order, phoneNumberId) {
+  console.log(`[OrderPayment] generating receipt for order ${order._id}…`);
   const result = await generateOrderReceipt(order);
-  if (!result) return; // Cloudinary not configured / nothing rendered
-  const { url: receiptUrl, receiptNumber } = result;
+  if (!result) {
+    // generateOrderReceipt only returns null when Cloudinary isn't configured —
+    // surface it loudly so a missing CLOUDINARY_URL in this environment is obvious.
+    console.warn(
+      `[OrderPayment] receipt NOT generated for order ${order._id} (Cloudinary not configured) — customer will not receive a receipt`,
+    );
+    return;
+  }
+  const { url: receiptUrl, receiptNumber, pdf } = result;
+  console.log(
+    `[OrderPayment] receipt ${receiptNumber} generated for order ${order._id} (${receiptUrl})`,
+  );
 
   await Order.updateOne({ _id: order._id }, { $set: { receiptUrl, receiptNumber } });
 
+  const orderRef =
+    order.orderId ?? `#ORD-${order._id.toString().slice(-6).toUpperCase()}`;
+
+  // ── Email the customer their receipt (PDF attached) ─────────────────────────
+  // Fire-and-forget — a mail failure must not fail the webhook or block the
+  // WhatsApp dispatch below.
+  if (order.customerEmail) {
+    sendReceiptEmail(order.customerEmail, order.customerName, {
+      orderRef,
+      receiptNumber,
+      amount: order.amount,
+      receiptUrl,
+      pdfBuffer: pdf,
+    }).catch((e) => console.error("[OrderPayment] receipt email failed:", e.message));
+  } else {
+    console.warn(
+      `[OrderPayment] order ${order._id} has no customerEmail — receipt not emailed`,
+    );
+  }
+
+  // ── WhatsApp the receipt link via Staffly ───────────────────────────────────
   if (phoneNumberId) {
+    console.log(
+      `[OrderPayment] dispatching receipt.ready to Staffly for order ${order._id} (phoneNumberId ${phoneNumberId})`,
+    );
     dispatchToStaffly("receipt.ready", phoneNumberId, {
       orderId: order.orderId ?? order._id.toString(),
       receiptNumber,
@@ -166,6 +295,10 @@ async function generateAndSendReceipt(order, phoneNumberId) {
       paidAt: new Date().toISOString(),
       receiptUrl,
     });
+  } else {
+    console.warn(
+      `[OrderPayment] order ${order._id} receipt generated but no phoneNumberId — not sent to WhatsApp`,
+    );
   }
 }
 
