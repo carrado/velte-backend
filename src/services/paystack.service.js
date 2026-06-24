@@ -42,6 +42,7 @@ export async function initializeTransaction({
   metadata = {},
   callbackUrl,
   subaccount,            // Paystack subaccount CODE (ACCT_...) — routes funds to a merchant
+  transactionCharge,     // Velte commission in NAIRA — flat amount routed to the MAIN account
   channels = ["card"],   // default preserves subscription behaviour
 }) {
   const payload = {
@@ -55,12 +56,20 @@ export async function initializeTransaction({
   };
 
   // Payment-link charges settle into the merchant's subaccount. The subaccount
-  // was created with percentage_charge: 0 (platform takes nothing), and we make
-  // the subaccount bear the Paystack fee so the platform account isn't charged
-  // for a payment it doesn't keep. Adjust `bearer` if the fee model changes.
+  // was created with percentage_charge: 0 (platform takes nothing by default).
+  // We bill the buyer a grossed-up total (product + commission + Paystack fee),
+  // then:
+  //   • transaction_charge routes Velte's flat commission to the MAIN account,
+  //   • bearer: "subaccount" puts the Paystack fee on the merchant's share —
+  //     but because the total was grossed up, the merchant still nets the full
+  //     product price. See utils/commission.js + docs/commission-fees.md.
   if (subaccount) {
     payload.subaccount = subaccount;
     payload.bearer = "subaccount";
+    if (transactionCharge != null && transactionCharge > 0) {
+      // transaction_charge is in kobo and overrides the subaccount's split.
+      payload.transaction_charge = Math.round(transactionCharge * 100);
+    }
   }
 
   return paystackFetch("/transaction/initialize", {

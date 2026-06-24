@@ -129,7 +129,10 @@ export async function handleOrderCharge(data) {
         product: items[0]?.name ?? meta.product ?? null,
         customerName: order.customerName,
         customerPhone: order.customerPhone,
-        amount: Math.round((data.amount ?? 0) / 100), // Paystack kobo → Naira
+        // The order's product value (what the merchant sells), not the grossed-up
+        // amount the buyer was charged. `data.amount` now includes Velte's
+        // commission + Paystack fee, so prefer the product price from metadata.
+        amount: meta.productAmount ?? order.amount ?? Math.round((data.amount ?? 0) / 100),
         trackingUrl,
       });
     } else {
@@ -222,6 +225,8 @@ async function recordSale(order) {
       reference: order.paystackReference,
       metadata: {
         orderId: order.orderId ?? order._id.toString(),
+        // Order's DB id — the "View details" link resolves the order by _id.
+        orderObjectId: order._id.toString(),
         source: "staffly_order",
       },
     });
@@ -320,7 +325,9 @@ function normalizeItems(meta, data) {
     }));
   }
 
-  const naira = Math.round((data?.amount ?? 0) / 100);
+  // Prefer the product price from metadata; `data.amount` now includes Velte's
+  // commission + Paystack fee, which must not leak into the order's line items.
+  const naira = meta.productAmount ?? Math.round((data?.amount ?? 0) / 100);
   return [
     {
       name: meta.product || meta.productName || "Order",
