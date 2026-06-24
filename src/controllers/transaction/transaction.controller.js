@@ -1,8 +1,17 @@
+import mongoose from "mongoose";
 import Transaction from "../../models/Transactions.model.js";
 import PaymentLink from "../../models/Paymentlink.model.js";
 import { AppError } from "../../middleware/errorHandler.js";
 import { setSubaccountActive } from "../../services/paystack.service.js";
 import crypto from "crypto";
+
+/** Signed percentage-change string, e.g. "12.5%", "-8%", "0%". */
+function pctChange(current, previous) {
+  if (!previous) return current > 0 ? "100%" : "0%";
+  const v = ((current - previous) / previous) * 100;
+  const rounded = Math.round(v * 10) / 10;
+  return `${rounded < 0 ? "-" : ""}${Math.abs(rounded)}%`;
+}
 
 function formatPaymentLink(link) {
   return {
@@ -252,61 +261,71 @@ export const getTransactions = async (req, res, next) => {
       ).lean(),
     ]);
 
-    // Stats (always scoped to the user, not filtered)
-    const [statsAgg] = await Transaction.aggregate([
-      { $match: { userId: userId } },
+    // Stats — headline totals are all-time; the change % is this 7 days vs the
+    // previous 7 days. Cast userId to ObjectId: aggregate() does NOT auto-cast,
+    // so matching the raw JWT string would silently match nothing.
+    const uid = new mongoose.Types.ObjectId(userId);
+    const now = new Date();
+    const last7 = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const prev7 = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+
+    const revenueExpr = {
+      $sum: { $cond: [{ $eq: ["$status", "Complete"] }, "$total", 0] },
+    };
+    const countExpr = (s) => ({ $sum: { $cond: [{ $eq: ["$status", s] }, 1, 0] } });
+    const groupSpec = {
+      _id: null,
+      revenue: revenueExpr,
+      completed: countExpr("Complete"),
+      pending: countExpr("Pending"),
+      failed: countExpr("Canceled"),
+    };
+
+    const [agg] = await Transaction.aggregate([
+      { $match: { userId: uid } },
       {
-        $group: {
-          _id: null,
-          totalRevenue: {
-            $sum: {
-              $cond: [{ $eq: ["$status", "Complete"] }, "$total", 0],
-            },
-          },
-          completedTransactions: {
-            $sum: { $cond: [{ $eq: ["$status", "Complete"] }, 1, 0] },
-          },
-          pendingTransactions: {
-            $sum: { $cond: [{ $eq: ["$status", "Pending"] }, 1, 0] },
-          },
-          failedTransactions: {
-            $sum: { $cond: [{ $eq: ["$status", "Canceled"] }, 1, 0] },
-          },
+        $facet: {
+          allTime: [{ $group: groupSpec }],
+          current: [
+            { $match: { createdAt: { $gte: last7 } } },
+            { $group: groupSpec },
+          ],
+          previous: [
+            { $match: { createdAt: { $gte: prev7, $lt: last7 } } },
+            { $group: groupSpec },
+          ],
         },
       },
     ]);
 
-    const stats = statsAgg
-      ? {
-          totalRevenue: `$${Number(statsAgg.totalRevenue).toLocaleString()}`,
-          completedTransactions: statsAgg.completedTransactions,
-          pendingTransactions: statsAgg.pendingTransactions,
-          failedTransactions: statsAgg.failedTransactions,
-          revenueChange: "14.4%", // TODO: compute from previous period
-          completedChange: "20%",
-          pendingChange: "85%",
-          failedChange: "15%",
-        }
-      : {
-          totalRevenue: "$0",
-          completedTransactions: 0,
-          pendingTransactions: 0,
-          failedTransactions: 0,
-          revenueChange: "0%",
-          completedChange: "0%",
-          pendingChange: "0%",
-          failedChange: "0%",
-        };
+    const zero = { revenue: 0, completed: 0, pending: 0, failed: 0 };
+    const allTime = agg?.allTime?.[0] ?? zero;
+    const cur = agg?.current?.[0] ?? zero;
+    const prev = agg?.previous?.[0] ?? zero;
 
-    // Transform lean docs to match frontend shape
+    const stats = {
+      totalRevenue: `₦${Number(allTime.revenue).toLocaleString()}`,
+      completedTransactions: allTime.completed,
+      pendingTransactions: allTime.pending,
+      failedTransactions: allTime.failed,
+      revenueChange: pctChange(cur.revenue, prev.revenue),
+      completedChange: pctChange(cur.completed, prev.completed),
+      pendingChange: pctChange(cur.pending, prev.pending),
+      failedChange: pctChange(cur.failed, prev.failed),
+    };
+
+    // Transform lean docs to match frontend shape. `orderId` is the originating
+    // order's DB id (for the "View details" link); prefer the explicit
+    // orderObjectId, falling back to the legacy metadata.orderId.
     const formatted = transactions.map((t) => ({
       id: t._id.toString(),
       customerId: t.customerId,
       name: t.name,
       date: t.date,
-      total: `$${Number(t.total).toLocaleString()}`,
+      total: `₦${Number(t.total).toLocaleString()}`,
       method: t.method,
       status: t.status,
+      orderId: t.metadata?.orderObjectId ?? t.metadata?.orderId ?? null,
     }));
 
     res.json({

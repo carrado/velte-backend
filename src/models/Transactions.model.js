@@ -55,8 +55,8 @@ const transactionSchema = new mongoose.Schema(
     toJSON: {
       transform(doc, ret) {
         ret.id = ret._id.toString();
-        // Format total as currency string for frontend
-        ret.total = `$${Number(ret.total).toLocaleString()}`;
+        // Format total as currency string for frontend (NGN)
+        ret.total = `₦${Number(ret.total).toLocaleString()}`;
         delete ret._id;
         delete ret.__v;
         return ret;

@@ -2,6 +2,7 @@ import crypto from "crypto";
 import PaymentLink from "../../models/Paymentlink.model.js";
 import StafflyOrder from "../../models/StafflyOrder.model.js";
 import { initializeTransaction } from "../../services/paystack.service.js";
+import { computeCharge } from "../../utils/commission.js";
 import { AppError } from "../../middleware/errorHandler.js";
 
 /**
@@ -56,9 +57,16 @@ export async function getPayLink(req, res, next) {
       }
     }
 
-    // The amount to display/charge: the order's amount for a Staffly checkout,
+    // The product price to display: the order's amount for a Staffly checkout,
     // otherwise the link's fixed amount (null = open / payer enters an amount).
     const amount = order?.amount ?? link.amount ?? null;
+
+    // When the price is known, return the buyer-facing breakdown. The buyer pays
+    // `total` (product + Velte commission + Paystack fee); `serviceFee` is the
+    // bundled "Service fee" line (commission + fee). For open-amount links the
+    // price is unknown until the payer types it, so these are null and the
+    // frontend previews them client-side (re-derived here at charge time).
+    const breakdown = amount != null && amount > 0 ? computeCharge(amount) : null;
 
     res.json({
       success: true,
@@ -71,6 +79,8 @@ export async function getPayLink(req, res, next) {
         amountFixed: order != null || link.amount != null,
         currency: "NGN",
         order,
+        serviceFee: breakdown ? breakdown.serviceFee : null,
+        total: breakdown ? breakdown.total : null,
       },
     });
   } catch (err) {
@@ -102,13 +112,18 @@ export async function initializePayLink(req, res, next) {
       }
     }
 
-    // Authoritative amount: the Staffly order's amount when present (customer
-    // cannot tamper), else the link's fixed amount, else what the payer entered
-    // on an open-amount link.
+    // Authoritative product price: the Staffly order's amount when present
+    // (customer cannot tamper), else the link's fixed amount, else what the payer
+    // entered on an open-amount link. The seller receives this in full.
     const amount = order?.amount ?? link.amount ?? Number(bodyAmount);
     if (!amount || amount <= 0) {
       throw new AppError("A valid amount is required", 400);
     }
+
+    // Gross up: the buyer is charged `total` (product + Velte commission +
+    // Paystack fee). Computed server-side so the fee can never be tampered with.
+    // See utils/commission.js + docs/commission-fees.md.
+    const { commission, total, serviceFee } = computeCharge(amount);
 
     // Paystack requires an email. Prefer the order's, then a provided one, then
     // a synthetic address from the WhatsApp number (matches Staffly's invoice
@@ -129,6 +144,12 @@ export async function initializePayLink(req, res, next) {
       type: "order",
       merchantId: link.userId.toString(),
       linkId,
+      // Commission breakdown — the merchant keeps `productAmount`; Velte keeps
+      // `commission`; the buyer pays `total`. Carried for reconciliation/receipts.
+      productAmount: amount,
+      commission,
+      serviceFee,
+      total,
       ...(order
         ? {
             stafflyOrderId: order.orderId,
@@ -160,11 +181,12 @@ export async function initializePayLink(req, res, next) {
 
     const transaction = await initializeTransaction({
       email: payerEmail,
-      amount,
+      amount: total, // buyer pays the grossed-up total (product + commission + fee)
       reference,
       metadata,
       callbackUrl,
       subaccount: link.subaccountCode,
+      transactionCharge: commission, // flat commission routed to Velte's main account
       channels: ["card", "bank", "ussd", "bank_transfer"],
     });
 
