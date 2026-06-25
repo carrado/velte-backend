@@ -170,6 +170,17 @@ export async function initializePayLink(req, res, next) {
       type: "order",
       merchantId: link.userId.toString(),
       linkId,
+      // Show the vendor's business name to the buyer on the Paystack checkout and
+      // receipt, and on the dashboard transaction. NOTE: this is an informational
+      // field identifying the seller — it does NOT change the merchant name/logo
+      // header on the checkout (that stays the Velte integration that owns the key).
+      custom_fields: [
+        {
+          display_name: "Paying for",
+          variable_name: "vendor_business_name",
+          value: link.accountName || "Vendor",
+        },
+      ],
       // Commission breakdown — the merchant keeps `productAmount`; Velte keeps
       // `commission`; the buyer pays `total`. Carried for reconciliation/receipts.
       productAmount: amount,
