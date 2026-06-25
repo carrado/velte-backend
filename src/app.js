@@ -28,6 +28,13 @@ import categoriesRoutes from "./routes/categories.routes.js";
 
 const app = express();
 
+// On Render (and similar PaaS) the app runs behind exactly ONE reverse proxy that
+// sets X-Forwarded-For. Trust a single hop so req.ip is the real client IP — which
+// express-rate-limit needs to key on (it errors when X-Forwarded-For is present but
+// trust proxy is the default `false`). Deliberately `1`, not `true`: trusting every
+// hop would let a client spoof X-Forwarded-For and slip the rate limiter.
+app.set("trust proxy", 1);
+
 app.use(helmet());
 app.use(hpp());
 
