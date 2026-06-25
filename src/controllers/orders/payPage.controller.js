@@ -44,13 +44,15 @@ export async function getPayLink(req, res, next) {
     let order = null;
     if (ref) {
       const so = await StafflyOrder.findOne({ orderId: ref })
-        .select("orderId product amount customerName status")
+        .select("orderId product amount quantity customerName status")
         .lean();
       if (so) {
         order = {
           ref: so.orderId,
           product: so.product,
+          // `amount` is the grand total (unit price × quantity).
           amount: so.amount,
+          quantity: so.quantity ?? 1,
           customerName: so.customerName ?? null,
           paid: so.status === "paid",
         };
@@ -164,8 +166,12 @@ export async function initializePayLink(req, res, next) {
                 productId: order.productId ?? undefined,
                 name: order.product || "Order",
                 image: order.productImage ?? null,
-                quantity: 1,
-                basePrice: order.amount,
+                // `order.amount` is the grand total; split it back into the
+                // per-unit price so the fulfilment order shows "×N @ unit".
+                quantity: order.quantity >= 1 ? order.quantity : 1,
+                basePrice: Math.round(
+                  order.amount / (order.quantity >= 1 ? order.quantity : 1),
+                ),
                 lineTotal: order.amount,
               },
             ],
