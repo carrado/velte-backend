@@ -39,20 +39,34 @@ export async function getPayLink(req, res, next) {
     const link = await findActiveLink(linkId);
 
     // Best-effort: count an opened link without blocking the response.
-    PaymentLink.updateOne({ _id: link._id }, { $inc: { clickCount: 1 } }).catch(() => {});
+    PaymentLink.updateOne({ _id: link._id }, { $inc: { clickCount: 1 } }).catch(
+      () => {},
+    );
 
     let order = null;
     if (ref) {
       const so = await StafflyOrder.findOne({ orderId: ref })
-        .select("orderId product amount quantity customerName status")
+        .select("orderId product amount quantity items customerName status")
         .lean();
       if (so) {
         order = {
           ref: so.orderId,
           product: so.product,
-          // `amount` is the grand total (unit price × quantity).
+          // `amount` is the grand total (Σ line totals).
           amount: so.amount,
           quantity: so.quantity ?? 1,
+          // Per-variant breakdown for the pay page to show each line. Empty for
+          // older orders placed before multi-variant support — the page then
+          // falls back to the single product label + quantity.
+          items: Array.isArray(so.items)
+            ? so.items.map((it) => ({
+                name: it.name ?? null,
+                variant: it.variant ?? null,
+                quantity: it.quantity ?? 1,
+                unitPrice: it.unitPrice ?? null,
+                lineTotal: it.lineTotal ?? null,
+              }))
+            : [],
           customerName: so.customerName ?? null,
           paid: so.status === "paid",
         };
@@ -68,7 +82,8 @@ export async function getPayLink(req, res, next) {
     // bundled "Service fee" line (commission + fee). For open-amount links the
     // price is unknown until the payer types it, so these are null and the
     // frontend previews them client-side (re-derived here at charge time).
-    const breakdown = amount != null && amount > 0 ? computeCharge(amount) : null;
+    const breakdown =
+      amount != null && amount > 0 ? computeCharge(amount) : null;
 
     res.json({
       success: true,
@@ -97,12 +112,21 @@ export async function getPayLink(req, res, next) {
 export async function initializePayLink(req, res, next) {
   try {
     const { linkId } = req.params;
-    const { ref, email, amount: bodyAmount, customerName, customerPhone } = req.body;
+    const {
+      ref,
+      email,
+      amount: bodyAmount,
+      customerName,
+      customerPhone,
+    } = req.body;
 
     const link = await findActiveLink(linkId);
 
     if (!link.subaccountCode) {
-      throw new AppError("This payment link is not configured to accept payments", 422);
+      throw new AppError(
+        "This payment link is not configured to accept payments",
+        422,
+      );
     }
 
     let order = null;
@@ -161,20 +185,45 @@ export async function initializePayLink(req, res, next) {
             // Delivery address captured during the WhatsApp checkout — carried
             // through so the velte order can display it.
             deliveryAddress: order.location ?? null,
-            items: [
-              {
-                productId: order.productId ?? undefined,
-                name: order.product || "Order",
-                image: order.productImage ?? null,
-                // `order.amount` is the grand total; split it back into the
-                // per-unit price so the fulfilment order shows "×N @ unit".
-                quantity: order.quantity >= 1 ? order.quantity : 1,
-                basePrice: Math.round(
-                  order.amount / (order.quantity >= 1 ? order.quantity : 1),
-                ),
-                lineTotal: order.amount,
-              },
-            ],
+            // Per-variant breakdown for the fulfilment order. Prefer the lines
+            // staffly stored (one per variant, e.g. 3 red + 1 black); fall back to
+            // a single synthesised line for older orders without `items`, splitting
+            // the grand total back into a per-unit price so it still shows "×N @ unit".
+            items:
+              Array.isArray(order.items) && order.items.length
+                ? order.items.map((it) => ({
+                    productId: order.productId ?? undefined,
+                    name: it.name || order.product || "Order",
+                    image: order.productImage ?? null,
+                    variant: it.variant ?? null,
+                    quantity: it.quantity >= 1 ? it.quantity : 1,
+                    basePrice:
+                      it.unitPrice ??
+                      Math.round(
+                        (it.lineTotal ?? 0) /
+                          (it.quantity >= 1 ? it.quantity : 1),
+                      ),
+                    lineTotal: it.lineTotal ?? null,
+                    attributes: Array.isArray(it.attributes)
+                      ? it.attributes
+                      : [],
+                    modifiers: Array.isArray(it.modifiers) ? it.modifiers : [],
+                  }))
+                : [
+                    {
+                      productId: order.productId ?? undefined,
+                      name: order.product || "Order",
+                      image: order.productImage ?? null,
+                      // `order.amount` is the grand total; split it back into the
+                      // per-unit price so the fulfilment order shows "×N @ unit".
+                      quantity: order.quantity >= 1 ? order.quantity : 1,
+                      basePrice: Math.round(
+                        order.amount /
+                          (order.quantity >= 1 ? order.quantity : 1),
+                      ),
+                      lineTotal: order.amount,
+                    },
+                  ],
           }
         : {
             customerName: customerName ?? null,
@@ -182,7 +231,9 @@ export async function initializePayLink(req, res, next) {
           }),
     };
 
-    const frontendBase = (process.env.FRONTEND_URL || "https://velte.ng").replace(/\/$/, "");
+    const frontendBase = (
+      process.env.FRONTEND_URL || "https://velte.ng"
+    ).replace(/\/$/, "");
     const callbackUrl = `${frontendBase}/payment/callback?reference=${reference}`;
 
     const transaction = await initializeTransaction({
