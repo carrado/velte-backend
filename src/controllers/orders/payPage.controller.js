@@ -255,7 +255,13 @@ export async function initializePayLink(req, res, next) {
       callbackUrl,
       subaccount: link.subaccountCode,
       transactionCharge: commission, // flat commission routed to Velte's main account
-      channels: ["card", "bank", "ussd", "bank_transfer"],
+      // Pay-by-transfer ONLY. The buyer is shown a virtual account to transfer to;
+      // confirmation arrives via webhook and (unlike cards) transfers can't be
+      // charged back, which removes the dispute/clawback liability. NOTE: on the
+      // default Pay-with-Transfer account the name shown is the Paystack business
+      // name (Velte); displaying the VENDOR's name on the transfer account requires
+      // Dedicated Virtual Accounts with B2B2C naming (a separate build).
+      channels: ["bank_transfer"],
     });
 
     res.json({
