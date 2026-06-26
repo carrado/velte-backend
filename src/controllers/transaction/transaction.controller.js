@@ -45,7 +45,10 @@ async function getOwnedPaymentLink(userId, linkId) {
 async function syncPaystackSubaccount(link, active) {
   const code = link.subaccountCode || link.paystackSubaccountId;
   if (!code) {
-    throw new AppError("Payment link is missing Paystack subaccount details", 422);
+    throw new AppError(
+      "Payment link is missing Paystack subaccount details",
+      422,
+    );
   }
 
   await setSubaccountActive(code, active);
@@ -102,9 +105,8 @@ export const resolveAccount = async (req, res, next) => {
     }
 
     // ── Paystack account resolution ──
-    // Replace PAYSTACK_SECRET_KEY with your env var.
     const paystackRes = await fetch(
-      `https://api.paystack.co/bank/resolve?account_number=${accountNumber}&bank_code=${'001'}`,
+      `https://api.paystack.co/bank/resolve?account_number=${accountNumber}&bank_code=${bankCode}`,
       {
         headers: {
           Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
@@ -137,71 +139,49 @@ export const resolveAccount = async (req, res, next) => {
 // ── POST /api/transactions/payment-link ───────────────────────────────────────
 export const generatePaymentLink = async (req, res, next) => {
   try {
-    const { bankCode, accountNumber, accountName, amount, description } = req.body;
+    const { bankCode, accountNumber, accountName } = req.body;
 
     if (!bankCode || !accountNumber || !accountName) {
-      throw new AppError("bankCode, accountNumber, and accountName are required", 400);
+      throw new AppError(
+        "bankCode, accountNumber, and accountName are required",
+        400,
+      );
     }
 
     const bank = banksCache?.find((b) => b.code === bankCode);
     if (!bank) throw new AppError("Invalid bank code", 400);
 
-    // ── 1. Create Paystack subaccount ──────────────────────────────────────
-    const paystackRes = await fetch("https://api.paystack.co/subaccount", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        business_name: accountName,
-        bank_code: bankCode,
-        account_number: accountNumber,
-        percentage_charge: 0, // 0 = all funds go to the subaccount
-        description: description || `Payment link for ${accountName}`,
-      }),
-    });
-
-    const paystackData = await paystackRes.json();
-
-    if (!paystackRes.ok || !paystackData.status) {
-      throw new AppError(
-        paystackData.message || "Failed to create Paystack subaccount",
-        422,
-      );
-    }
-
-    const { subaccount_code, id: paystackSubaccountId } = paystackData.data;
-
-    // ── 2. Generate link ───────────────────────────────────────────────────
+    // Save the vendor's bank account. No Paystack subaccount or hosted payment
+    // link is created: customers pay by DIRECT bank transfer, and staffly shares
+    // these details on WhatsApp at checkout (verified later via uploaded receipt).
+    // NOTE: `linkId`/`url` are kept (the model still requires them and old links
+    // remain readable) but are vestigial for this flow — they're removed in the
+    // payment-link teardown step. The record is stored in the shared collection
+    // staffly already reads by userId.
     const linkId = crypto.randomBytes(8).toString("hex");
     const baseUrl = process.env.FRONTEND_URL || "https://velte.ng";
-    const url = `${baseUrl}/pay/${linkId}`;
 
-    const paymentLink = await PaymentLink.create({
+    const bankAccount = await PaymentLink.create({
       userId: req.user.userId,
       linkId,
-      url,
+      url: `${baseUrl}/pay/${linkId}`,
       bankCode,
       bankName: bank.name,
       accountNumber,
       accountName,
-      amount: amount || null,
-      description: description || "",
-      subaccountCode: subaccount_code,         // store for charging later
-      paystackSubaccountId: String(paystackSubaccountId),
+      amount: null,
+      description: "",
     });
 
     res.status(201).json({
       success: true,
-      data: paymentLink.toJSON(),
-      message: "Payment link generated successfully",
+      data: bankAccount.toJSON(),
+      message: "Bank account saved successfully",
     });
   } catch (err) {
     next(err);
   }
 };
-
 
 // ── GET /api/transactions ─────────────────────────────────────────────────────
 export const getTransactions = async (req, res, next) => {
@@ -254,11 +234,9 @@ export const getTransactions = async (req, res, next) => {
         .limit(limitNum)
         .lean({ transform: true }),
       Transaction.countDocuments(filter),
-      PaymentLink.findOne(
-        { userId, deletedAt: null },
-        null,
-        { sort: { createdAt: -1 } },
-      ).lean(),
+      PaymentLink.findOne({ userId, deletedAt: null }, null, {
+        sort: { createdAt: -1 },
+      }).lean(),
     ]);
 
     // Stats — headline totals are all-time; the change % is this 7 days vs the
@@ -272,7 +250,9 @@ export const getTransactions = async (req, res, next) => {
     const revenueExpr = {
       $sum: { $cond: [{ $eq: ["$status", "Complete"] }, "$total", 0] },
     };
-    const countExpr = (s) => ({ $sum: { $cond: [{ $eq: ["$status", s] }, 1, 0] } });
+    const countExpr = (s) => ({
+      $sum: { $cond: [{ $eq: ["$status", s] }, 1, 0] },
+    });
     const groupSpec = {
       _id: null,
       revenue: revenueExpr,

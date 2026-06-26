@@ -8,7 +8,8 @@ import Order, {
 import User from "../../models/Users.js";
 import Product from "../../models/Product.model.js";
 import AISetup from "../../models/AiSetup.model.js";
-import { dispatchToStaffly } from "../../utils/stafflyWebhook.js";
+import { dispatchToStaffly, callStaffly } from "../../utils/stafflyWebhook.js";
+import { recordSale } from "./orderPayment.controller.js";
 import { sendOrderTrackingEmail } from "../../helpers/emailSender.js";
 import {
   serializeOrderRow,
@@ -49,10 +50,19 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const createOrder = async (req, res) => {
   try {
     const merchantId = req.user.userId;
-    const { items, customerName, customerPhone, customerEmail, customerBank, notes } = req.body;
+    const {
+      items,
+      customerName,
+      customerPhone,
+      customerEmail,
+      customerBank,
+      notes,
+    } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ message: "Order must have at least one item" });
+      return res
+        .status(400)
+        .json({ message: "Order must have at least one item" });
     }
 
     const amount = items.reduce((sum, item) => sum + (item.lineTotal ?? 0), 0);
@@ -68,26 +78,39 @@ export const createOrder = async (req, res) => {
       notes,
     });
 
-    const orderRef = order.orderId ?? `#ORD-${order._id.toString().slice(-6).toUpperCase()}`;
+    const orderRef =
+      order.orderId ?? `#ORD-${order._id.toString().slice(-6).toUpperCase()}`;
 
     // Email the customer their tracking key on order creation (fire-and-forget).
     if (order.customerEmail) {
-      sendOrderTrackingEmail(order.customerEmail, order.customerName, order.trackingKey, orderRef).catch(
-        (e) => console.error("Create order tracking email failed:", e.message),
+      sendOrderTrackingEmail(
+        order.customerEmail,
+        order.customerName,
+        order.trackingKey,
+        orderRef,
+      ).catch((e) =>
+        console.error("Create order tracking email failed:", e.message),
       );
     }
 
-    AISetup.findOne({ userId: merchantId }).select('selectedNumberId').then((aiSetup) => {
-      if (aiSetup?.selectedNumberId) {
-        dispatchToStaffly('order.created', aiSetup.selectedNumberId, {
-          orderId: order.orderId ?? order._id.toString(),
-          customerName,
-          customerPhone,
-          items: items.map((i) => ({ name: i.name, quantity: i.quantity, lineTotal: i.lineTotal ?? 0 })),
-          amount,
-        });
-      }
-    }).catch(() => {});
+    AISetup.findOne({ userId: merchantId })
+      .select("selectedNumberId")
+      .then((aiSetup) => {
+        if (aiSetup?.selectedNumberId) {
+          dispatchToStaffly("order.created", aiSetup.selectedNumberId, {
+            orderId: order.orderId ?? order._id.toString(),
+            customerName,
+            customerPhone,
+            items: items.map((i) => ({
+              name: i.name,
+              quantity: i.quantity,
+              lineTotal: i.lineTotal ?? 0,
+            })),
+            amount,
+          });
+        }
+      })
+      .catch(() => {});
 
     res.status(201).json({ success: true, order });
   } catch (error) {
@@ -113,16 +136,26 @@ export const getOrders = async (req, res) => {
     } = req.query;
 
     // ── Validate enumerated params (reject unknown rather than ignore) ──────────
-    if (tab !== undefined && !["completed", "pending", "cancelled"].includes(tab)) {
-      return sendError(res, 400, "VALIDATION_ERROR", "Validation failed", { tab: `Unknown tab '${tab}'` });
+    if (
+      tab !== undefined &&
+      !["completed", "pending", "cancelled"].includes(tab)
+    ) {
+      return sendError(res, 400, "VALIDATION_ERROR", "Validation failed", {
+        tab: `Unknown tab '${tab}'`,
+      });
     }
-    if (payment_status !== undefined && !["paid", "unpaid"].includes(payment_status)) {
+    if (
+      payment_status !== undefined &&
+      !["paid", "unpaid"].includes(payment_status)
+    ) {
       return sendError(res, 400, "VALIDATION_ERROR", "Validation failed", {
         payment_status: `Unknown payment_status '${payment_status}'`,
       });
     }
     if (!["created_at", "price"].includes(sort_by)) {
-      return sendError(res, 400, "VALIDATION_ERROR", "Validation failed", { sort_by: `Unknown sort_by '${sort_by}'` });
+      return sendError(res, 400, "VALIDATION_ERROR", "Validation failed", {
+        sort_by: `Unknown sort_by '${sort_by}'`,
+      });
     }
     if (!["asc", "desc"].includes(sort_order)) {
       return sendError(res, 400, "VALIDATION_ERROR", "Validation failed", {
@@ -130,10 +163,14 @@ export const getOrders = async (req, res) => {
       });
     }
     if (start_date !== undefined && !DATE_RE.test(start_date)) {
-      return sendError(res, 400, "VALIDATION_ERROR", "Validation failed", { start_date: "Expected YYYY-MM-DD" });
+      return sendError(res, 400, "VALIDATION_ERROR", "Validation failed", {
+        start_date: "Expected YYYY-MM-DD",
+      });
     }
     if (end_date !== undefined && !DATE_RE.test(end_date)) {
-      return sendError(res, 400, "VALIDATION_ERROR", "Validation failed", { end_date: "Expected YYYY-MM-DD" });
+      return sendError(res, 400, "VALIDATION_ERROR", "Validation failed", {
+        end_date: "Expected YYYY-MM-DD",
+      });
     }
 
     // ── Clamp pagination ───────────────────────────────────────────────────────
@@ -161,8 +198,10 @@ export const getOrders = async (req, res) => {
     }
     if (start_date || end_date) {
       filter.createdAt = {};
-      if (start_date) filter.createdAt.$gte = new Date(`${start_date}T00:00:00.000Z`);
-      if (end_date) filter.createdAt.$lte = new Date(`${end_date}T23:59:59.999Z`);
+      if (start_date)
+        filter.createdAt.$gte = new Date(`${start_date}T00:00:00.000Z`);
+      if (end_date)
+        filter.createdAt.$lte = new Date(`${end_date}T23:59:59.999Z`);
     }
 
     const sortField = sort_by === "price" ? "amount" : "createdAt";
@@ -243,8 +282,14 @@ export const getOrderStats = async (req, res) => {
       data: {
         total_orders: { value: totalCur, growth: growth(totalCur, totalPrev) },
         new_orders: { value: newCur, growth: growth(newCur, newPrev) },
-        completed_orders: { value: completedCur, percentage: pct(completedCur, totalCur) },
-        canceled_orders: { value: cancelledCur, growth: growth(cancelledCur, cancelledPrev) },
+        completed_orders: {
+          value: completedCur,
+          percentage: pct(completedCur, totalCur),
+        },
+        canceled_orders: {
+          value: cancelledCur,
+          growth: growth(cancelledCur, cancelledPrev),
+        },
       },
     });
   } catch (error) {
@@ -274,16 +319,21 @@ export const getOrder = async (req, res) => {
       return sendError(res, 404, "NOT_FOUND", "Order not found");
     }
 
-    const user = await User.findById(merchantId).select("businessType preferences.foodSettings").lean();
+    const user = await User.findById(merchantId)
+      .select("businessType preferences.foodSettings")
+      .lean();
     const businessType = user?.businessType === "food" ? "food" : "retail";
-    const defaultPrepMins = user?.preferences?.foodSettings?.estimatedPrepMins ?? null;
+    const defaultPrepMins =
+      user?.preferences?.foodSettings?.estimatedPrepMins ?? null;
 
     // Fallback for orders created before image snapshots (or merchant-created
     // orders that only carry a productId): resolve the current product photo.
     // Single doc lookup — fine on the detail endpoint (never on the list).
     const primary = order.items?.[0];
     if (primary && !primary.image && primary.productId) {
-      const product = await Product.findById(primary.productId).select("mainImageUrl").lean();
+      const product = await Product.findById(primary.productId)
+        .select("mainImageUrl")
+        .lean();
       if (product?.mainImageUrl) primary.image = product.mainImageUrl;
     }
 
@@ -307,12 +357,16 @@ export const updateOrderStatus = async (req, res) => {
     const { status } = req.body;
 
     if (!status || typeof status !== "string") {
-      return sendError(res, 400, "VALIDATION_ERROR", "Validation failed", { status: "status is required" });
+      return sendError(res, 400, "VALIDATION_ERROR", "Validation failed", {
+        status: "status is required",
+      });
     }
 
     // Must be a known API status at all.
     if (!STATUS_FROM_API[status]) {
-      return sendError(res, 400, "VALIDATION_ERROR", "Validation failed", { status: `Unknown status '${status}'` });
+      return sendError(res, 400, "VALIDATION_ERROR", "Validation failed", {
+        status: `Unknown status '${status}'`,
+      });
     }
 
     const user = await User.findById(merchantId).select("businessType").lean();
@@ -339,7 +393,8 @@ export const updateOrderStatus = async (req, res) => {
     }
 
     const targetInternal = STATUS_FROM_API[status];
-    const transitions = businessType === "food" ? FOOD_TRANSITIONS : RETAIL_TRANSITIONS;
+    const transitions =
+      businessType === "food" ? FOOD_TRANSITIONS : RETAIL_TRANSITIONS;
     const allowed = transitions[order.status] ?? [];
 
     if (!allowed.includes(targetInternal)) {
@@ -353,23 +408,219 @@ export const updateOrderStatus = async (req, res) => {
     await order.save();
 
     // Fire-and-forget Staffly notification (keeps the WhatsApp side in sync).
-    AISetup.findOne({ userId: merchantId }).select("selectedNumberId").then((aiSetup) => {
-      if (aiSetup?.selectedNumberId) {
-        dispatchToStaffly("order.status_changed", aiSetup.selectedNumberId, {
-          orderId: order.orderId ?? order._id.toString(),
-          customerPhone: order.customerPhone,
-          newStatus: targetInternal,
-          previousStatus: previousInternal,
-          ...(targetInternal === "Cancelled" && req.body.cancellationReason
-            ? { cancellationReason: req.body.cancellationReason }
-            : {}),
-        });
-      }
-    }).catch(() => {});
+    AISetup.findOne({ userId: merchantId })
+      .select("selectedNumberId")
+      .then((aiSetup) => {
+        if (aiSetup?.selectedNumberId) {
+          dispatchToStaffly("order.status_changed", aiSetup.selectedNumberId, {
+            orderId: order.orderId ?? order._id.toString(),
+            customerPhone: order.customerPhone,
+            newStatus: targetInternal,
+            previousStatus: previousInternal,
+            ...(targetInternal === "Cancelled" && req.body.cancellationReason
+              ? { cancellationReason: req.body.cancellationReason }
+              : {}),
+          });
+        }
+      })
+      .catch(() => {});
 
-    return res.status(200).json({ success: true, data: serializeOrderRow(order) });
+    return res
+      .status(200)
+      .json({ success: true, data: serializeOrderRow(order) });
   } catch (error) {
     console.error("Update order status error:", error);
-    return sendError(res, 500, "INTERNAL_ERROR", "Failed to update order status");
+    return sendError(
+      res,
+      500,
+      "INTERNAL_ERROR",
+      "Failed to update order status",
+    );
+  }
+};
+
+// ── Confirm a held manual-transfer payment ────────────────────────────────────
+// PATCH /api/orders/:id/confirm-payment — the vendor confirms (after checking their
+// bank) an order staffly held for confirmation (paymentStatus 'awaiting_confirmation').
+// Marks it paid, records the sale, and notifies staffly via `order.paid` so it flips
+// the checkout intent to paid and WhatsApps the customer.
+export const confirmOrderPayment = async (req, res) => {
+  try {
+    const merchantId = req.user.userId;
+
+    let order;
+    try {
+      order = await Order.findOne({ _id: req.params.id, merchantId });
+    } catch (err) {
+      if (err?.name === "CastError") {
+        return sendError(res, 404, "NOT_FOUND", "Order not found");
+      }
+      throw err;
+    }
+    if (!order) return sendError(res, 404, "NOT_FOUND", "Order not found");
+
+    // Idempotent: confirming an already-paid order is a no-op success.
+    if (order.paymentStatus === "paid") {
+      return res
+        .status(200)
+        .json({ success: true, data: serializeOrderRow(order) });
+    }
+    if (order.paymentStatus !== "awaiting_confirmation") {
+      return sendError(
+        res,
+        409,
+        "CONFLICT",
+        "Order is not awaiting payment confirmation",
+      );
+    }
+
+    order.paymentStatus = "paid";
+    await order.save();
+
+    // Record on the merchant's books now that the payment is confirmed (held orders
+    // are not recorded at creation).
+    await recordSale(order);
+
+    // Tell staffly so it flips the checkout intent to paid and notifies the buyer.
+    AISetup.findOne({ userId: merchantId })
+      .select("selectedNumberId")
+      .then((aiSetup) => {
+        if (aiSetup?.selectedNumberId && order.stafflyOrderId) {
+          dispatchToStaffly("order.paid", aiSetup.selectedNumberId, {
+            stafflyOrderId: order.stafflyOrderId,
+            orderId: order.orderId ?? order._id.toString(),
+            product: order.items?.[0]?.name ?? null,
+            customerName: order.customerName,
+            customerPhone: order.customerPhone,
+            amount: order.amount,
+          });
+        }
+      })
+      .catch(() => {});
+
+    return res
+      .status(200)
+      .json({ success: true, data: serializeOrderRow(order) });
+  } catch (error) {
+    console.error("Confirm order payment error:", error);
+    return sendError(res, 500, "INTERNAL_ERROR", "Failed to confirm payment");
+  }
+};
+
+// ── Reject a held manual-transfer payment ─────────────────────────────────────
+// PATCH /api/orders/:id/reject-payment — the vendor couldn't find the transfer in
+// their bank, so they reject the held receipt. Returns the order to 'unpaid' and
+// tells staffly to revert its checkout intent + ask the buyer to resend (staffly
+// keeps the receipt reference so the same forged/wrong receipt can't be re-claimed).
+export const rejectOrderPayment = async (req, res) => {
+  try {
+    const merchantId = req.user.userId;
+
+    let order;
+    try {
+      order = await Order.findOne({ _id: req.params.id, merchantId });
+    } catch (err) {
+      if (err?.name === "CastError") {
+        return sendError(res, 404, "NOT_FOUND", "Order not found");
+      }
+      throw err;
+    }
+    if (!order) return sendError(res, 404, "NOT_FOUND", "Order not found");
+
+    if (order.paymentStatus !== "awaiting_confirmation") {
+      return sendError(
+        res,
+        409,
+        "CONFLICT",
+        "Order is not awaiting payment confirmation",
+      );
+    }
+
+    // Tell staffly first — it owns the buyer notification + receipt dedupe. If it
+    // can't be reached, don't silently revert locally (the buyer would never be
+    // told), so surface the failure and let the vendor retry.
+    if (order.stafflyOrderId) {
+      try {
+        await callStaffly("/confirm-payment", {
+          stafflyOrderId: order.stafflyOrderId,
+          decision: "reject",
+        });
+      } catch (err) {
+        console.error("[Order] staffly reject failed:", err.message);
+        return sendError(
+          res,
+          502,
+          "UPSTREAM_ERROR",
+          "Couldn't reach the WhatsApp service to notify the customer. Please try again.",
+        );
+      }
+    }
+
+    order.paymentStatus = "unpaid";
+    await order.save();
+
+    return res
+      .status(200)
+      .json({ success: true, data: serializeOrderRow(order) });
+  } catch (error) {
+    console.error("Reject order payment error:", error);
+    return sendError(res, 500, "INTERNAL_ERROR", "Failed to reject payment");
+  }
+};
+
+// ── Fetch the held receipt image ──────────────────────────────────────────────
+// GET /api/orders/:id/receipt-image — proxies the buyer's uploaded receipt from
+// staffly (which holds the WhatsApp media) so the vendor can eyeball it before
+// confirming. Returned as a data URL the dashboard can drop straight into an <img>.
+export const getOrderReceiptImage = async (req, res) => {
+  try {
+    const merchantId = req.user.userId;
+
+    let order;
+    try {
+      order = await Order.findOne({ _id: req.params.id, merchantId }).select(
+        "stafflyOrderId",
+      );
+    } catch (err) {
+      if (err?.name === "CastError") {
+        return sendError(res, 404, "NOT_FOUND", "Order not found");
+      }
+      throw err;
+    }
+    if (!order?.stafflyOrderId) {
+      return sendError(res, 404, "NOT_FOUND", "No receipt for this order");
+    }
+
+    let data;
+    try {
+      data = await callStaffly("/receipt-image", {
+        stafflyOrderId: order.stafflyOrderId,
+      });
+    } catch (err) {
+      // Staffly 404/502 (no image / expired past Meta's retention) surfaces here.
+      const status = err?.response?.status === 404 ? 404 : 502;
+      return sendError(
+        res,
+        status,
+        status === 404 ? "NOT_FOUND" : "UPSTREAM_ERROR",
+        status === 404
+          ? "Receipt image is not available"
+          : "Couldn't load the receipt image. It may have expired.",
+      );
+    }
+
+    if (!data?.base64) {
+      return sendError(res, 404, "NOT_FOUND", "Receipt image is not available");
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        image: `data:${data.mimeType || "image/jpeg"};base64,${data.base64}`,
+      },
+    });
+  } catch (error) {
+    console.error("Get receipt image error:", error);
+    return sendError(res, 500, "INTERNAL_ERROR", "Failed to load receipt image");
   }
 };
