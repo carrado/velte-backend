@@ -1,13 +1,16 @@
-import express from 'express';
-import rateLimit from 'express-rate-limit';
-import { verifyAuth } from '../middleware/auth.js';
+import express from "express";
+import rateLimit from "express-rate-limit";
+import { verifyAuth } from "../middleware/auth.js";
 import {
   createOrder,
   getOrders,
   getOrder,
   getOrderStats,
   updateOrderStatus,
-} from '../controllers/orders/order.controller.js';
+  confirmOrderPayment,
+  rejectOrderPayment,
+  getOrderReceiptImage,
+} from "../controllers/orders/order.controller.js";
 
 const router = express.Router();
 
@@ -24,7 +27,13 @@ const rateLimited = ({ windowMs, max }) =>
     keyGenerator: perVendorKey,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { success: false, error: { code: 'RATE_LIMITED', message: 'Too many requests, please slow down.' } },
+    message: {
+      success: false,
+      error: {
+        code: "RATE_LIMITED",
+        message: "Too many requests, please slow down.",
+      },
+    },
   });
 
 /** List/search — fairly chatty (debounced search, pagination). */
@@ -32,10 +41,13 @@ const listLimiter = rateLimited({ windowMs: 60 * 1000, max: 60 });
 /** Status mutations — stricter; these move fulfilment state. */
 const statusLimiter = rateLimited({ windowMs: 60 * 1000, max: 20 });
 
-router.get('/', listLimiter, getOrders);
-router.post('/', createOrder);
-router.get('/stats', getOrderStats); // must precede '/:id' so 'stats' isn't read as an id
-router.get('/:id', getOrder);
-router.patch('/:id/status', statusLimiter, updateOrderStatus);
+router.get("/", listLimiter, getOrders);
+router.post("/", createOrder);
+router.get("/stats", getOrderStats); // must precede '/:id' so 'stats' isn't read as an id
+router.get("/:id", getOrder);
+router.patch("/:id/status", statusLimiter, updateOrderStatus);
+router.patch("/:id/confirm-payment", statusLimiter, confirmOrderPayment);
+router.patch("/:id/reject-payment", statusLimiter, rejectOrderPayment);
+router.get("/:id/receipt-image", listLimiter, getOrderReceiptImage);
 
 export default router;

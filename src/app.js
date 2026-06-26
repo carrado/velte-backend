@@ -20,11 +20,11 @@ import pushRoutes from "./routes/push.routes.js";
 import notificationRoutes from "./routes/notifications.routes.js";
 import usersRoutes from "./routes/users.routes.js";
 import ordersRoutes from "./routes/orders.routes.js";
-import payRoutes from "./routes/pay.routes.js";
 import trackRoutes from "./routes/track.routes.js";
 import productsRoutes from "./routes/products.routes.js";
 import modifiersRoutes from "./routes/modifiers.routes.js";
 import categoriesRoutes from "./routes/categories.routes.js";
+import internalRoutes from "./routes/internal.routes.js";
 
 const app = express();
 
@@ -37,7 +37,6 @@ app.set("trust proxy", 1);
 
 app.use(helmet());
 app.use(hpp());
-
 
 // Detect current environment
 const env = process.env.NODE_ENV || "development";
@@ -52,7 +51,7 @@ app.use(
       "https://velte.ng",
     ],
     credentials: true,
-  })
+  }),
 );
 
 // Paystack posts webhooks as application/json and signs the RAW request body.
@@ -64,13 +63,19 @@ app.use(
 // the body as already read, so the global express.json() then skips it.
 app.use("/api/subscription/webhook", express.raw({ type: "application/json" }));
 
+// Staffly → velte internal bridge is HMAC-signed over the RAW body, so (like the
+// Paystack webhook above) it must see the unparsed bytes — mount raw for this exact
+// path before the global JSON parser.
+app.use(
+  "/api/internal/orders/from-staffly",
+  express.raw({ type: "application/json" }),
+);
+
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use(cookieParser());
 
-
 app.use(mongoSanitize());
-
 
 app.use(
   rateLimit({
@@ -78,11 +83,12 @@ app.use(
     max: 100,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { success: false, message: "Too many requests, please try again later." },
-  })
+    message: {
+      success: false,
+      message: "Too many requests, please try again later.",
+    },
+  }),
 );
-
-
 
 // Determine which MongoDB URI to use
 let dbUri = "";
@@ -101,7 +107,6 @@ mongoose
   .then(() => console.log(`✅ Connected to MongoDB (${env})`))
   .catch((err) => console.error("❌ MongoDB connection error:", err.message));
 
-
 // Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/ai-setup", aiSetupRoutes);
@@ -112,12 +117,11 @@ app.use("/api/push", pushRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/orders", ordersRoutes);
-app.use("/api/pay", payRoutes); // public pay-page endpoints (no auth)
 app.use("/api/track", trackRoutes); // public order-tracking endpoint (no auth)
-app.use("/api/products",   productsRoutes);
-app.use("/api/modifiers",  modifiersRoutes);
+app.use("/api/products", productsRoutes);
+app.use("/api/modifiers", modifiersRoutes);
 app.use("/api/categories", categoriesRoutes);
-
+app.use("/api/internal", internalRoutes); // staffly → velte bridge (HMAC-signed)
 
 // Health check route
 app.get("/health", (req, res) => {
@@ -130,7 +134,6 @@ app.get("/health", (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
-
 
 app.use(notFound);
 app.use(errorHandler);
