@@ -177,8 +177,9 @@ const orderSchema = new mongoose.Schema(
     receiptUrl: { type: String, default: null },
     // Human receipt number on the PDF, e.g. "ASL-0001" (assigned once, then stable).
     receiptNumber: { type: String, default: null },
-    // Refund tracking. Refunds go back to the original Paystack payment source (no
-    // customer bank details collected); these fields make a second refund attempt a
+    // Refund tracking. Orders are paid by manual bank transfer, so a refund is the
+    // vendor transferring the money back out-of-band and RECORDING it here (no
+    // Paystack charge is reversed). These fields make a second refund attempt a
     // no-op and let the UI reflect refund progress.
     refund: {
       status: {
@@ -186,8 +187,9 @@ const orderSchema = new mongoose.Schema(
         enum: ["none", "pending", "processed", "failed"],
         default: "none",
       },
-      reference: { type: String, default: null }, // Paystack refund id/reference
+      reference: { type: String, default: null }, // vendor's manual transfer reference
       amount: { type: Number, default: null }, // Naira
+      reason: { type: String, default: null },
       refundedAt: { type: Date, default: null },
     },
   },

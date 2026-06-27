@@ -1,17 +1,16 @@
 // src/controllers/orders/orderRefund.controller.js
 //
-// Refunds a cancelled order back to the customer's ORIGINAL Paystack payment
-// source (card/bank). We deliberately do NOT collect or transfer to customer bank
-// details — the buyer paid online, so Paystack reverses that exact charge.
+// Records a refund for a cancelled order. Orders are paid by MANUAL bank transfer
+// (no Paystack charge exists to reverse), so the vendor sends the money back to the
+// customer out-of-band and then records that transfer here. We do NOT move money
+// from this endpoint — we persist a refund record from the fields the caller supplies.
 //
-// This is the privileged, money-moving step. The frontend calls it BEFORE moving
-// the order to `cancelled` (see orders-api.md). It is idempotent: a second attempt
-// on an already-refunded order is a no-op success.
+// The frontend calls this BEFORE moving the order to `cancelled` (see orders-api.md).
+// It is idempotent: a second attempt on an already-recorded refund is a no-op success.
 
 import { validationResult } from "express-validator";
 import { AppError } from "../../middleware/errorHandler.js";
 import Order from "../../models/Order.model.js";
-import { refundTransaction } from "../../services/paystack.service.js";
 
 export async function initiateOrderRefund(req, res, next) {
   try {
@@ -21,7 +20,7 @@ export async function initiateOrderRefund(req, res, next) {
       return next(new AppError(errors.array()[0].msg, 400));
     }
 
-    const { orderId, amount, reason } = req.body;
+    const { orderId, amount, refundReference, status, reason } = req.body;
     const merchantId = req.user.userId;
 
     // ── 2. Resolve & authorize the order ───────────────────────────────────────
@@ -34,20 +33,20 @@ export async function initiateOrderRefund(req, res, next) {
     }
     if (!order) return next(new AppError("Order not found.", 404));
 
-    // Only online (Paystack) payments can be refunded to source.
-    if (order.paymentStatus !== "paid" || !order.paystackReference) {
+    // Only a paid order can be refunded.
+    if (order.paymentStatus !== "paid") {
       return next(
-        new AppError("This order has no online payment to refund.", 422),
+        new AppError("This order has no completed payment to refund.", 422),
       );
     }
 
     // ── 3. Idempotency ─────────────────────────────────────────────────────────
-    // A refund already in flight or done → don't fire a second one.
+    // A refund already recorded → don't overwrite it; echo what we have.
     if (order.refund?.status === "processed" || order.refund?.status === "pending") {
       return res.status(200).json({
         success: true,
-        message: "Refund already initiated for this order.",
-        data: {
+        message: "Refund already recorded for this order.",
+        refund: {
           refundReference: order.refund.reference,
           amount: order.refund.amount ?? amount,
           status: order.refund.status,
@@ -55,43 +54,27 @@ export async function initiateOrderRefund(req, res, next) {
       });
     }
 
-    // ── 4. Issue the refund to the original payment source ─────────────────────
-    let refund;
-    try {
-      refund = await refundTransaction({
-        reference: order.paystackReference,
-        amountKobo: Math.round(amount * 100), // request body amount is in Naira
-        reason: reason ?? `Refund for order ${order.orderId ?? order._id}`,
-      });
-    } catch (err) {
-      // Record the failure so the UI can show it, then surface the error.
-      order.refund = {
-        ...(order.refund?.toObject?.() ?? order.refund ?? {}),
-        status: "failed",
-      };
-      await order.save().catch(() => {});
-      return next(new AppError(`Refund failed: ${err.message}`, 502));
-    }
-
-    // ── 5. Persist refund state ────────────────────────────────────────────────
-    // Paystack refund status: pending | processing | processed | failed.
-    const status = refund?.status === "processed" ? "processed" : "pending";
+    // ── 4. Persist the refund record ───────────────────────────────────────────
+    // The vendor performed the bank transfer manually; we store the reference they
+    // supplied. Default to `processed` since recording implies the money was sent.
+    const recordedStatus = status ?? "processed";
     order.refund = {
-      status,
-      reference: refund?.id ? String(refund.id) : order.paystackReference,
+      status: recordedStatus,
+      reference: refundReference,
       amount,
+      reason: reason ?? null,
       refundedAt: new Date(),
     };
     await order.save();
 
-    // ── 6. Respond ─────────────────────────────────────────────────────────────
+    // ── 5. Respond ─────────────────────────────────────────────────────────────
     return res.status(200).json({
       success: true,
-      message: "Refund initiated successfully.",
-      data: {
+      message: "Refund recorded successfully.",
+      refund: {
         refundReference: order.refund.reference,
         amount,
-        status,
+        status: recordedStatus,
       },
     });
   } catch (err) {
