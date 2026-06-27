@@ -110,6 +110,20 @@ const validateOrderRefund = [
     .isFloat({ min: 1, max: 10_000_000 })
     .withMessage("amount must be a positive number not exceeding ₦10,000,000."),
 
+  body("refundReference")
+    .trim()
+    .notEmpty()
+    .withMessage("refundReference is required.")
+    .isString()
+    .withMessage("refundReference must be a string.")
+    .isLength({ max: 100 })
+    .withMessage("refundReference must not exceed 100 characters."),
+
+  body("status")
+    .optional()
+    .isIn(["pending", "processed"])
+    .withMessage("status must be either 'pending' or 'processed'."),
+
   body("reason")
     .optional()
     .trim()

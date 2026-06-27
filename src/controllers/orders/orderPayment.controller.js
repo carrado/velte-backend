@@ -8,6 +8,7 @@ import {
   sendReceiptEmail,
 } from "../../helpers/emailSender.js";
 import { generateOrderReceipt } from "../../services/documents.service.js";
+import { notifyUser } from "../../services/pushNotification.service.js";
 
 /**
  * Handle a Paystack `charge.success` event for an ORDER payment (as opposed to a
@@ -341,6 +342,41 @@ async function generateAndSendReceipt(order, phoneNumberId) {
   }
 }
 
+// Build + send the merchant's order notification (in-app bell record + web-push,
+// via notifyUser). An `awaiting_confirmation` order needs the vendor to verify the
+// transfer; a `paid` order is an FYI. Deep-links the merchant straight to the order.
+async function notifyMerchantOfOrder(merchantId, order, paymentStatus) {
+  const first = order.items?.[0]?.name || "New order";
+  const extra = (order.items?.length || 1) - 1;
+  const product = extra > 0 ? `${first} +${extra} more` : first;
+  const amountText = `₦${Number(order.amount || 0).toLocaleString()}`;
+  const ref = order.orderId ?? `#${order._id.toString().slice(-6).toUpperCase()}`;
+
+  const payload =
+    paymentStatus === "awaiting_confirmation"
+      ? {
+          type: "payment",
+          title: "Payment to confirm",
+          body: `${ref} — ${product} (${amountText}). A customer's transfer receipt is awaiting your confirmation.`,
+          requireInteraction: true,
+        }
+      : {
+          type: "new-order",
+          title: "New order received",
+          body: `${ref} — ${product} (${amountText}) just came in.`,
+        };
+
+  await notifyUser(merchantId, {
+    ...payload,
+    url: `/${merchantId}/orders/${order._id}`,
+    tag: `order-${order._id}`,
+    metadata: {
+      orderId: order._id.toString(),
+      stafflyOrderId: order.stafflyOrderId,
+    },
+  });
+}
+
 /**
  * POST /api/internal/orders/from-staffly  (staffly → velte, HMAC-signed)
  *
@@ -415,6 +451,12 @@ export async function createOrderFromStaffly(req, res) {
     if (paymentStatus === "paid") {
       await recordSale(order);
     }
+
+    // Alert the merchant (dashboard bell + web-push) that an order arrived.
+    // Fire-and-forget — a notification failure must never fail the bridge.
+    notifyMerchantOfOrder(merchantId, order, paymentStatus).catch((e) =>
+      console.error("[OrderBridge] notifyUser failed:", e.message),
+    );
 
     return res.status(201).json({ success: true, orderId: order._id });
   } catch (err) {
