@@ -44,3 +44,4 @@ coverage/
 
 CLAUDE.md
 *.md
+/scripts/
