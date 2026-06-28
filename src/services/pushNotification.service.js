@@ -2,6 +2,12 @@ import webpush from 'web-push';
 import PushSubscription from '../models/PushSubscription.model.js';
 import Notification from '../models/Notification.model.js';
 
+// A 401/403 is usually a VAPID key mismatch, but it can also be a transient server
+// misconfig (wrong key deployed briefly). So don't delete on the first one — only
+// after this many consecutive auth failures, by which point it's clearly the
+// subscription, not us. A success resets the counter (see below).
+const MAX_AUTH_FAILURES = 5;
+
 // Configure VAPID at module load. setVapidDetails THROWS on a missing/malformed
 // subject or key — and because this module is imported by the order bridge
 // (orderPayment.controller), an unguarded throw here would take down order
@@ -72,18 +78,41 @@ export async function notifyUser(userId, payload) {
           { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
           pushPayload,
         );
+        // Mark it alive: refresh freshness (so the per-user prune keeps it) and clear
+        // any earlier auth failures. Note: a 201 here means the push SERVICE accepted
+        // the message, not that a banner was shown — a subscription orphaned by a
+        // clear-site-data still "delivers" here while displaying nothing.
+        await PushSubscription.updateOne(
+          { endpoint: sub.endpoint },
+          { $set: { lastSeenAt: new Date(), failureCount: 0 } },
+        );
         console.log(`[Push] ✓ delivered to ${sub.endpoint.slice(0, 60)}…`);
       } catch (err) {
-        // 404/410 mean the subscription is expired or the user uninstalled — remove it.
-        // Anything else (401/403 = VAPID mismatch, 413 = payload too big, network) is a
-        // server-side problem we must NOT respond to by deleting the (valid) subscription.
         console.error(
           `[Push] ✗ send failed (status ${err.statusCode}) for ${sub.endpoint.slice(0, 60)}…: ${err.body || err.message}`,
         );
+        // 404/410 mean the subscription is expired or the user uninstalled — the push
+        // service is telling us it's gone, so remove it immediately.
         if (err.statusCode === 404 || err.statusCode === 410) {
           await PushSubscription.deleteOne({ endpoint: sub.endpoint });
           console.warn(`[Push] removed dead subscription ${sub.endpoint.slice(0, 60)}…`);
+        } else if (err.statusCode === 401 || err.statusCode === 403) {
+          // VAPID mismatch — but tolerate a transient server misconfig. Count the
+          // failure; only prune once it's failed MAX_AUTH_FAILURES times in a row.
+          const updated = await PushSubscription.findOneAndUpdate(
+            { endpoint: sub.endpoint },
+            { $inc: { failureCount: 1 }, $set: { lastFailureAt: new Date() } },
+            { new: true },
+          );
+          if (updated && updated.failureCount >= MAX_AUTH_FAILURES) {
+            await PushSubscription.deleteOne({ endpoint: sub.endpoint });
+            console.warn(
+              `[Push] removed subscription after ${updated.failureCount} auth failures ${sub.endpoint.slice(0, 60)}…`,
+            );
+          }
         }
+        // Anything else (413 payload too big, 429, 5xx, network) is transient/server-side —
+        // leave the subscription untouched.
       }
     }),
   );
