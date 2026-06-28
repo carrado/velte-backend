@@ -172,6 +172,22 @@ const userSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Serialise the document with a string `id` (mirrors the shape login returns) so
+// every consumer of a user — /auth/me included — gets `id`, not just `_id`. The
+// frontend's `User.id` (and push-subscribe) depend on it. `_id` is kept for any
+// existing reader. Also strip secrets defensively, in case a query forgets to
+// .select() them out.
+userSchema.set('toJSON', {
+  virtuals: true,
+  versionKey: false,
+  transform: (_doc, ret) => {
+    delete ret.password;
+    delete ret.emailOtp;
+    delete ret.changePasswordOtp;
+    return ret;
+  },
+});
+
 // Hash password before saving
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
