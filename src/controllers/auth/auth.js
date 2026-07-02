@@ -1,7 +1,6 @@
 import jwt from "jsonwebtoken";
 import User from "../../models/Users.js";
 import { sendVerificationEmail } from "../../helpers/emailSender.js";
-import Subscription from "../../models/Subscriptions.js";
 
 
 export const register = async (req, res) => {
@@ -85,8 +84,6 @@ export const register = async (req, res) => {
 
     // 🔹 Send verification email
     await sendVerificationEmail(email, name, otp);
-
-    await Subscription.create({ userId: user._id });
 
     res.status(201).json({
       success: true,

@@ -1,11 +1,8 @@
 import Product, { FOOD_CATEGORIES } from '../../models/Product.model.js';
 import ModifierOption from '../../models/ModifierOption.model.js';
 import Category from '../../models/Category.model.js';
-import Order from '../../models/Order.model.js';
 import User from '../../models/Users.js';
-import AISetup from '../../models/AiSetup.model.js';
 import { errRes } from '../../helpers/apiResponse.js';
-import { dispatchToStaffly } from '../../utils/stafflyWebhook.js';
 
 // ── formatters ────────────────────────────────────────────────────────────────
 
@@ -24,6 +21,8 @@ function formatProduct(doc) {
     id:               p._id,
     vendor_id:        p.vendorId,
     business_type:    p.businessType,
+    kind:             p.kind ?? 'product',
+    price_from:       p.priceFrom ?? false,
     name:             p.name,
     description:      p.description,
     category_id:      p.categoryId,
@@ -82,6 +81,16 @@ function formatProduct(doc) {
 
 function validateProductInput(body, businessType) {
   const fields = {};
+  const kind = body.kind ?? 'product';
+
+  if (!['product', 'service'].includes(kind)) {
+    fields.kind = 'kind must be "product" or "service"';
+  }
+  // Food catalogs are dish-shaped (prep time, modifiers, daily limits) —
+  // services don't fit that mold, so they're retail-only for now.
+  if (kind === 'service' && businessType === 'food') {
+    fields.kind = 'Services are not supported for food vendors yet';
+  }
 
   if (!body.name || typeof body.name !== 'string' || !body.name.trim()) {
     fields.name = 'Name is required';
@@ -139,7 +148,11 @@ function validateProductInput(body, businessType) {
   }
 
   if (businessType === 'retail') {
-    if (body.stock_quantity === undefined || body.stock_quantity === null) {
+    // Services carry no stock — quantity only required for stocked goods.
+    if (
+      kind !== 'service' &&
+      (body.stock_quantity === undefined || body.stock_quantity === null)
+    ) {
       fields.stock_quantity = 'stock_quantity is required for retail products';
     }
     if (body.manufacturing_date && body.expiration_date) {
@@ -250,17 +263,23 @@ export const getProducts = async (req, res) => {
 
     if (tab === 'featured')     filter.isFeatured = true;
     if (tab === 'on-sale')      filter.discountedPrice = { $ne: null };
+    // Services carry no stock: never "out of stock", always "in stock".
     if (tab === 'out-of-stock') {
-      if (businessType === 'retail') filter.stockQuantity = 0;
-      else                           filter.isCurrentlyAvailable = false;
+      if (businessType === 'retail') {
+        filter.stockQuantity = 0;
+        filter.kind = { $ne: 'service' };
+      } else filter.isCurrentlyAvailable = false;
     }
 
     if (stock_status === 'in-stock') {
-      if (businessType === 'retail') filter.stockQuantity = { $gt: 0 };
-      else                           filter.isCurrentlyAvailable = true;
+      if (businessType === 'retail') {
+        filter.$or = [{ stockQuantity: { $gt: 0 } }, { kind: 'service' }];
+      } else filter.isCurrentlyAvailable = true;
     } else if (stock_status === 'out-of-stock') {
-      if (businessType === 'retail') filter.stockQuantity = 0;
-      else                           filter.isCurrentlyAvailable = false;
+      if (businessType === 'retail') {
+        filter.stockQuantity = 0;
+        filter.kind = { $ne: 'service' };
+      } else filter.isCurrentlyAvailable = false;
     }
 
     const sortField = sort_by === 'price' ? 'price' : 'createdAt';
@@ -331,6 +350,8 @@ export const createProduct = async (req, res) => {
     const product = await Product.create({
       vendorId:     req.user.userId,
       businessType,
+      kind:          body.kind === 'service' ? 'service' : 'product',
+      priceFrom:     body.price_from ?? false,
       name:          body.name.trim(),
       description:   body.description        ?? null,
       categoryId:    body.category_id,
@@ -350,7 +371,7 @@ export const createProduct = async (req, res) => {
       colorClass:    body.color_class        ?? null,
 
       ...(businessType === 'retail' && {
-        stockQuantity:     body.stock_quantity,
+        stockQuantity:     body.kind === 'service' ? 0 : body.stock_quantity,
         lowStockThreshold: body.low_stock_threshold ?? null,
         manufacturingDate: body.manufacturing_date  ?? null,
         expirationDate:    body.expiration_date      ?? null,
@@ -408,7 +429,11 @@ export const updateProduct = async (req, res) => {
       return errRes(res, 400, 'VALIDATION_ERROR', 'Validation failed', { thumbnail_urls: 'Maximum 5 thumbnail URLs allowed' });
     }
 
+    // `kind` is deliberately absent — an offering's identity is fixed at
+    // creation; flipping product↔service mid-life would corrupt stock/lead
+    // semantics.
     const shared = {
+      price_from: 'priceFrom',
       name: 'name', description: 'description', category_id: 'categoryId',
       price: 'price', currency: 'currency', discounted_price: 'discountedPrice',
       tax_included: 'taxIncluded', tax_type: 'taxType', tax_value: 'taxValue',
@@ -469,12 +494,6 @@ export const deleteProduct = async (req, res) => {
       return errRes(res, 409, 'CONFLICT', 'Cannot delete an available food item. Disable availability first');
     }
 
-    const pendingOrder = await Order.findOne({
-      'items.productId': product._id,
-      status: { $nin: ['Delivered', 'Cancelled'] },
-    });
-    if (pendingOrder) return errRes(res, 409, 'CONFLICT', 'Cannot delete a product with pending orders');
-
     await product.deleteOne();
     return res.json({ success: true });
   } catch (err) {
@@ -524,19 +543,6 @@ export const restockProduct = async (req, res) => {
 
     product.stockQuantity = product.stockQuantity === 0 ? quantity : product.stockQuantity + quantity;
     await product.save();
-
-    const { customerPhone } = req.body;
-    if (customerPhone) {
-      AISetup.findOne({ userId: req.user.userId }).select('selectedNumberId').then((aiSetup) => {
-        if (aiSetup?.selectedNumberId) {
-          dispatchToStaffly('product.restocked', aiSetup.selectedNumberId, {
-            productName: product.name,
-            newStock: product.stockQuantity,
-            customerPhone,
-          });
-        }
-      }).catch(() => {});
-    }
 
     return res.json({ success: true, data: formatProduct(product) });
   } catch (err) {
