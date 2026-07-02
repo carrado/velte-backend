@@ -190,3 +190,51 @@ export async function initiateTransfer({ recipientCode, amountNaira, reason, ref
     status: data.status, // "pending" | "success" | "failed" | "otp"
   };
 }
+
+// ── Charge a saved authorization (Wallet auto-recharge) ────────────────────────
+// Reuses the reusable `authorization_code` from a vendor's first successful
+// card top-up. Never called per-lead — only to batch wallet top-ups (spec §11),
+// since Paystack per-charge fees make tiny per-lead charges wasteful.
+
+export async function chargeAuthorization({
+  authorizationCode,
+  email,
+  amountNaira,
+  reference,
+  metadata = {},
+}) {
+  return paystackFetch("/transaction/charge_authorization", {
+    method: "POST",
+    body: JSON.stringify({
+      authorization_code: authorizationCode,
+      email,
+      amount: Math.round(amountNaira * 100),
+      reference,
+      metadata,
+    }),
+  });
+}
+
+// ── Dedicated Virtual Account (Wallet DVA fallback) ─────────────────────────────
+// Issues a unique NUBAN the vendor can transfer into to fund their wallet —
+// the bank-transfer-native fallback for card-averse vendors (spec §11 / D1).
+// Requires a Paystack customer to already exist (see createCustomer above).
+
+export async function createDedicatedVirtualAccount({
+  customerCode,
+  preferredBank = "wema-bank",
+}) {
+  const data = await paystackFetch("/dedicated_account", {
+    method: "POST",
+    body: JSON.stringify({
+      customer: customerCode,
+      preferred_bank: preferredBank,
+    }),
+  });
+
+  return {
+    accountNumber: data.account_number,
+    bankName: data.bank?.name ?? null,
+    accountName: data.account_name,
+  };
+}

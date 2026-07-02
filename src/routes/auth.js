@@ -13,9 +13,6 @@ import { profile } from '../controllers/userProfile.js';
 import { updateProfile } from '../controllers/auth/updateProfile.js';
 import { passwordResetOTP, resendOTP } from '../controllers/auth/resend-verification.js';
 import { requestPasswordChange, confirmPasswordChange } from '../controllers/auth/changePassword.js';
-import { getNotificationSettings, saveNotificationSettings } from '../controllers/auth/notificationSettings.js';
-import { getInvoiceSettings, updateInvoiceSettings } from '../controllers/auth/invoiceSettings.js';
-import { getAiSettings, updateAiSettings } from '../controllers/auth/aiSettings.js';
 import { updateBusinessType, updateFoodSettings } from '../controllers/auth/businessType.js';
 
 const router = express.Router();
@@ -36,18 +33,6 @@ router.get("/me", verifyAuth, profile)
 // Account settings — password change (two-step)
 router.post("/change-password/request", verifyAuth, requestPasswordChange);
 router.post("/change-password/confirm", verifyAuth, confirmPasswordChange);
-
-// Account settings — notification preferences
-router.get("/notifications", verifyAuth, getNotificationSettings);
-router.put("/notifications", verifyAuth, saveNotificationSettings);
-
-// Account settings — invoice & receipt document templates
-router.get("/invoice-settings", verifyAuth, getInvoiceSettings);
-router.put("/invoice-settings", verifyAuth, updateInvoiceSettings);
-
-// AI settings — operating hours + escalation trigger
-router.get("/ai-settings", verifyAuth, getAiSettings);
-router.put("/ai-settings", verifyAuth, updateAiSettings);
 
 // Business type
 router.patch("/business-type", verifyAuth, updateBusinessType);

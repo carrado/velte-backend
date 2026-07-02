@@ -1,10 +1,8 @@
 import User from "../../models/Users.js";
-import AISetup from "../../models/AiSetup.model.js";
-import { uploadWhatsAppProfilePhoto } from "../../services/meta.service.js";
 
 export const updateProfile = async (req, res) => {
   try {
-    const { avatar, name, businessName, email, phone } = req.body;
+    const { avatar, name, businessName, email, phone, area, location } = req.body;
     const user = await User.findById(req.user.userId);
 
     if (!user) {
@@ -14,6 +12,20 @@ export const updateProfile = async (req, res) => {
     if (avatar !== undefined) user.avatar = avatar;
     if (name !== undefined) user.name = name.trim();
     if (phone !== undefined) user.phone = phone;
+    if (area !== undefined) user.area = area;
+
+    if (location !== undefined) {
+      const { lat, lng } = location ?? {};
+      if (
+        typeof lat !== "number" ||
+        typeof lng !== "number" ||
+        lat < -90 || lat > 90 ||
+        lng < -180 || lng > 180
+      ) {
+        return res.status(400).json({ message: "location must be { lat, lng } within valid range" });
+      }
+      user.geo = { type: "Point", coordinates: [lng, lat] };
+    }
 
     if (businessName !== undefined) {
       if (!user.company) user.company = {};
@@ -33,18 +45,6 @@ export const updateProfile = async (req, res) => {
 
     await user.save();
 
-    // If the avatar changed, push it to WhatsApp Business Profile non-blocking.
-    if (avatar !== undefined && user.avatar) {
-      AISetup.findOne({ userId: user._id })
-        .select("+metaAccessToken")
-        .then((setup) => {
-          if (setup?.metaConnected && setup.selectedNumberId && setup.metaAccessToken) {
-            return uploadWhatsAppProfilePhoto(user.avatar, setup.selectedNumberId, setup.metaAccessToken);
-          }
-        })
-        .catch((err) => console.warn("WhatsApp profile photo sync failed:", err.message));
-    }
-
     res.status(200).json({
       success: true,
       user: {
@@ -53,6 +53,8 @@ export const updateProfile = async (req, res) => {
         email: user.email,
         phone: user.phone,
         avatar: user.avatar,
+        area: user.area ?? null,
+        geo: user.geo ?? null,
         company: {
           name: user.company?.name ?? null,
           location: user.company?.location ?? null,

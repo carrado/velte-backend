@@ -71,6 +71,12 @@ const productSchema = new mongoose.Schema(
     dailyLimitDisabled:   { type: Boolean, default: false },
     allowPreOrder:        { type: Boolean, default: false },
     modifiers:            { type: [modifierGroupSchema], default: [] },
+
+    // ── Velte Connect retrieval ─────────────────────────────────────────────
+    // Voyage `voyage-4` embedding of name+attributes+category, populated by the
+    // AI search layer (Bucket D3) on create/update. Atlas Vector Search index is
+    // created out-of-band (Atlas UI/API), not declared here.
+    embedding: { type: [Number], default: undefined, select: false },
   },
   {
     timestamps: true,
