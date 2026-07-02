@@ -16,6 +16,11 @@ import {
 // for one — removes the cold-start "prepay with zero track record" barrier.
 const STARTER_CREDIT_KOBO = 200_000; // ₦2,000
 
+// Floor for top-ups and auto-recharge amounts — keeps card fees proportionate
+// and matches the frontend's client-side minimum.
+const MIN_AMOUNT_NAIRA = 1000;
+const MIN_AMOUNT_KOBO = MIN_AMOUNT_NAIRA * 100;
+
 async function getOrCreateWallet(vendorId) {
   // Atomic get-or-create: concurrent callers all converge on the same document
   // via the unique index on vendorId — upsert can't create duplicates.
@@ -66,6 +71,7 @@ function serializeWallet(wallet) {
     currency: wallet.currency,
     autoRecharge: {
       enabled: wallet.autoRecharge.enabled,
+      pendingEnable: wallet.autoRecharge.pendingEnable,
       thresholdKobo: wallet.autoRecharge.thresholdKobo,
       topupKobo: wallet.autoRecharge.topupKobo,
       hasCardOnFile: !!wallet.autoRecharge.authorizationCode,
@@ -102,8 +108,30 @@ export async function getWallet(req, res, next) {
 export async function initializeTopup(req, res, next) {
   try {
     const amountNaira = Number(req.body?.amountNaira);
-    if (!Number.isFinite(amountNaira) || amountNaira < 100) {
-      throw new AppError("amountNaira must be at least 100.", 400);
+    if (!Number.isFinite(amountNaira) || amountNaira < MIN_AMOUNT_NAIRA) {
+      throw new AppError(`Minimum top-up is ₦${MIN_AMOUNT_NAIRA.toLocaleString("en-NG")}.`, 400);
+    }
+
+    // First-time auto-recharge setup: preferences ride along in the Paystack
+    // metadata and are only written to the wallet once the payment succeeds
+    // and a reusable card authorization is captured (see
+    // creditWalletFromReference) — nothing is stored if checkout is abandoned.
+    let autoRecharge = null;
+    if (req.body?.autoRecharge) {
+      const thresholdKobo = Number(req.body.autoRecharge.thresholdKobo);
+      const topupKobo = Number(req.body.autoRecharge.topupKobo);
+      if (
+        !Number.isFinite(thresholdKobo) ||
+        thresholdKobo < MIN_AMOUNT_KOBO ||
+        !Number.isFinite(topupKobo) ||
+        topupKobo < MIN_AMOUNT_KOBO
+      ) {
+        throw new AppError(
+          `Auto-recharge amounts must be at least ₦${MIN_AMOUNT_NAIRA.toLocaleString("en-NG")}.`,
+          400,
+        );
+      }
+      autoRecharge = { thresholdKobo, topupKobo };
     }
 
     const user = await User.findById(req.user.userId).select("email");
@@ -124,7 +152,13 @@ export async function initializeTopup(req, res, next) {
         type: "wallet_topup",
         vendorId: req.user.userId.toString(),
         walletId: wallet._id.toString(),
+        ...(autoRecharge ? { autoRecharge } : {}),
       },
+      // Auto-recharge setup must be paid by card — capturing the reusable
+      // authorization is the whole point, and a transfer would credit the
+      // wallet without ever activating auto-recharge. Plain top-ups accept
+      // bank transfer too.
+      channels: autoRecharge ? ["card"] : ["card", "bank_transfer"],
     });
 
     res.json({
@@ -190,6 +224,40 @@ async function creditWalletFromReference(reference, expectedVendorId = null) {
     wallet.autoRecharge.authorizationCode = auth.authorization_code;
     wallet.autoRecharge.last4 = auth.last4 ?? null;
     wallet.autoRecharge.cardType = auth.card_type ?? null;
+
+    // First-time setup rode along in the metadata (see initializeTopup):
+    // the payment succeeded and we hold a chargeable card, so persist the
+    // preferences and switch auto-recharge on in one go. Plain top-ups carry
+    // no autoRecharge metadata and change nothing here.
+    const prefs = meta.autoRecharge;
+    if (prefs) {
+      const thresholdKobo = Number(prefs.thresholdKobo);
+      const topupKobo = Number(prefs.topupKobo);
+      if (
+        Number.isFinite(thresholdKobo) &&
+        thresholdKobo >= MIN_AMOUNT_KOBO &&
+        Number.isFinite(topupKobo) &&
+        topupKobo >= MIN_AMOUNT_KOBO
+      ) {
+        wallet.autoRecharge.thresholdKobo = thresholdKobo;
+        wallet.autoRecharge.topupKobo = topupKobo;
+        wallet.autoRecharge.enabled = true;
+        wallet.autoRecharge.pendingEnable = false;
+      }
+    }
+
+    // Honor pre-card intent: the vendor saved funding preferences before any
+    // card existed, so the first captured authorization activates
+    // auto-recharge without another trip to the funding modal. Vendors who
+    // only ever topped up (never saved preferences) are left alone.
+    if (
+      wallet.autoRecharge.pendingEnable &&
+      wallet.autoRecharge.thresholdKobo > 0 &&
+      wallet.autoRecharge.topupKobo > 0
+    ) {
+      wallet.autoRecharge.enabled = true;
+      wallet.autoRecharge.pendingEnable = false;
+    }
   }
 
   await wallet.save();
@@ -297,27 +365,39 @@ export async function setFundingMethod(req, res, next) {
   try {
     const { enabled, thresholdKobo, topupKobo } = req.body ?? {};
     const wallet = await getOrCreateWallet(req.user.userId);
+    const hasCard = !!wallet.autoRecharge.authorizationCode;
 
-    if (enabled && !wallet.autoRecharge.authorizationCode) {
-      throw new AppError(
-        "Top up with a card at least once before enabling auto-recharge.",
-        400,
-      );
+    if (hasCard) {
+      // Card on file: the toggle is authoritative, and an explicit choice
+      // supersedes any earlier pre-card intent.
+      if (enabled !== undefined) wallet.autoRecharge.enabled = !!enabled;
+      wallet.autoRecharge.pendingEnable = false;
+    } else {
+      // No card yet: `enabled` can't take effect (nothing to charge), so
+      // saving preferences records the intent instead — auto-recharge turns
+      // on automatically when the first card top-up captures an
+      // authorization (see creditWalletFromReference).
+      wallet.autoRecharge.enabled = false;
+      wallet.autoRecharge.pendingEnable = true;
     }
-
-    if (enabled !== undefined) wallet.autoRecharge.enabled = !!enabled;
-    // Zero is never meaningful here — "recharge when below ₦0" can never fire,
-    // and "top up by ₦0" is a no-op — so both must be strictly positive, not
-    // just non-negative.
+    // Both amounts share the same ₦1,000 floor as manual top-ups — a lower
+    // threshold could still be meaningful, but a "top up by" below the minimum
+    // would auto-charge amounts we don't accept anywhere else.
     if (thresholdKobo !== undefined) {
-      if (!Number.isFinite(thresholdKobo) || thresholdKobo <= 0) {
-        throw new AppError("thresholdKobo must be greater than 0.", 400);
+      if (!Number.isFinite(thresholdKobo) || thresholdKobo < MIN_AMOUNT_KOBO) {
+        throw new AppError(
+          `Recharge threshold must be at least ₦${MIN_AMOUNT_NAIRA.toLocaleString("en-NG")}.`,
+          400,
+        );
       }
       wallet.autoRecharge.thresholdKobo = thresholdKobo;
     }
     if (topupKobo !== undefined) {
-      if (!Number.isFinite(topupKobo) || topupKobo <= 0) {
-        throw new AppError("topupKobo must be greater than 0.", 400);
+      if (!Number.isFinite(topupKobo) || topupKobo < MIN_AMOUNT_KOBO) {
+        throw new AppError(
+          `Top-up amount must be at least ₦${MIN_AMOUNT_NAIRA.toLocaleString("en-NG")}.`,
+          400,
+        );
       }
       wallet.autoRecharge.topupKobo = topupKobo;
     }
@@ -359,6 +439,99 @@ export async function requestDva(req, res, next) {
     await wallet.save();
 
     res.json({ success: true, data: serializeWallet(wallet) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── GET /api/wallet/stats ────────────────────────────────────────────────────
+// Aggregated lead-generation figures for the wallet dashboard: lifetime and
+// current-month lead spend/counts, top-up totals, and a zero-filled monthly
+// spend series for the trend chart (?months=3|6|12, default 6).
+
+export async function getWalletStats(req, res, next) {
+  try {
+    const wallet = await getOrCreateWallet(req.user.userId);
+
+    const months = [3, 6, 12].includes(Number(req.query.months))
+      ? Number(req.query.months)
+      : 6;
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const seriesStart = new Date(
+      now.getFullYear(),
+      now.getMonth() - (months - 1),
+      1,
+    );
+
+    const [agg] = await WalletTransaction.aggregate([
+      { $match: { walletId: wallet._id, status: "success" } },
+      {
+        $facet: {
+          totals: [
+            {
+              $group: {
+                _id: "$type",
+                amountKobo: { $sum: "$amountKobo" },
+                count: { $sum: 1 },
+              },
+            },
+          ],
+          month: [
+            { $match: { createdAt: { $gte: monthStart } } },
+            {
+              $group: {
+                _id: "$type",
+                amountKobo: { $sum: "$amountKobo" },
+                count: { $sum: 1 },
+              },
+            },
+          ],
+          monthly: [
+            { $match: { type: "debit", createdAt: { $gte: seriesStart } } },
+            {
+              $group: {
+                _id: { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } },
+                spentKobo: { $sum: "$amountKobo" },
+                leads: { $sum: 1 },
+              },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const byType = (rows) => Object.fromEntries(rows.map((r) => [r._id, r]));
+    const totals = byType(agg.totals);
+    const month = byType(agg.month);
+
+    // Fixed window, zero-filled so the chart never has gaps.
+    const monthlyMap = new Map(
+      agg.monthly.map((r) => [`${r._id.year}-${r._id.month}`, r]),
+    );
+    const monthly = Array.from({ length: months }, (_, i) => {
+      const d = new Date(now.getFullYear(), now.getMonth() - (months - 1) + i, 1);
+      const row = monthlyMap.get(`${d.getFullYear()}-${d.getMonth() + 1}`);
+      return {
+        year: d.getFullYear(),
+        month: d.getMonth() + 1,
+        spentKobo: row?.spentKobo ?? 0,
+        leads: row?.leads ?? 0,
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        totalSpentKobo: totals.debit?.amountKobo ?? 0,
+        totalLeads: totals.debit?.count ?? 0,
+        totalToppedUpKobo: totals.topup?.amountKobo ?? 0,
+        topupsCount: totals.topup?.count ?? 0,
+        monthSpentKobo: month.debit?.amountKobo ?? 0,
+        monthLeads: month.debit?.count ?? 0,
+        monthly,
+      },
+    });
   } catch (err) {
     next(err);
   }

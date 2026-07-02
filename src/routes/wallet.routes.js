@@ -8,6 +8,7 @@ import {
   setFundingMethod,
   requestDva,
   getTransactions,
+  getWalletStats,
 } from "../controllers/wallet/wallet.controller.js";
 
 const router = express.Router();
@@ -37,5 +38,6 @@ router.post("/topup/verify", verifyLimiter, verifyTopup);
 router.put("/funding-method", setFundingMethod);
 router.post("/dva", initLimiter, requestDva);
 router.get("/transactions", getTransactions);
+router.get("/stats", getWalletStats);
 
 export default router;

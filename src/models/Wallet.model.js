@@ -27,6 +27,10 @@ const walletSchema = new mongoose.Schema(
 
     autoRecharge: {
       enabled: { type: Boolean, default: false },
+      // Vendor saved funding preferences before having a card on file — flip
+      // `enabled` on automatically when the first card top-up captures a
+      // reusable authorization.
+      pendingEnable: { type: Boolean, default: false },
       // Recharge when balance drops below this threshold.
       thresholdKobo: { type: Number, default: 0, min: 0 },
       // Amount to top up by when auto-recharge fires.

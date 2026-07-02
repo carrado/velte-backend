@@ -36,6 +36,14 @@ const productSchema = new mongoose.Schema(
     },
     businessType: { type: String, enum: ['retail', 'food'], required: true },
 
+    // ── offering identity (marketplace model) ───────────────────────────────
+    // A catalog entry is an "offering": a stocked good OR a service (repairs,
+    // tailoring, cleaning…). Services carry no stock semantics.
+    kind: { type: String, enum: ['product', 'service'], default: 'product' },
+    // Price is a starting price ("from ₦X") — common for services where the
+    // final quote depends on the job.
+    priceFrom: { type: Boolean, default: false },
+
     // ── shared fields ───────────────────────────────────────────────────────
     name:           { type: String, required: true, trim: true, maxlength: 120 },
     description:    { type: String, maxlength: 1000, default: null },
@@ -87,6 +95,7 @@ const productSchema = new mongoose.Schema(
 
 productSchema.virtual('onSale').get(function () {
   if (this.discountedPrice == null) return false;
+  if (this.kind === 'service')        return true; // services have no stock gate
   if (this.businessType === 'retail') return this.stockQuantity > 0;
   if (this.businessType === 'food')   return this.isCurrentlyAvailable === true;
   return false;
