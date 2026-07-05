@@ -1,16 +1,24 @@
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
 export const FOOD_CATEGORIES = [
-  'rice', 'soups', 'swallow', 'grilled', 'protein',
-  'snacks', 'drinks', 'breakfast', 'desserts', 'party',
+  "rice",
+  "soups",
+  "swallow",
+  "grilled",
+  "protein",
+  "snacks",
+  "drinks",
+  "breakfast",
+  "desserts",
+  "party",
 ];
 
 const attributeSchema = new mongoose.Schema(
   {
-    name:  { type: String, required: true },
+    name: { type: String, required: true },
     value: { type: String, required: true },
   },
-  { _id: true }
+  { _id: true },
 );
 
 // Each modifier group is embedded per product (required/multi_select may differ
@@ -18,67 +26,91 @@ const attributeSchema = new mongoose.Schema(
 // so that prices stay centralised across every product that uses the same option.
 const modifierGroupSchema = new mongoose.Schema(
   {
-    name:        { type: String, required: true },
-    required:    { type: Boolean, default: false },
+    name: { type: String, required: true },
+    required: { type: Boolean, default: false },
     multiSelect: { type: Boolean, default: false },
-    options:     [{ type: mongoose.Schema.Types.ObjectId, ref: 'ModifierOption' }],
+    options: [{ type: mongoose.Schema.Types.ObjectId, ref: "ModifierOption" }],
   },
-  { _id: true }
+  { _id: true },
 );
 
 const productSchema = new mongoose.Schema(
   {
     vendorId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
+      ref: "User",
       required: true,
       index: true,
     },
-    businessType: { type: String, enum: ['retail', 'food'], required: true },
+    // Mirrors the vendor's account type. "service"/"both" behave retail-shaped
+    // (stock gated by `kind`); only "food" gets the dish tooling.
+    businessType: {
+      type: String,
+      enum: ["retail", "food", "service", "both", "food_both"],
+      required: true,
+    },
 
     // ── offering identity (marketplace model) ───────────────────────────────
     // A catalog entry is an "offering": a stocked good OR a service (repairs,
     // tailoring, cleaning…). Services carry no stock semantics.
-    kind: { type: String, enum: ['product', 'service'], default: 'product' },
-    // Price is a starting price ("from ₦X") — common for services where the
-    // final quote depends on the job.
-    priceFrom: { type: Boolean, default: false },
+    kind: { type: String, enum: ["product", "service"], default: "product" },
+    // Service with no upfront price — buyers "Contact for quote" and the price
+    // is agreed per job in chat. Only meaningful for kind === 'service'.
+    quoteOnRequest: { type: Boolean, default: false },
 
     // ── shared fields ───────────────────────────────────────────────────────
-    name:           { type: String, required: true, trim: true, maxlength: 120 },
-    description:    { type: String, maxlength: 1000, default: null },
-    categoryId:     { type: String, required: true },
-    price:          { type: Number, required: true, min: 0 },
-    currency:       { type: String, enum: ['NGN', 'USD'], default: 'NGN' },
-    discountedPrice:{ type: Number, default: null },
-    taxIncluded:    { type: Boolean, default: false },
-    taxType:        { type: String, default: null },   // 'percentage' | 'fixed'
-    taxValue:       { type: Number, default: null },
-    isNegotiable:   { type: Boolean, default: false },
-    minimumPrice:   { type: Number, default: null },
-    isFeatured:     { type: Boolean, default: false },
-    tags:           { type: [String], default: [] },
-    mainImageUrl:   { type: String, default: null },
-    thumbnailUrls:  { type: [String], default: [] },
-    videoUrl:       { type: String, default: null },
-    colorClass:     { type: String, default: null },
+    name: { type: String, required: true, trim: true, maxlength: 120 },
+    description: { type: String, maxlength: 1000, default: null },
+    // Services carry no category — discovered by meaning (description + sector).
+    categoryId: {
+      type: String,
+      default: null,
+      required: function () {
+        return this.kind !== "service";
+      },
+    },
+    // `price` is the single price, or the low end of a range. `priceMax` (when
+    // set) makes it a range [price .. priceMax] shown as "₦X – ₦Y".
+    price: { type: Number, required: true, min: 0 },
+    priceMax: { type: Number, default: null, min: 0 },
+    currency: { type: String, enum: ["NGN", "USD"], default: "NGN" },
+    isFeatured: { type: Boolean, default: false },
+    tags: { type: [String], default: [] },
+    mainImageUrl: { type: String, default: null },
+    thumbnailUrls: { type: [String], default: [] },
+    videoUrl: { type: String, default: null },
+    colorClass: { type: String, default: null },
 
     // ── retail-only ─────────────────────────────────────────────────────────
-    stockQuantity:     { type: Number, default: 0 },
-    orderedQuantity:   { type: Number, default: 0 },
+    stockQuantity: { type: Number, default: 0 },
+    orderedQuantity: { type: Number, default: 0 },
     lowStockThreshold: { type: Number, default: null },
     manufacturingDate: { type: Date, default: null },
-    expirationDate:    { type: Date, default: null },
-    attributes:        { type: [attributeSchema], default: [] },
+    expirationDate: { type: Date, default: null },
+    attributes: { type: [attributeSchema], default: [] },
 
     // ── food-only ───────────────────────────────────────────────────────────
-    estimatedPrepMins:    { type: Number, default: null },
+    estimatedPrepMins: { type: Number, default: null },
     isCurrentlyAvailable: { type: Boolean, default: true },
-    dailyLimit:           { type: Number, default: null },
-    dailyOrderCount:      { type: Number, default: 0 },
-    dailyLimitDisabled:   { type: Boolean, default: false },
-    allowPreOrder:        { type: Boolean, default: false },
-    modifiers:            { type: [modifierGroupSchema], default: [] },
+    dailyLimit: { type: Number, default: null },
+    dailyOrderCount: { type: Number, default: 0 },
+    dailyLimitDisabled: { type: Boolean, default: false },
+    allowPreOrder: { type: Boolean, default: false },
+    modifiers: { type: [modifierGroupSchema], default: [] },
+
+    // ── catalog provenance (connected catalogs, spec §16.1) ─────────────────
+    // Where this offering came from. "manual" = entered in the dashboard;
+    // "connected" = synced from the vendor's own website (WooCommerce/Shopify/
+    // feed). Connected items are read-only in Velte ("managed on your website")
+    // and re-sync from `sourceUrl`; `externalId` dedupes across syncs.
+    origin: {
+      type: String,
+      enum: ["manual", "connected"],
+      default: "manual",
+    },
+    sourceUrl: { type: String, default: null },
+    externalId: { type: String, default: null },
+    syncedAt: { type: Date, default: null },
 
     // ── Velte Connect retrieval ─────────────────────────────────────────────
     // Voyage `voyage-4` embedding of name+attributes+category, populated by the
@@ -89,16 +121,8 @@ const productSchema = new mongoose.Schema(
   {
     timestamps: true,
     toObject: { virtuals: true },
-    toJSON:   { virtuals: true },
-  }
+    toJSON: { virtuals: true },
+  },
 );
 
-productSchema.virtual('onSale').get(function () {
-  if (this.discountedPrice == null) return false;
-  if (this.kind === 'service')        return true; // services have no stock gate
-  if (this.businessType === 'retail') return this.stockQuantity > 0;
-  if (this.businessType === 'food')   return this.isCurrentlyAvailable === true;
-  return false;
-});
-
-export default mongoose.model('Product', productSchema);
+export default mongoose.model("Product", productSchema);

@@ -2,6 +2,7 @@ import Store from "../../models/Store.model.js";
 import Product from "../../models/Product.model.js";
 import User from "../../models/Users.js";
 import { AppError } from "../../middleware/errorHandler.js";
+import { embedAndSaveStore } from "../../services/retrieval.service.js";
 
 const HANDLE_RE = /^[a-z0-9](?:[a-z0-9-]{1,28}[a-z0-9])?$/; // 2–30 chars, no edge hyphens
 const MAX_SECTORS = 5;
@@ -27,7 +28,8 @@ async function getOrCreateStore(vendorId) {
   if (!user) throw new AppError("User not found.", 404);
 
   const displayName = user.company?.name || user.name || "My Store";
-  const base = slugify(user.company?.name || user.username || "store") || "store";
+  const base =
+    slugify(user.company?.name || user.username || "store") || "store";
 
   // Find a free handle: base, then base-2, base-3, …
   let handle = base;
@@ -48,6 +50,20 @@ async function getOrCreateStore(vendorId) {
   }
 }
 
+function serializeConnectedCatalog(cat) {
+  if (!cat) return null;
+  return {
+    sourceUrl: cat.sourceUrl,
+    platform: cat.platform,
+    status: cat.status,
+    productCount: cat.productCount ?? 0,
+    connectedAt: cat.connectedAt ?? null,
+    lastSyncedAt: cat.lastSyncedAt ?? null,
+  };
+}
+
+// Shared, public-safe shape (also spread into the public storefront). The
+// connected-catalog details are vendor-private — added only in getMyStore.
 function serializeStore(store) {
   return {
     handle: store.handle,
@@ -64,7 +80,13 @@ function serializeStore(store) {
 export async function getMyStore(req, res, next) {
   try {
     const store = await getOrCreateStore(req.user.userId);
-    res.json({ success: true, data: serializeStore(store) });
+    res.json({
+      success: true,
+      data: {
+        ...serializeStore(store),
+        connectedCatalog: serializeConnectedCatalog(store.connectedCatalog),
+      },
+    });
   } catch (err) {
     next(err);
   }
@@ -129,7 +151,10 @@ export async function updateMyStore(req, res, next) {
 
     if (gallery !== undefined) {
       if (!Array.isArray(gallery) || gallery.length > MAX_GALLERY) {
-        throw new AppError(`Gallery can hold at most ${MAX_GALLERY} photos.`, 400);
+        throw new AppError(
+          `Gallery can hold at most ${MAX_GALLERY} photos.`,
+          400,
+        );
       }
       if (!gallery.every((u) => /^https:\/\//.test(String(u)))) {
         throw new AppError("Gallery entries must be https image URLs.", 400);
@@ -138,7 +163,156 @@ export async function updateMyStore(req, res, next) {
     }
 
     await store.save();
-    res.json({ success: true, data: serializeStore(store) });
+    // Description/sectors/name may have changed — re-embed. Fire-and-forget:
+    // never block the store update on a third-party AI call.
+    embedAndSaveStore(store);
+    res.json({
+      success: true,
+      data: {
+        ...serializeStore(store),
+        connectedCatalog: serializeConnectedCatalog(store.connectedCatalog),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── POST /api/store/connect-catalog ──────────────────────────────────────────
+// Connected Catalogs (spec §16.1). The vendor pastes their own store URL; we
+// probe it to detect the platform and count products, then record the source so
+// the sync-mirror pipeline can ingest it. Sync-mirror, not live proxy — the
+// vendor's site stays the source of truth.
+
+const PROBE_TIMEOUT_MS = 6000;
+
+/** Reject non-http(s) URLs and obvious internal targets (basic SSRF guard). */
+function normalizeSourceUrl(raw) {
+  let value = String(raw || "").trim();
+  if (!value) throw new AppError("Enter your website address.", 400);
+  if (!/^https?:\/\//i.test(value)) value = `https://${value}`;
+
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new AppError("That doesn't look like a valid website address.", 400);
+  }
+  if (!/^https?:$/.test(url.protocol)) {
+    throw new AppError("Only http and https addresses are supported.", 400);
+  }
+  const host = url.hostname.toLowerCase();
+  const isPrivate =
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "0.0.0.0" ||
+    host.endsWith(".local") ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+  if (isPrivate) {
+    throw new AppError("That address can't be reached publicly.", 400);
+  }
+  // Store the origin — adapters build their own paths off it.
+  return url.origin;
+}
+
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      redirect: "follow",
+      headers: { "User-Agent": "VelteConnect/1.0 (+catalog-sync)" },
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Detect the catalog platform behind `origin` and count products. Supported
+ * platforms today: WooCommerce (Store API) and Shopify (products.json). Custom
+ * sites and other builders aren't auto-readable yet, so anything else is
+ * recorded as "review" (not a live connection). The first-party `/velte-feed`
+ * adapter (spec §16.1) is intentionally left out until we open up custom sites.
+ */
+async function probeCatalog(origin) {
+  // 1. WooCommerce Store API — public, no auth. Total lives in X-WP-Total.
+  try {
+    const res = await fetchWithTimeout(
+      `${origin}/wp-json/wc/store/products?per_page=1`,
+    );
+    if (res.ok) {
+      const total = parseInt(res.headers.get("x-wp-total") || "", 10);
+      const body = await res.json().catch(() => null);
+      if (Array.isArray(body)) {
+        return {
+          platform: "woocommerce",
+          status: "connected",
+          productCount: Number.isFinite(total) ? total : body.length,
+        };
+      }
+    }
+  } catch {
+    /* fall through to the next adapter */
+  }
+
+  // 2. Shopify — /products.json (public, page-paginated at 250/page). Walk the
+  //    pages for an exact count, capped so a huge store can't stall the request.
+  try {
+    const SHOPIFY_PAGE_SIZE = 250;
+    const SHOPIFY_MAX_PAGES = 20; // safety cap: counts up to 5,000 products
+    let total = 0;
+    let isShopify = false;
+
+    for (let page = 1; page <= SHOPIFY_MAX_PAGES; page += 1) {
+      const res = await fetchWithTimeout(
+        `${origin}/products.json?limit=${SHOPIFY_PAGE_SIZE}&page=${page}`,
+      );
+      if (!res.ok) break;
+      const body = await res.json().catch(() => null);
+      if (!body || !Array.isArray(body.products)) break;
+      if (page === 1) isShopify = true; // first valid page confirms Shopify
+      total += body.products.length;
+      // A short (or empty) page is the last one — stop walking.
+      if (body.products.length < SHOPIFY_PAGE_SIZE) break;
+    }
+
+    if (isShopify) {
+      return { platform: "shopify", status: "connected", productCount: total };
+    }
+  } catch {
+    /* fall through */
+  }
+
+  // Not a supported platform — record it as "review" (a demand signal for which
+  // builders vendors want) but don't claim a live connection.
+  return { platform: "unknown", status: "review", productCount: 0 };
+}
+
+export async function connectCatalog(req, res, next) {
+  try {
+    const sourceUrl = normalizeSourceUrl(req.body?.source_url);
+    const probe = await probeCatalog(sourceUrl);
+
+    const store = await getOrCreateStore(req.user.userId);
+    store.connectedCatalog = {
+      sourceUrl,
+      platform: probe.platform,
+      status: probe.status,
+      productCount: probe.productCount,
+      connectedAt: new Date(),
+      lastSyncedAt: null,
+    };
+    await store.save();
+
+    res.json({
+      success: true,
+      data: serializeConnectedCatalog(store.connectedCatalog),
+    });
   } catch (err) {
     next(err);
   }
@@ -160,7 +334,7 @@ export async function getPublicStore(req, res, next) {
         .sort({ isFeatured: -1, createdAt: -1 })
         .limit(12)
         .select(
-          "name price currency discountedPrice mainImageUrl description kind priceFrom",
+          "name price priceMax currency mainImageUrl description kind quoteOnRequest",
         )
         .lean(),
     ]);
@@ -176,10 +350,10 @@ export async function getPublicStore(req, res, next) {
           id: p._id,
           name: p.name,
           kind: p.kind ?? "product",
-          priceFrom: p.priceFrom ?? false,
+          quoteOnRequest: p.quoteOnRequest ?? false,
           price: p.price,
+          priceMax: p.priceMax ?? null,
           currency: p.currency,
-          discountedPrice: p.discountedPrice,
           mainImageUrl: p.mainImageUrl,
           description: p.description,
         })),

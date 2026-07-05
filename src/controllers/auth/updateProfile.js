@@ -1,8 +1,12 @@
 import User from "../../models/Users.js";
 
+// Mirrored on the frontend (src/services/settings.ts, ADDRESS_CHANGE_COOLDOWN_MS)
+// so the UI can compute the same "locked until" window without another round trip.
+const ADDRESS_CHANGE_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 export const updateProfile = async (req, res) => {
   try {
-    const { avatar, name, businessName, email, phone, area, location } = req.body;
+    const { avatar, name, businessName, email, phone, area, state, location } = req.body;
     const user = await User.findById(req.user.userId);
 
     if (!user) {
@@ -12,8 +16,8 @@ export const updateProfile = async (req, res) => {
     if (avatar !== undefined) user.avatar = avatar;
     if (name !== undefined) user.name = name.trim();
     if (phone !== undefined) user.phone = phone;
-    if (area !== undefined) user.area = area;
 
+    let newGeo;
     if (location !== undefined) {
       const { lat, lng } = location ?? {};
       if (
@@ -24,7 +28,39 @@ export const updateProfile = async (req, res) => {
       ) {
         return res.status(400).json({ message: "location must be { lat, lng } within valid range" });
       }
-      user.geo = { type: "Point", coordinates: [lng, lat] };
+      newGeo = { type: "Point", coordinates: [lng, lat] };
+    }
+
+    const currentCoords = user.geo?.coordinates;
+    const locationChanging =
+      newGeo !== undefined &&
+      (!currentCoords ||
+        currentCoords[0] !== newGeo.coordinates[0] ||
+        currentCoords[1] !== newGeo.coordinates[1]);
+    const areaChanging =
+      area !== undefined && area.trim() !== (user.area ?? "").trim();
+    const stateChanging =
+      state !== undefined && state.trim() !== (user.state ?? "").trim();
+    const addressChanging = areaChanging || stateChanging || locationChanging;
+
+    let addressChangeBlocked = false;
+    let addressChangeAvailableAt = null;
+
+    if (addressChanging && user.addressChangedAt) {
+      const availableAt = new Date(
+        user.addressChangedAt.getTime() + ADDRESS_CHANGE_COOLDOWN_MS,
+      );
+      if (availableAt.getTime() > Date.now()) {
+        addressChangeBlocked = true;
+        addressChangeAvailableAt = availableAt;
+      }
+    }
+
+    if (addressChanging && !addressChangeBlocked) {
+      if (areaChanging) user.area = area;
+      if (stateChanging) user.state = state;
+      if (locationChanging) user.geo = newGeo;
+      user.addressChangedAt = new Date();
     }
 
     if (businessName !== undefined) {
@@ -47,6 +83,8 @@ export const updateProfile = async (req, res) => {
 
     res.status(200).json({
       success: true,
+      addressChangeBlocked,
+      addressChangeAvailableAt,
       user: {
         id: user._id,
         name: user.name,
@@ -54,7 +92,9 @@ export const updateProfile = async (req, res) => {
         phone: user.phone,
         avatar: user.avatar,
         area: user.area ?? null,
+        state: user.state ?? null,
         geo: user.geo ?? null,
+        addressChangedAt: user.addressChangedAt ?? null,
         company: {
           name: user.company?.name ?? null,
           location: user.company?.location ?? null,

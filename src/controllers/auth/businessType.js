@@ -4,8 +4,8 @@ export const updateBusinessType = async (req, res) => {
   try {
     const { businessType } = req.body;
 
-    if (!businessType || !['retail', 'food'].includes(businessType)) {
-      return res.status(400).json({ message: "businessType must be 'retail' or 'food'" });
+    if (!businessType || !['retail', 'food', 'service', 'both', 'food_both'].includes(businessType)) {
+      return res.status(400).json({ message: "businessType must be one of 'retail', 'food', 'service', 'both', 'food_both'" });
     }
 
     const user = await User.findByIdAndUpdate(

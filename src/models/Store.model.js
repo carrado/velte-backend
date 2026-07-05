@@ -43,6 +43,38 @@ const storeSchema = new mongoose.Schema(
     // Showcase photos (Cloudinary URLs).
     gallery: { type: [String], default: [] },
 
+    // ── Connected catalog (spec §16.1) ──────────────────────────────────────
+    // The vendor's own website, mirrored into Velte. One source per store.
+    // `null` until they connect. The site stays the source of truth: we re-sync
+    // on a schedule + manual refresh, and connected products are read-only here.
+    connectedCatalog: {
+      type: new mongoose.Schema(
+        {
+          // Normalized origin of the vendor's store (e.g. https://shop.com).
+          sourceUrl: { type: String, required: true },
+          // Detected adapter: how we pull the catalog.
+          platform: {
+            type: String,
+            enum: ["woocommerce", "shopify", "feed", "unknown"],
+            default: "unknown",
+          },
+          // "connected" once we can read the catalog; "review" when the site
+          // isn't auto-detectable and needs manual onboarding.
+          status: {
+            type: String,
+            enum: ["connected", "review"],
+            default: "review",
+          },
+          // Products found at the source on the last probe (0 until synced).
+          productCount: { type: Number, default: 0 },
+          connectedAt: { type: Date, default: Date.now },
+          lastSyncedAt: { type: Date, default: null },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
+
     // ── Velte Connect retrieval ─────────────────────────────────────────────
     // Voyage embedding of description + offering summaries, populated by the
     // AI search layer. Store-level index gives coverage for vendors with no

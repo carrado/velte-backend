@@ -36,6 +36,10 @@ const userSchema = new mongoose.Schema({
       type: [String],
       default: null
     },
+    state: {
+      type: String,
+      default: null,
+    },
   },
   country: {
     type: String,
@@ -88,8 +92,17 @@ const userSchema = new mongoose.Schema({
   },
   businessType: {
     type: String,
-    enum: ['retail', 'food'],
+    enum: ['retail', 'food', 'service', 'both', 'food_both'],
     default: 'retail',
+  },
+  sector: {
+    type: String,
+    default: null,
+  },
+  description: {
+    type: String,
+    default: '',
+    maxlength: 600,
   },
   preferences: {
     defaultCurrency: {
@@ -108,6 +121,11 @@ const userSchema = new mongoose.Schema({
     coordinates: { type: [Number], default: undefined }, // [lng, lat]
   },
   area:               { type: String, default: null }, // neighbourhood/market tag
+  state:              { type: String, default: null }, // Nigerian state — structured part of the address
+  // When area/state/geo was last changed — gates how often a vendor can move
+  // their pinned location, since discovery matching ranks by proximity and an
+  // instantly-movable address is an easy way to game "nearest vendor" results.
+  addressChangedAt:   { type: Date, default: null },
   trustScore:         { type: Number, default: 0, min: 0, max: 100 },
   paystackSubaccount: { type: String, default: null },
 }, {
