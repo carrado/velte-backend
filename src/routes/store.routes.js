@@ -3,6 +3,7 @@ import { verifyAuth } from "../middleware/auth.js";
 import {
   getMyStore,
   updateMyStore,
+  connectCatalog,
   getPublicStore,
 } from "../controllers/store/store.controller.js";
 
@@ -14,5 +15,8 @@ router.get("/by-handle/:handle", getPublicStore);
 // Vendor-owned store management.
 router.get("/me", verifyAuth, getMyStore);
 router.put("/me", verifyAuth, updateMyStore);
+
+// Connected Catalogs (spec §16.1) — connect the vendor's own website.
+router.post("/connect-catalog", verifyAuth, connectCatalog);
 
 export default router;

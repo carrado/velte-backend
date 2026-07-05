@@ -16,6 +16,11 @@ export const register = async (req, res) => {
       username,
       agreeToTerms,
       businessType,
+      phone,
+      state,
+      sector,
+      description,
+      location,
     } = req.body;
 
     // 🔹 Validate required fields
@@ -26,8 +31,22 @@ export const register = async (req, res) => {
       });
     }
 
-    if (businessType !== undefined && !['retail', 'food'].includes(businessType)) {
-      return res.status(400).json({ message: "businessType must be 'retail' or 'food'" });
+    if (businessType !== undefined && !['retail', 'food', 'service', 'both', 'food_both'].includes(businessType)) {
+      return res.status(400).json({ message: "businessType must be one of 'retail', 'food', 'service', 'both', 'food_both'" });
+    }
+
+    let geo;
+    if (location !== undefined) {
+      const { lat, lng } = location ?? {};
+      if (
+        typeof lat !== "number" ||
+        typeof lng !== "number" ||
+        lat < -90 || lat > 90 ||
+        lng < -180 || lng > 180
+      ) {
+        return res.status(400).json({ message: "location must be { lat, lng } within valid range" });
+      }
+      geo = { type: "Point", coordinates: [lng, lat] };
     }
 
     // 🔹 Check if user already exists
@@ -68,12 +87,21 @@ export const register = async (req, res) => {
       password,
       company: {
         name: businessName,
-        location: address,
         services: services,
+        phone: phone,
       },
       username,
       country: country,
       businessType: businessType || 'retail',
+      sector: sector || null,
+      description: description || '',
+      // Discovery matching (store display + proximity) reads area/state/geo,
+      // not company.location/company.state — write the real fields here so
+      // the address entered at signup is actually visible/usable later.
+      area: address || null,
+      state: state || null,
+      addressChangedAt: (address || state || geo) ? new Date() : null,
+      ...(geo && { geo }),
       emailOtp: {
         code: otp,
         expiresAt: new Date(Date.now() + 10 * 60 * 1000),

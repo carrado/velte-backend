@@ -19,6 +19,7 @@ import modifiersRoutes from "./routes/modifiers.routes.js";
 import categoriesRoutes from "./routes/categories.routes.js";
 import walletRoutes from "./routes/wallet.routes.js";
 import storeRoutes from "./routes/store.routes.js";
+import searchRoutes from "./routes/search.routes.js";
 
 const app = express();
 
@@ -102,6 +103,7 @@ app.use("/api/modifiers", modifiersRoutes);
 app.use("/api/categories", categoriesRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/store", storeRoutes);
+app.use("/api/search", searchRoutes);
 
 // Health check route
 app.get("/health", (req, res) => {

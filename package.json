@@ -6,7 +6,9 @@
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
     "test": "jest",
-    "seed:categories": "node src/seeds/categories.seed.js"
+    "seed:categories": "node src/seeds/categories.seed.js",
+    "backfill:embeddings": "node src/scripts/backfill-embeddings.js",
+    "test:retrieval": "node src/scripts/test-retrieval.js"
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",
