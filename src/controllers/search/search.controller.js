@@ -3,7 +3,6 @@ import {
   searchStores as findStores,
 } from "../../services/retrieval.service.js";
 import { AppError } from "../../middleware/errorHandler.js";
-import Search from "../../models/Search.model.js";
 import RecruitmentLead from "../../models/RecruitmentLead.model.js";
 
 // ── POST /api/search/products ─────────────────────────────────────────────────
@@ -15,22 +14,31 @@ import RecruitmentLead from "../../models/RecruitmentLead.model.js";
 
 export async function searchProducts(req, res, next) {
   try {
-    const { queryText, lat, lng, radiusKm, limit, isImageQuery } = req.body ?? {};
+    const { queryText, lat, lng, radiusKm, limit, isImageQuery, imageUrl } =
+      req.body ?? {};
 
     if (typeof queryText !== "string" || !queryText.trim()) {
       throw new AppError("queryText is required.", 400);
     }
-    if (typeof lat !== "number" || typeof lng !== "number") {
-      throw new AppError("lat/lng must be numbers.", 400);
+    // Both present (a located search) or both absent (a nationwide search,
+    // no distance ranking) are valid; only a partial pair is malformed.
+    const hasLat = typeof lat === "number";
+    const hasLng = typeof lng === "number";
+    if (hasLat !== hasLng) {
+      throw new AppError(
+        "lat and lng must be provided together, or both omitted for a nationwide search.",
+        400,
+      );
     }
 
     const { results, matchTier, matchQuality } = await findProducts({
       queryText,
-      lat,
-      lng,
+      lat: hasLat ? lat : undefined,
+      lng: hasLng ? lng : undefined,
       radiusKm: typeof radiusKm === "number" ? radiusKm : undefined,
       limit: typeof limit === "number" ? limit : undefined,
       isImageQuery: Boolean(isImageQuery),
+      imageUrl: typeof imageUrl === "string" ? imageUrl : undefined,
     });
 
     res.json({ success: true, data: { results, matchTier, matchQuality } });
@@ -50,14 +58,19 @@ export async function searchStores(req, res, next) {
     if (typeof queryText !== "string" || !queryText.trim()) {
       throw new AppError("queryText is required.", 400);
     }
-    if (typeof lat !== "number" || typeof lng !== "number") {
-      throw new AppError("lat/lng must be numbers.", 400);
+    const hasLat = typeof lat === "number";
+    const hasLng = typeof lng === "number";
+    if (hasLat !== hasLng) {
+      throw new AppError(
+        "lat and lng must be provided together, or both omitted for a nationwide search.",
+        400,
+      );
     }
 
     const { results, matchTier, externalSuggestions } = await findStores({
       queryText,
-      lat,
-      lng,
+      lat: hasLat ? lat : undefined,
+      lng: hasLng ? lng : undefined,
       radiusKm: typeof radiusKm === "number" ? radiusKm : undefined,
       limit: typeof limit === "number" ? limit : undefined,
     });
@@ -69,82 +82,61 @@ export async function searchStores(req, res, next) {
 }
 
 // ── POST /api/search/log ──────────────────────────────────────────────────────
-// Public — called once per buyer turn from the frontend's /api/search route
-// (build-order step f), after the full LLM turn resolves. Demand log: every
-// query is worth keeping, matched or not, tool-called or not.
+// Public — called once per buyer turn from the frontend's /api/search route,
+// after the full LLM turn resolves. Deliberately NOT a general demand log of
+// every query (that used to write raw query text + the buyer's precise
+// coordinates to the DB for every search, matched or not — removed: nothing
+// should persist beyond the conversation itself unless there's a real
+// business reason to). The one real reason to persist anything here: when
+// Velte had no vendor for a request AND Google Places surfaced a real,
+// unlisted business nearby — that's a recruitment opportunity, worth
+// tracking so the company can follow up and get that business onto Velte.
+// A turn with nothing to report (matched fine, or nothing found anywhere)
+// writes nothing at all.
 
 export async function logSearch(req, res, next) {
   try {
-    const {
-      rawQuery,
-      hadImage,
-      parsed,
-      matched,
-      resultVendorIds,
-      resultStoreIds,
-      usedExternalFallback,
-      buyerLat,
-      buyerLng,
-      externalStoreSuggestions,
-    } = req.body ?? {};
+    const { rawQuery, parsedProduct, externalStoreSuggestions } = req.body ?? {};
 
-    if (typeof matched !== "boolean") {
-      throw new AppError("matched must be a boolean.", 400);
+    if (!Array.isArray(externalStoreSuggestions) || !externalStoreSuggestions.length) {
+      res.json({ success: true });
+      return;
     }
 
-    await Search.create({
-      rawQuery: typeof rawQuery === "string" ? rawQuery : null,
-      hadImage: Boolean(hadImage),
-      parsed: parsed ?? null,
-      matched,
-      resultVendorIds: Array.isArray(resultVendorIds) ? resultVendorIds : [],
-      resultStoreIds: Array.isArray(resultStoreIds) ? resultStoreIds : [],
-      usedExternalFallback: Boolean(usedExternalFallback),
-      buyerLat: typeof buyerLat === "number" ? buyerLat : null,
-      buyerLng: typeof buyerLng === "number" ? buyerLng : null,
-    });
+    const matchedQuery =
+      (typeof parsedProduct === "string" && parsedProduct) ||
+      (typeof rawQuery === "string" ? rawQuery : null);
 
-    // Best-effort recruitment-lead upsert — never throws, never blocks the
-    // primary demand-log write above (same convention as
-    // embedAndSaveProduct/embedAndSaveStore in retrieval.service.js).
-    if (Array.isArray(externalStoreSuggestions) && externalStoreSuggestions.length) {
-      const matchedQuery =
-        (parsed && typeof parsed.product === "string" && parsed.product) ||
-        (typeof rawQuery === "string" ? rawQuery : null);
-
-      await Promise.all(
-        externalStoreSuggestions.map((s) => {
-          if (
-            !s ||
-            typeof s.placeId !== "string" ||
-            typeof s.name !== "string" ||
-            typeof s.address !== "string" ||
-            typeof s.lat !== "number" ||
-            typeof s.lng !== "number"
-          ) {
-            return null;
-          }
-          return RecruitmentLead.findOneAndUpdate(
-            { placeId: s.placeId },
-            {
-              $set: {
-                name: s.name,
-                address: s.address,
-                location: { type: "Point", coordinates: [s.lng, s.lat] },
-                lastSeenAt: new Date(),
-              },
-              $inc: { hitCount: 1 },
-              ...(matchedQuery
-                ? { $push: { matchedQueries: { $each: [matchedQuery], $slice: -20 } } }
-                : {}),
+    await Promise.all(
+      externalStoreSuggestions.map((s) => {
+        if (
+          !s ||
+          typeof s.placeId !== "string" ||
+          typeof s.name !== "string" ||
+          typeof s.address !== "string" ||
+          typeof s.lat !== "number" ||
+          typeof s.lng !== "number"
+        ) {
+          return null;
+        }
+        return RecruitmentLead.findOneAndUpdate(
+          { placeId: s.placeId },
+          {
+            $set: {
+              name: s.name,
+              address: s.address,
+              location: { type: "Point", coordinates: [s.lng, s.lat] },
+              lastSeenAt: new Date(),
             },
-            { upsert: true },
-          );
-        }),
-      ).catch((err) => {
-        console.error("[search] recruitment lead upsert failed:", err.message);
-      });
-    }
+            $inc: { hitCount: 1 },
+            ...(matchedQuery
+              ? { $push: { matchedQueries: { $each: [matchedQuery], $slice: -20 } } }
+              : {}),
+          },
+          { upsert: true },
+        );
+      }),
+    );
 
     res.json({ success: true });
   } catch (err) {

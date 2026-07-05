@@ -6,8 +6,10 @@
 
 const VOYAGE_EMBEDDINGS_URL = "https://api.voyageai.com/v1/embeddings";
 const VOYAGE_RERANK_URL = "https://api.voyageai.com/v1/rerank";
+const VOYAGE_MULTIMODAL_URL = "https://api.voyageai.com/v1/multimodalembeddings";
 const EMBED_MODEL = "voyage-4";
 const RERANK_MODEL = "rerank-2.5";
+const MULTIMODAL_MODEL = "voyage-multimodal-3";
 const TIMEOUT_MS = 15_000;
 
 /**
@@ -47,6 +49,54 @@ export async function embed(texts, inputType) {
       : null;
   } catch (err) {
     console.error("[voyage] embed error:", err.message);
+    return null;
+  }
+}
+
+/**
+ * Embed a single image (optionally paired with text) via voyage-multimodal-3
+ * — this is what makes a photo search compare against an actual visual
+ * embedding of a product's image, rather than only the LLM's text paraphrase
+ * of the photo matched against text-only product embeddings. Voyage accepts
+ * a plain HTTPS `image_url` directly (no need to fetch/base64 it ourselves).
+ * Same never-throw convention as `embed`/`rerank` — callers fall back to
+ * text-only matching if this returns null.
+ */
+export async function embedImage(imageUrl, inputType, text) {
+  const apiKey = process.env.VOYAGE_API_KEY;
+  if (!apiKey || !imageUrl) return null;
+
+  try {
+    const content = [];
+    if (text) content.push({ type: "text", text });
+    content.push({ type: "image_url", image_url: imageUrl });
+
+    const res = await fetch(VOYAGE_MULTIMODAL_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: MULTIMODAL_MODEL,
+        inputs: [{ content }],
+        input_type: inputType,
+      }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+
+    if (!res.ok) {
+      console.error(
+        `[voyage] embedImage failed: ${res.status} ${await res.text()}`,
+      );
+      return null;
+    }
+
+    const data = await res.json();
+    const vector = data?.data?.[0]?.embedding;
+    return Array.isArray(vector) ? vector : null;
+  } catch (err) {
+    console.error("[voyage] embedImage error:", err.message);
     return null;
   }
 }

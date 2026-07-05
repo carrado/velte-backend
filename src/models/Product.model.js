@@ -117,6 +117,13 @@ const productSchema = new mongoose.Schema(
     // AI search layer (Bucket D3) on create/update. Atlas Vector Search index is
     // created out-of-band (Atlas UI/API), not declared here.
     embedding: { type: [Number], default: undefined, select: false },
+    // Voyage `voyage-multimodal-3` embedding of mainImageUrl, populated
+    // alongside `embedding`. Deliberately NOT behind a second Atlas Vector
+    // Search index — it's compared in application code (cosine similarity)
+    // against the query photo's own embedding, only across the candidate set
+    // the existing text `$vectorSearch` already narrowed down. See
+    // retrieval.service.js's rankCandidates.
+    imageEmbedding: { type: [Number], default: undefined, select: false },
   },
   {
     timestamps: true,

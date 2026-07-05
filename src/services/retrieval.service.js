@@ -9,7 +9,7 @@
 import Product from "../models/Product.model.js";
 import Store from "../models/Store.model.js";
 import User from "../models/Users.js";
-import { embed, rerank } from "./voyage.service.js";
+import { embed, embedImage, rerank } from "./voyage.service.js";
 import { reverseGeocodeState } from "./nominatim.service.js";
 import { searchNearbyBusinesses } from "./googlePlaces.service.js";
 
@@ -21,6 +21,23 @@ const WEIGHTS = {
   proximity: 0.3,
   trust: 0.2,
 };
+
+// Used when there's no location signal at all — device permission denied/
+// unavailable AND the buyer named no place in their query. There's nothing
+// to score proximity against, so that term is dropped entirely and
+// semantic/trust are renormalized proportionally (0.5:0.2 becomes
+// ~0.714:0.286) rather than inventing a new, uncalibrated ratio.
+const NATIONWIDE_WEIGHTS = {
+  semantic: WEIGHTS.semantic / (WEIGHTS.semantic + WEIGHTS.trust),
+  trust: WEIGHTS.trust / (WEIGHTS.semantic + WEIGHTS.trust),
+};
+
+// Tier 2 ("nearby") radius, as a multiplier of the caller's own tight-radius
+// (Tier 1) value rather than a fixed km number — so a tool call that
+// widened Tier 1 gets a proportionally wider Tier 2 too. Meant to still
+// read as "your city/area," just less strict than Tier 1, before giving up
+// on distance altogether and going state-wide.
+const NEARBY_RADIUS_MULTIPLIER = 3;
 
 // A state-wide fallback match has no radiusKm to bound distance by (could
 // legitimately be 100s of km within one large state) — this is the
@@ -73,10 +90,55 @@ const STORE_RAW_SCORE_FLOOR = 0.7;
 // image-derived product searches (searchProducts({isImageQuery: true})).
 // Expressed as a margin above whichever floor actually applied (rerank or
 // raw-score), not an absolute number, since the two floors sit on different
-// scales (documented above). Reasoned, not yet validated against real
-// image-search data — revisit once there's a varied enough catalog to
-// calibrate against, same as RERANK_FLOOR/RAW_SCORE_FLOOR originally were.
-const DIRECT_MATCH_MARGIN = 0.15;
+// scales (documented above).
+//
+// Recalibrated down from an initial 0.15: a live cosine-similarity check
+// comparing each of two catalog handbags' image against ITSELF scored
+// 0.94-0.96, while against the OTHER handbag it scored only 0.51-0.56 — a
+// huge, easily-separable gap, but that self-comparison is the best case. A
+// buyer's real photo of the same physical item, taken at a different angle/
+// lighting/phone, will score meaningfully lower than 0.94-0.96 against the
+// catalog photo even for a genuine match — found live as a real exact match
+// landing in "similar" instead of "direct." 0.15 was calibrated blind to
+// that self-vs-real-photo gap; 0.08 leaves room for a real (non-identical)
+// matching photo to still clear the bar while the ~0.4 self/cross gap above
+// means a genuinely different item still shouldn't reach it. Still a
+// reasoned estimate, not measured against an actual "second photo of the
+// same item" — revisit once there's real buyer photo-search volume to
+// calibrate against.
+const DIRECT_MATCH_MARGIN = 0.08;
+
+// How much a product's own visual similarity (voyage-multimodal-3 cosine
+// score against the query photo) counts versus its text-derived semantic
+// score, for image-derived searches only.
+//
+// Raised from an initial 0.5: the same live check above showed visual
+// similarity is far more discriminative for this catalog than text — two
+// different handbags read almost identically in text (both "leather
+// handbag"-style descriptions) but ~0.4 apart visually. Leaning more on the
+// more discriminative signal, rather than splitting evenly, lets a strong
+// visual match outweigh a middling text description. Safe to raise without
+// reintroducing the earlier "blended score fell below floor" regression:
+// eligibility is gated on textScore alone (see rankCandidates below), this
+// weight only affects ranking/matchQuality among already-eligible
+// candidates. Only applied when both the query photo and the candidate
+// product actually have an image embedding — products saved before this
+// feature existed still match on text alone until re-saved or backfilled.
+const VISUAL_BLEND_WEIGHT = 0.65;
+
+/** Cosine similarity between two equal-length embedding vectors. */
+function cosineSimilarity(a, b) {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
 
 function productEmbeddingText(product) {
   const attrs = (product.attributes || [])
@@ -93,17 +155,43 @@ function storeEmbeddingText(store) {
     .join(". ");
 }
 
-/** Embed a product and persist the vector. Best-effort — never throws. */
+/**
+ * Embed a product's text and (if it has one) its main image, and persist
+ * both vectors. Best-effort — never throws; the two embeddings fail
+ * independently so a Voyage multimodal outage doesn't also block the text
+ * embedding that already worked fine.
+ */
 export async function embedAndSaveProduct(product) {
+  const $set = {};
+
   try {
     const vectors = await embed([productEmbeddingText(product)], "document");
-    if (!vectors?.[0]) return;
-    await Product.updateOne(
-      { _id: product._id },
-      { $set: { embedding: vectors[0] } },
-    );
+    if (vectors?.[0]) $set.embedding = vectors[0];
   } catch (err) {
-    console.error("[retrieval] embedAndSaveProduct failed:", err.message);
+    console.error("[retrieval] embedAndSaveProduct text embed failed:", err.message);
+  }
+
+  if (product.mainImageUrl) {
+    try {
+      // Pure image, no accompanying text — must match the query side's
+      // embedImage(imageUrl, "query") call (also pure image) in
+      // searchProducts below. Pairing text with only one side skews that
+      // one embedding toward text-embedding-space, making cosine similarity
+      // against the other, purely-visual side systematically lower even for
+      // a genuine visual match (found live: this alone was enough to sink a
+      // real match's blended score under the relevance floor).
+      const imageVector = await embedImage(product.mainImageUrl, "document");
+      if (imageVector) $set.imageEmbedding = imageVector;
+    } catch (err) {
+      console.error("[retrieval] embedAndSaveProduct image embed failed:", err.message);
+    }
+  }
+
+  if (Object.keys($set).length === 0) return;
+  try {
+    await Product.updateOne({ _id: product._id }, { $set });
+  } catch (err) {
+    console.error("[retrieval] embedAndSaveProduct save failed:", err.message);
   }
 }
 
@@ -140,6 +228,11 @@ function haversineKm([lng1, lat1], [lng2, lat2]) {
  * semantic + proximity + trust. `entityKey` is "product" or "store" — the
  * caller does its own entity-specific field mapping afterward, since
  * VendorMatch/StoreMatch have different shapes.
+ *
+ * `lat`/`lng` (and therefore `geoFilter`/`proximityReferenceKm`) are
+ * optional: when omitted, this runs in "locationless" mode — no vendor.geo
+ * requirement, no distance/proximity term at all, `weights` should be
+ * NATIONWIDE_WEIGHTS (semantic + trust only) rather than the default.
  */
 async function rankCandidates({
   candidates,
@@ -154,11 +247,22 @@ async function rankCandidates({
   rerankFloor,
   rawScoreFloor,
   limit,
+  // Only ever passed for searchProducts' image-derived searches — a query
+  // photo's own voyage-multimodal-3 embedding. Blended into semanticScore
+  // for any candidate that also has one (see VISUAL_BLEND_WEIGHT above).
+  queryImageVector,
+  weights = WEIGHTS,
 }) {
+  const locationless = lat == null || lng == null;
+
   const withVendor = candidates
     .map((entity) => {
       const vendor = vendorById.get(String(entity.vendorId));
-      if (!vendor?.geo?.coordinates?.length) return null;
+      if (!vendor) return null;
+      if (locationless) {
+        return { [entityKey]: entity, vendor, distanceKm: null };
+      }
+      if (!vendor.geo?.coordinates?.length) return null;
       const distanceKm = haversineKm([lng, lat], vendor.geo.coordinates);
       if (!geoFilter(vendor, distanceKm)) return null;
       return { [entityKey]: entity, vendor, distanceKm };
@@ -177,22 +281,37 @@ async function rankCandidates({
   const ranked = withVendor
     .map((c, i) => ({
       ...c,
-      semanticScore: rerankScores ? rerankScores[i] : c[entityKey].score,
+      textScore: rerankScores ? rerankScores[i] : c[entityKey].score,
     }))
-    // Excluded here, not just re-ranked lower — a weak semantic match must
-    // never reach `results`, since a UI rendering results as cards has no
-    // narration to make "we don't think this is a real match" clear.
-    .filter((c) => c.semanticScore >= relevanceFloor)
+    // Eligibility is gated on textScore alone, not the visual-blended score
+    // below — a genuine match that already cleared the floor on text must
+    // never be knocked back out by a merely-average visual score (found
+    // live: a real catalog match stopped surfacing entirely once a weak
+    // cosine similarity dragged its blended score under the floor). Visual
+    // similarity should only ever sharpen ranking/matchQuality among
+    // candidates already known to be textually plausible, never revoke
+    // eligibility a text-only search would have granted.
+    .filter((c) => c.textScore >= relevanceFloor)
     .map((c) => {
-      const proximityScore = Math.max(
-        0,
-        1 - c.distanceKm / proximityReferenceKm,
-      );
+      const imageEmbedding = c[entityKey].imageEmbedding;
+      const semanticScore =
+        queryImageVector && imageEmbedding
+          ? VISUAL_BLEND_WEIGHT * cosineSimilarity(queryImageVector, imageEmbedding) +
+            (1 - VISUAL_BLEND_WEIGHT) * c.textScore
+          : c.textScore;
+      return { ...c, semanticScore };
+    })
+    .map((c) => {
       const trustComponent = (c.vendor.trustScore ?? 0) / 100;
+      if (locationless) {
+        const score = weights.semantic * c.semanticScore + weights.trust * trustComponent;
+        return { ...c, score };
+      }
+      const proximityScore = Math.max(0, 1 - c.distanceKm / proximityReferenceKm);
       const score =
-        WEIGHTS.semantic * c.semanticScore +
-        WEIGHTS.proximity * proximityScore +
-        WEIGHTS.trust * trustComponent;
+        weights.semantic * c.semanticScore +
+        weights.proximity * proximityScore +
+        weights.trust * trustComponent;
       return { ...c, score };
     })
     .sort((a, b) => b.score - a.score)
@@ -201,14 +320,6 @@ async function rankCandidates({
   return { candidates: ranked, relevanceFloor };
 }
 
-/**
- * Search products by meaning + proximity + trust. Two tiers: a tight
- * radius first, then — only if that's empty — the buyer's whole state
- * (Tier 2 doesn't re-run the vector search; the same top candidates are
- * just re-filtered by state instead of distance). Throws only if the query
- * itself can't be embedded (Voyage down / no key) — that's a hard stop, not
- * a degrade, since there's nothing to search without a query vector.
- */
 // Only meaningful for image-derived searches: splits a tier's already-
 // ranked candidates into "direct" (clears floor + DIRECT_MATCH_MARGIN) vs
 // "similar" (everything else that still cleared the base floor). A non-
@@ -227,6 +338,18 @@ function applyMatchQuality(tierCandidates, relevanceFloor, isImageQuery) {
     : { candidates: tierCandidates, matchQuality: "similar" };
 }
 
+/**
+ * Search products by meaning + proximity + trust. `lat`/`lng` are optional —
+ * omit both for a "nationwide" search (no location signal at all: device
+ * permission denied/unavailable AND the buyer named no place). When a
+ * location IS known, three geo tiers cascade before giving up: a tight
+ * radius ("local"), a wider same-city radius ("nearby") only if Tier 1 is
+ * empty, then the buyer's whole state ("state") only if Tier 2 is also
+ * empty — later tiers don't re-run the vector search, just re-filter/re-rank
+ * the same top candidates. Throws only if the query itself can't be
+ * embedded (Voyage down / no key) — that's a hard stop, not a degrade,
+ * since there's nothing to search without a query vector.
+ */
 export async function searchProducts({
   queryText,
   lat,
@@ -234,12 +357,20 @@ export async function searchProducts({
   radiusKm = 10,
   limit = 20,
   isImageQuery = false,
+  // The buyer's actual photo URL (Cloudinary) — not the LLM's text
+  // description of it. Only meaningful when isImageQuery is true. Best-
+  // effort: a failed/unavailable multimodal embed just falls back to
+  // today's text-only matching rather than failing the whole search.
+  imageUrl,
 }) {
   const queryVectors = await embed([queryText], "query");
   const queryVector = queryVectors?.[0];
   if (!queryVector) {
     throw new Error("Could not embed the search query (Voyage unavailable).");
   }
+
+  const queryImageVector =
+    isImageQuery && imageUrl ? await embedImage(imageUrl, "query") : null;
 
   const candidates = await Product.aggregate([
     {
@@ -286,7 +417,9 @@ export async function searchProducts({
     // Business number captured at onboarding ("This should be your
     // WhatsApp Business number" in Step1BusinessAccount.tsx).
     whatsapp: vendor.phone || null,
-    distanceKm: Math.round(distanceKm * 10) / 10,
+    // null in nationwide mode — there's no buyer coordinate to measure
+    // against, so the frontend must not render a distance at all.
+    distanceKm: distanceKm != null ? Math.round(distanceKm * 10) / 10 : null,
     score: Math.round(score * 1000) / 1000,
   });
 
@@ -296,16 +429,35 @@ export async function searchProducts({
     entityKey: "product",
     embeddingTextFn: productEmbeddingText,
     queryText,
-    lat,
-    lng,
     rerankFloor: RERANK_FLOOR,
     rawScoreFloor: RAW_SCORE_FLOOR,
     limit,
+    queryImageVector,
   };
+
+  const hasLocation = typeof lat === "number" && typeof lng === "number";
+
+  if (!hasLocation) {
+    const { candidates: nationwide, relevanceFloor } = await rankCandidates({
+      ...rankArgs,
+      weights: NATIONWIDE_WEIGHTS,
+    });
+    if (!nationwide.length) {
+      return { results: [], matchTier: null, matchQuality: undefined };
+    }
+    const { candidates: tiered, matchQuality } = applyMatchQuality(
+      nationwide,
+      relevanceFloor,
+      isImageQuery,
+    );
+    return { results: tiered.map(mapResult), matchTier: "nationwide", matchQuality };
+  }
+
+  const locatedArgs = { ...rankArgs, lat, lng };
 
   // Tier 1: tight radius.
   const { candidates: local, relevanceFloor: localFloor } = await rankCandidates({
-    ...rankArgs,
+    ...locatedArgs,
     geoFilter: (_vendor, distanceKm) => distanceKm <= radiusKm,
     proximityReferenceKm: radiusKm,
   });
@@ -318,14 +470,31 @@ export async function searchProducts({
     return { results: tiered.map(mapResult), matchTier: "local", matchQuality };
   }
 
-  // Tier 2: same state, only if Tier 1 came up empty.
+  // Tier 2: "nearby" — wider than Tier 1 but still a local search, tried
+  // before giving up on distance altogether and going state-wide.
+  const nearbyRadiusKm = radiusKm * NEARBY_RADIUS_MULTIPLIER;
+  const { candidates: nearby, relevanceFloor: nearbyFloor } = await rankCandidates({
+    ...locatedArgs,
+    geoFilter: (_vendor, distanceKm) => distanceKm <= nearbyRadiusKm,
+    proximityReferenceKm: nearbyRadiusKm,
+  });
+  if (nearby.length) {
+    const { candidates: tiered, matchQuality } = applyMatchQuality(
+      nearby,
+      nearbyFloor,
+      isImageQuery,
+    );
+    return { results: tiered.map(mapResult), matchTier: "nearby", matchQuality };
+  }
+
+  // Tier 3: same state, only if Tiers 1-2 came up empty.
   const buyerState = await reverseGeocodeState(lat, lng);
   if (!buyerState) {
     return { results: [], matchTier: null, matchQuality: undefined };
   }
 
   const { candidates: stateWide, relevanceFloor: stateFloor } = await rankCandidates({
-    ...rankArgs,
+    ...locatedArgs,
     geoFilter: (vendor) =>
       Boolean(vendor.state) &&
       vendor.state.toLowerCase() === buyerState.toLowerCase(),
@@ -346,8 +515,11 @@ export async function searchProducts({
 /**
  * Search stores (vendors as a business) by meaning + proximity + trust —
  * for a buyer describing a *kind* of business/vendor/shop rather than a
- * specific item. Same two-tier (local, then state-wide) structure as
- * searchProducts.
+ * specific item. Same tiering as searchProducts (nationwide when no
+ * location, then local → nearby → state when one is known), plus a Tier 4
+ * only reachable when a location IS known: real nearby businesses via
+ * Google Places, since a "nearby business" search is meaningless without
+ * somewhere to be near.
  */
 export async function searchStores({
   queryText,
@@ -379,7 +551,9 @@ export async function searchStores({
       },
     },
   ]);
-  if (!candidates.length) return { results: [], matchTier: null };
+  if (!candidates.length) {
+    return { results: [], matchTier: null, externalSuggestions: null };
+  }
 
   const vendorIds = [...new Set(candidates.map((c) => String(c.vendorId)))];
   const vendors = await User.find({ _id: { $in: vendorIds } }).select(
@@ -389,6 +563,11 @@ export async function searchStores({
 
   const mapResult = ({ store, vendor, distanceKm, score }) => ({
     storeId: store._id,
+    // Lets the frontend cross-reference a store result against products
+    // results from the same turn (dual-intent queries call both
+    // searchProducts and searchStores) — without this, the same vendor
+    // could render twice with no way to tell it's one vendor.
+    vendorId: vendor._id,
     handle: store.handle,
     name: store.name,
     description: store.description,
@@ -398,7 +577,7 @@ export async function searchStores({
     whatsapp: store.whatsapp,
     area: vendor.area,
     state: vendor.state,
-    distanceKm: Math.round(distanceKm * 10) / 10,
+    distanceKm: distanceKm != null ? Math.round(distanceKm * 10) / 10 : null,
     score: Math.round(score * 1000) / 1000,
   });
 
@@ -408,15 +587,29 @@ export async function searchStores({
     entityKey: "store",
     embeddingTextFn: storeEmbeddingText,
     queryText,
-    lat,
-    lng,
     rerankFloor: STORE_RERANK_FLOOR,
     rawScoreFloor: STORE_RAW_SCORE_FLOOR,
     limit,
   };
 
+  const hasLocation = typeof lat === "number" && typeof lng === "number";
+
+  if (!hasLocation) {
+    const { candidates: nationwide } = await rankCandidates({
+      ...rankArgs,
+      weights: NATIONWIDE_WEIGHTS,
+    });
+    return {
+      results: nationwide.map(mapResult),
+      matchTier: nationwide.length ? "nationwide" : null,
+      externalSuggestions: null,
+    };
+  }
+
+  const locatedArgs = { ...rankArgs, lat, lng };
+
   const { candidates: local } = await rankCandidates({
-    ...rankArgs,
+    ...locatedArgs,
     geoFilter: (_vendor, distanceKm) => distanceKm <= radiusKm,
     proximityReferenceKm: radiusKm,
   });
@@ -428,12 +621,27 @@ export async function searchStores({
     };
   }
 
-  // Tier 2: same state — reachable even when reverseGeocodeState fails,
-  // since Tier 3 below doesn't need a state name, just coordinates.
+  // Tier 2: "nearby" — wider than Tier 1 but still a local search.
+  const nearbyRadiusKm = radiusKm * NEARBY_RADIUS_MULTIPLIER;
+  const { candidates: nearby } = await rankCandidates({
+    ...locatedArgs,
+    geoFilter: (_vendor, distanceKm) => distanceKm <= nearbyRadiusKm,
+    proximityReferenceKm: nearbyRadiusKm,
+  });
+  if (nearby.length) {
+    return {
+      results: nearby.map(mapResult),
+      matchTier: "nearby",
+      externalSuggestions: null,
+    };
+  }
+
+  // Tier 3: same state — reachable even when reverseGeocodeState fails,
+  // since Tier 4 below doesn't need a state name, just coordinates.
   const buyerState = await reverseGeocodeState(lat, lng);
   const { candidates: stateWide } = buyerState
     ? await rankCandidates({
-        ...rankArgs,
+        ...locatedArgs,
         geoFilter: (vendor) =>
           Boolean(vendor.state) &&
           vendor.state.toLowerCase() === buyerState.toLowerCase(),
@@ -448,23 +656,33 @@ export async function searchStores({
     };
   }
 
-  // Tier 3: no Velte vendor matched at all — real nearby businesses via
+  // Tier 4: no Velte vendor matched at all — real nearby businesses via
   // Google Places, clearly a different kind of result from a Velte
   // StoreMatch (no trust score, no WhatsApp, no Velte relationship).
   // Best-effort: null on any failure, same as every other stage here.
   const places = await searchNearbyBusinesses({ queryText, lat, lng, radiusKm });
-  const externalSuggestions = places?.length
-    ? places.map((p) => ({
-        placeId: p.placeId,
-        name: p.name,
-        address: p.address,
-        lat: p.lat,
-        lng: p.lng,
-        distanceKm: Math.round(haversineKm([lng, lat], [p.lng, p.lat]) * 10) / 10,
-      }))
-    : null;
+  // Google's locationBias is a soft hint, not a hard radius filter — a
+  // strong text match can still outrank nothing at all even if it's in a
+  // different city or state entirely (found live: a buyer in Enugu got a
+  // business actually in Anambra). Enforce radiusKm ourselves, same as
+  // every Velte-vendor tier above already does, rather than trusting
+  // Google's ranking to respect proximity on its own.
+  const externalSuggestions = places
+    ?.map((p) => ({
+      placeId: p.placeId,
+      name: p.name,
+      address: p.address,
+      lat: p.lat,
+      lng: p.lng,
+      distanceKm: Math.round(haversineKm([lng, lat], [p.lng, p.lat]) * 10) / 10,
+    }))
+    .filter((p) => p.distanceKm <= radiusKm);
 
-  return { results: [], matchTier: null, externalSuggestions };
+  return {
+    results: [],
+    matchTier: null,
+    externalSuggestions: externalSuggestions?.length ? externalSuggestions : null,
+  };
 }
 
 export { productEmbeddingText, storeEmbeddingText };
