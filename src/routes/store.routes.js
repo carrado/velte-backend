@@ -5,12 +5,16 @@ import {
   updateMyStore,
   connectCatalog,
   getPublicStore,
+  getStoreByVendorId,
 } from "../controllers/store/store.controller.js";
 
 const router = express.Router();
 
 // Public — powers the /store/:handle page, no session required.
 router.get("/by-handle/:handle", getPublicStore);
+
+// Public — lets /api/search attach a matched product's own vendor storefront.
+router.get("/by-vendor/:vendorId", getStoreByVendorId);
 
 // Vendor-owned store management.
 router.get("/me", verifyAuth, getMyStore);

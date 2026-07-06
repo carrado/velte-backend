@@ -70,6 +70,19 @@ const STATE_PROXIMITY_REFERENCE_KM = 300;
 const RERANK_FLOOR = 0.58;
 const RAW_SCORE_FLOOR = 0.75;
 
+// Shared time budget for every Voyage call (embed + embedImage + however
+// many geo tiers' rerank calls) within ONE searchProducts or searchStores
+// invocation. Without this, each call gets its own full retry budget
+// independently, and a search that legitimately needs several calls (a photo
+// query cascading through local→nearby→state tiers) could compound toward
+// several minutes worst-case — far past any serverless function's duration
+// ceiling. 22s leaves headroom under Vercel's default Pro-plan duration once
+// `maxDuration` is set explicitly on the route, while still allowing a
+// couple of real attempts per call rather than a single be-lucky-or-fail
+// shot. Passed straight through to voyage.service.js's exported functions,
+// which cap both their per-attempt timeout and retry eligibility against it.
+const SEARCH_DEADLINE_MS = 22_000;
+
 // Separate floor for store-level search — store embedding text is typically
 // much sparser than product text, so reusing the product floor values isn't
 // justified without checking.
@@ -125,6 +138,23 @@ const DIRECT_MATCH_MARGIN = 0.08;
 // product actually have an image embedding — products saved before this
 // feature existed still match on text alone until re-saved or backfilled.
 const VISUAL_BLEND_WEIGHT = 0.65;
+
+// Eligibility escape hatch for image-derived searches only: a candidate whose
+// own photo is THIS visually similar to the buyer's photo counts as a match
+// even if it fails the normal text floor. Found live: a buyer's photo of an
+// item already in the catalog — literally the identical photo, in one test —
+// still missed the text floor on some runs, because the model's own visually
+// accurate description (e.g. reading a brand tag or fabric detail off the
+// photo) doesn't always appear in the seller's own listing text, and Voyage's
+// rerank scores that as a partial mismatch rather than a bonus. Visual
+// similarity has no such failure mode — it doesn't care what words either
+// side used. 0.82 sits well below the ~0.95 a photo scores against ITSELF
+// (leaving room for a real buyer photo — different angle/lighting/phone —
+// to still clear it) and well above the ~0.51 two different catalog items
+// scored against each other (live-measured, both cited in DIRECT_MATCH_MARGIN's
+// own comment above). Still a reasoned estimate pending real buyer-photo
+// volume to calibrate against, same as every other floor in this file.
+const VISUAL_ELIGIBILITY_FLOOR = 0.82;
 
 /** Cosine similarity between two equal-length embedding vectors. */
 function cosineSimilarity(a, b) {
@@ -252,6 +282,9 @@ async function rankCandidates({
   // for any candidate that also has one (see VISUAL_BLEND_WEIGHT above).
   queryImageVector,
   weights = WEIGHTS,
+  // Shared across every Voyage call within one searchProducts/searchStores
+  // invocation — see SEARCH_DEADLINE_MS above.
+  deadlineAt,
 }) {
   const locationless = lat == null || lng == null;
 
@@ -275,6 +308,7 @@ async function rankCandidates({
   const rerankScores = await rerank(
     queryText,
     withVendor.map((c) => embeddingTextFn(c[entityKey])),
+    deadlineAt,
   );
   const relevanceFloor = rerankScores ? rerankFloor : rawScoreFloor;
 
@@ -283,21 +317,35 @@ async function rankCandidates({
       ...c,
       textScore: rerankScores ? rerankScores[i] : c[entityKey].score,
     }))
-    // Eligibility is gated on textScore alone, not the visual-blended score
-    // below — a genuine match that already cleared the floor on text must
-    // never be knocked back out by a merely-average visual score (found
-    // live: a real catalog match stopped surfacing entirely once a weak
-    // cosine similarity dragged its blended score under the floor). Visual
-    // similarity should only ever sharpen ranking/matchQuality among
-    // candidates already known to be textually plausible, never revoke
-    // eligibility a text-only search would have granted.
-    .filter((c) => c.textScore >= relevanceFloor)
+    // Computed once, up front — reused both for the eligibility check right
+    // below AND the ranking blend further down, rather than recomputing.
     .map((c) => {
       const imageEmbedding = c[entityKey].imageEmbedding;
-      const semanticScore =
+      const visualScore =
         queryImageVector && imageEmbedding
-          ? VISUAL_BLEND_WEIGHT * cosineSimilarity(queryImageVector, imageEmbedding) +
-            (1 - VISUAL_BLEND_WEIGHT) * c.textScore
+          ? cosineSimilarity(queryImageVector, imageEmbedding)
+          : null;
+      return { ...c, visualScore };
+    })
+    // Eligibility is gated on textScore alone by default — a genuine match
+    // that already cleared the floor on text must never be knocked back out
+    // by a merely-average visual score (found live: a real catalog match
+    // stopped surfacing entirely once a weak cosine similarity dragged its
+    // blended score under the floor). The OR here is a narrow, deliberate
+    // exception, not a loophole: only a visual score far above what two
+    // genuinely different catalog items ever scored against each other can
+    // grant eligibility on its own (see VISUAL_ELIGIBILITY_FLOOR above) —
+    // this never lowers the bar for a text-only search, since visualScore is
+    // null whenever there's no query photo at all.
+    .filter(
+      (c) =>
+        c.textScore >= relevanceFloor ||
+        (c.visualScore != null && c.visualScore >= VISUAL_ELIGIBILITY_FLOOR),
+    )
+    .map((c) => {
+      const semanticScore =
+        c.visualScore != null
+          ? VISUAL_BLEND_WEIGHT * c.visualScore + (1 - VISUAL_BLEND_WEIGHT) * c.textScore
           : c.textScore;
       return { ...c, semanticScore };
     })
@@ -363,14 +411,20 @@ export async function searchProducts({
   // today's text-only matching rather than failing the whole search.
   imageUrl,
 }) {
-  const queryVectors = await embed([queryText], "query");
+  // Shared across every Voyage call this invocation makes (below, and every
+  // rerank inside rankCandidates as tiers cascade) — see SEARCH_DEADLINE_MS.
+  const deadlineAt = Date.now() + SEARCH_DEADLINE_MS;
+
+  const queryVectors = await embed([queryText], "query", deadlineAt);
   const queryVector = queryVectors?.[0];
   if (!queryVector) {
     throw new Error("Could not embed the search query (Voyage unavailable).");
   }
 
   const queryImageVector =
-    isImageQuery && imageUrl ? await embedImage(imageUrl, "query") : null;
+    isImageQuery && imageUrl
+      ? await embedImage(imageUrl, "query", undefined, deadlineAt)
+      : null;
 
   const candidates = await Product.aggregate([
     {
@@ -394,34 +448,54 @@ export async function searchProducts({
   }
 
   const vendorIds = [...new Set(candidates.map((c) => String(c.vendorId)))];
-  const vendors = await User.find({ _id: { $in: vendorIds } }).select(
-    "geo trustScore area state name phone avatar",
-  );
+  const [vendors, stores] = await Promise.all([
+    User.find({ _id: { $in: vendorIds } }).select(
+      "geo trustScore area state name phone company avatar",
+    ),
+    // The marketplace's actual unit of identity is the Store, not the
+    // person who owns it — a product card showing "Chukwuemeka Anyanwu"
+    // instead of "Acme Stores Limited" was a real bug found live. Batched
+    // alongside the vendor fetch so this costs one extra indexed query, not
+    // a second round trip per product.
+    Store.find({ vendorId: { $in: vendorIds } }).select("vendorId name whatsapp"),
+  ]);
   const vendorById = new Map(vendors.map((v) => [String(v._id), v]));
+  const storeByVendorId = new Map(
+    stores.map((s) => [String(s.vendorId), s]),
+  );
 
-  const mapResult = ({ product, vendor, distanceKm, score }) => ({
-    productId: product._id,
-    name: product.name,
-    // Product.price/priceMax are stored in kobo (AddProductPage.tsx sends
-    // Math.round(price * 100)) — convert to the real Naira amount here so
-    // neither the LLM nor any UI ever quotes a 100x-inflated price.
-    price: product.price / 100,
-    priceMax: product.priceMax != null ? product.priceMax / 100 : null,
-    currency: product.currency,
-    mainImageUrl: product.mainImageUrl,
-    vendorId: vendor._id,
-    vendorName: vendor.name,
-    area: vendor.area,
-    state: vendor.state,
-    // No `whatsapp` field exists on User — `phone` is the actual WhatsApp
-    // Business number captured at onboarding ("This should be your
-    // WhatsApp Business number" in Step1BusinessAccount.tsx).
-    whatsapp: vendor.phone || null,
-    // null in nationwide mode — there's no buyer coordinate to measure
-    // against, so the frontend must not render a distance at all.
-    distanceKm: distanceKm != null ? Math.round(distanceKm * 10) / 10 : null,
-    score: Math.round(score * 1000) / 1000,
-  });
+  const mapResult = ({ product, vendor, distanceKm, score }) => {
+    const store = storeByVendorId.get(String(vendor._id));
+    return {
+      productId: product._id,
+      name: product.name,
+      // Product.price/priceMax are stored in kobo (AddProductPage.tsx sends
+      // Math.round(price * 100)) — convert to the real Naira amount here so
+      // neither the LLM nor any UI ever quotes a 100x-inflated price.
+      price: product.price / 100,
+      priceMax: product.priceMax != null ? product.priceMax / 100 : null,
+      currency: product.currency,
+      mainImageUrl: product.mainImageUrl,
+      vendorId: vendor._id,
+      // Store.name (edited via store settings) is the real business
+      // identity; company.name (set once at onboarding) is the next-best
+      // fallback if a Store doc somehow doesn't exist yet; vendor.name (the
+      // person's own name) is the last resort, not the norm.
+      vendorName: store?.name || vendor.company?.name || vendor.name,
+      area: vendor.area,
+      state: vendor.state,
+      // Same precedence as the name above: Store.whatsapp is the number a
+      // vendor can update any time from their store settings, so it's more
+      // likely current than vendor.phone (captured once at onboarding and
+      // never revisited — "This should be your WhatsApp Business number" in
+      // Step1BusinessAccount.tsx). Either can be the only one actually set.
+      whatsapp: store?.whatsapp || vendor.phone || null,
+      // null in nationwide mode — there's no buyer coordinate to measure
+      // against, so the frontend must not render a distance at all.
+      distanceKm: distanceKm != null ? Math.round(distanceKm * 10) / 10 : null,
+      score: Math.round(score * 1000) / 1000,
+    };
+  };
 
   const rankArgs = {
     candidates,
@@ -433,6 +507,7 @@ export async function searchProducts({
     rawScoreFloor: RAW_SCORE_FLOOR,
     limit,
     queryImageVector,
+    deadlineAt,
   };
 
   const hasLocation = typeof lat === "number" && typeof lng === "number";
@@ -528,7 +603,11 @@ export async function searchStores({
   radiusKm = 10,
   limit = 20,
 }) {
-  const queryVectors = await embed([queryText], "query");
+  // Shared across every Voyage call this invocation makes — see
+  // SEARCH_DEADLINE_MS.
+  const deadlineAt = Date.now() + SEARCH_DEADLINE_MS;
+
+  const queryVectors = await embed([queryText], "query", deadlineAt);
   const queryVector = queryVectors?.[0];
   if (!queryVector) {
     throw new Error("Could not embed the search query (Voyage unavailable).");
@@ -590,6 +669,7 @@ export async function searchStores({
     rerankFloor: STORE_RERANK_FLOOR,
     rawScoreFloor: STORE_RAW_SCORE_FLOOR,
     limit,
+    deadlineAt,
   };
 
   const hasLocation = typeof lat === "number" && typeof lng === "number";

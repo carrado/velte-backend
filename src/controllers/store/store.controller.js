@@ -318,6 +318,29 @@ export async function connectCatalog(req, res, next) {
   }
 }
 
+// ── GET /api/store/by-vendor/:vendorId ───────────────────────────────────────
+// Public — no auth. Used by /api/search (velte frontend) to attach the
+// matched product's own vendor storefront alongside its product card — a
+// buyer asking "where can I find this" wants both the item AND who sells it,
+// not just a WhatsApp number buried in the product card (Velte Connect's own
+// "the store is the unit of the marketplace" point). Deliberately a plain
+// data lookup, not a searchStores tool call: the LLM never needs to decide
+// to fetch this, so it can't burn tool-call budget on it either.
+
+export async function getStoreByVendorId(req, res, next) {
+  try {
+    const store = await Store.findOne({ vendorId: req.params.vendorId });
+    if (!store) throw new AppError("Store not found.", 404);
+
+    res.json({
+      success: true,
+      data: { storeId: store._id, ...serializeStore(store) },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ── GET /api/store/by-handle/:handle ─────────────────────────────────────────
 // Public — no auth. Powers the /store/:handle page: store profile + vendor
 // display bits + a slice of their catalog.
