@@ -9,9 +9,14 @@
 import Product from "../models/Product.model.js";
 import Store from "../models/Store.model.js";
 import User from "../models/Users.js";
+import Wallet from "../models/Wallet.model.js";
 import { embed, embedImage, rerank } from "./voyage.service.js";
 import { reverseGeocodeState } from "./nominatim.service.js";
 import { searchNearbyBusinesses } from "./googlePlaces.service.js";
+import {
+  getOrCreateWallet,
+  LEAD_COST_KOBO,
+} from "../controllers/wallet/wallet.controller.js";
 
 const VECTOR_INDEX_NAME = "product_vector_index";
 const STORE_VECTOR_INDEX_NAME = "store_vector_index";
@@ -253,6 +258,75 @@ function haversineKm([lng1, lat1], [lng2, lat2]) {
 }
 
 /**
+ * Shared Tier 4 for both searchProducts and searchStores once every
+ * Velte-vendor geo tier has come up empty (or been fully wallet-filtered
+ * out) — real nearby businesses via Google Places, fed the raw buyer query
+ * text either way (a product name matches a store's Places listing about as
+ * well as a business-type description does). Clearly a different kind of
+ * result from a real Velte match: no trust score, no WhatsApp, no Velte
+ * relationship. Best-effort — null on any failure or nothing within radius.
+ */
+async function googlePlacesFallback(queryText, lat, lng, radiusKm) {
+  const places = await searchNearbyBusinesses({ queryText, lat, lng, radiusKm });
+  // Google's locationBias is a soft hint, not a hard radius filter — a
+  // strong text match can still outrank nothing at all even if it's in a
+  // different city or state entirely (found live: a buyer in Enugu got a
+  // business actually in Anambra). Enforce radiusKm ourselves, same as
+  // every Velte-vendor tier above already does, rather than trusting
+  // Google's ranking to respect proximity on its own.
+  const externalSuggestions = places
+    ?.map((p) => ({
+      placeId: p.placeId,
+      name: p.name,
+      address: p.address,
+      lat: p.lat,
+      lng: p.lng,
+      distanceKm: Math.round(haversineKm([lng, lat], [p.lng, p.lat]) * 10) / 10,
+    }))
+    .filter((p) => p.distanceKm <= radiusKm);
+
+  return externalSuggestions?.length ? externalSuggestions : null;
+}
+
+/**
+ * Drops any candidate whose vendor can't cover one more lead (see
+ * LEAD_COST_KOBO) — a vendor's search visibility is gated on actually being
+ * able to pay for the WhatsApp click a match generates, not just on
+ * matching well. Runs against the full ranked list BEFORE the caller slices
+ * to `limit`, so a tier still surfaces up to `limit` genuinely-payable
+ * vendors when more than `limit` existed pre-filter, and correctly falls
+ * through to the next geo tier (and eventually Tier 4's Google Places
+ * fallback in searchStores) when filtering empties a tier out entirely.
+ *
+ * Batches one query for vendors that already have a wallet; only the rare
+ * vendor with none yet pays the extra per-vendor round trip to
+ * getOrCreateWallet — which auto-grants the starter credit right then, so a
+ * brand-new vendor is immediately eligible rather than silently invisible
+ * in search until they happen to open the wallet page first.
+ */
+async function filterWalletEligible(rankedCandidates) {
+  if (!rankedCandidates.length) return rankedCandidates;
+
+  const vendorIds = [...new Set(rankedCandidates.map((c) => String(c.vendor._id)))];
+  const existingWallets = await Wallet.find({ vendorId: { $in: vendorIds } }).select(
+    "vendorId balanceKobo",
+  );
+  const balanceById = new Map(
+    existingWallets.map((w) => [String(w.vendorId), w.balanceKobo]),
+  );
+
+  const missingIds = vendorIds.filter((id) => !balanceById.has(id));
+  if (missingIds.length) {
+    const created = await Promise.all(missingIds.map((id) => getOrCreateWallet(id)));
+    created.forEach((w) => balanceById.set(String(w.vendorId), w.balanceKobo));
+  }
+
+  return rankedCandidates.filter(
+    (c) => (balanceById.get(String(c.vendor._id)) ?? 0) >= LEAD_COST_KOBO,
+  );
+}
+
+/**
  * Shared core for both searchProducts and searchStores: join vendors, apply
  * a geo filter (different per tier), rerank/floor, and rank by
  * semantic + proximity + trust. `entityKey` is "product" or "store" — the
@@ -362,10 +436,11 @@ async function rankCandidates({
         weights.trust * trustComponent;
       return { ...c, score };
     })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+    .sort((a, b) => b.score - a.score);
 
-  return { candidates: ranked, relevanceFloor };
+  const eligible = await filterWalletEligible(ranked);
+
+  return { candidates: eligible.slice(0, limit), relevanceFloor };
 }
 
 // Only meaningful for image-derived searches: splits a tier's already-
@@ -397,6 +472,11 @@ function applyMatchQuality(tierCandidates, relevanceFloor, isImageQuery) {
  * the same top candidates. Throws only if the query itself can't be
  * embedded (Voyage down / no key) — that's a hard stop, not a degrade,
  * since there's nothing to search without a query vector.
+ *
+ * Plus a Tier 4, same as searchStores, only reachable when a location IS
+ * known and Tiers 1-3 are all empty: real nearby businesses via Google
+ * Places, fed the raw product query text since there's no confirmed
+ * business type the way searchStores already has one.
  */
 export async function searchProducts({
   queryText,
@@ -444,7 +524,7 @@ export async function searchProducts({
     },
   ]);
   if (!candidates.length) {
-    return { results: [], matchTier: null, matchQuality: undefined };
+    return { results: [], matchTier: null, matchQuality: undefined, externalSuggestions: null };
   }
 
   const vendorIds = [...new Set(candidates.map((c) => String(c.vendorId)))];
@@ -518,14 +598,21 @@ export async function searchProducts({
       weights: NATIONWIDE_WEIGHTS,
     });
     if (!nationwide.length) {
-      return { results: [], matchTier: null, matchQuality: undefined };
+      // No Tier 4 here, same as searchStores — a "nearby business" fallback
+      // is meaningless without somewhere to be near.
+      return { results: [], matchTier: null, matchQuality: undefined, externalSuggestions: null };
     }
     const { candidates: tiered, matchQuality } = applyMatchQuality(
       nationwide,
       relevanceFloor,
       isImageQuery,
     );
-    return { results: tiered.map(mapResult), matchTier: "nationwide", matchQuality };
+    return {
+      results: tiered.map(mapResult),
+      matchTier: "nationwide",
+      matchQuality,
+      externalSuggestions: null,
+    };
   }
 
   const locatedArgs = { ...rankArgs, lat, lng };
@@ -542,7 +629,12 @@ export async function searchProducts({
       localFloor,
       isImageQuery,
     );
-    return { results: tiered.map(mapResult), matchTier: "local", matchQuality };
+    return {
+      results: tiered.map(mapResult),
+      matchTier: "local",
+      matchQuality,
+      externalSuggestions: null,
+    };
   }
 
   // Tier 2: "nearby" — wider than Tier 1 but still a local search, tried
@@ -559,32 +651,50 @@ export async function searchProducts({
       nearbyFloor,
       isImageQuery,
     );
-    return { results: tiered.map(mapResult), matchTier: "nearby", matchQuality };
+    return {
+      results: tiered.map(mapResult),
+      matchTier: "nearby",
+      matchQuality,
+      externalSuggestions: null,
+    };
   }
 
-  // Tier 3: same state, only if Tiers 1-2 came up empty.
+  // Tier 3: same state — reachable even when reverseGeocodeState fails,
+  // since Tier 4 below doesn't need a state name, just coordinates (same
+  // as searchStores).
   const buyerState = await reverseGeocodeState(lat, lng);
-  if (!buyerState) {
-    return { results: [], matchTier: null, matchQuality: undefined };
+  const { candidates: stateWide, relevanceFloor: stateFloor } = buyerState
+    ? await rankCandidates({
+        ...locatedArgs,
+        geoFilter: (vendor) =>
+          Boolean(vendor.state) &&
+          vendor.state.toLowerCase() === buyerState.toLowerCase(),
+        proximityReferenceKm: STATE_PROXIMITY_REFERENCE_KM,
+      })
+    : { candidates: [], relevanceFloor: null };
+
+  if (stateWide.length) {
+    const { candidates: tiered, matchQuality } = applyMatchQuality(
+      stateWide,
+      stateFloor,
+      isImageQuery,
+    );
+    return {
+      results: tiered.map(mapResult),
+      matchTier: "state",
+      matchQuality,
+      externalSuggestions: null,
+    };
   }
 
-  const { candidates: stateWide, relevanceFloor: stateFloor } = await rankCandidates({
-    ...locatedArgs,
-    geoFilter: (vendor) =>
-      Boolean(vendor.state) &&
-      vendor.state.toLowerCase() === buyerState.toLowerCase(),
-    proximityReferenceKm: STATE_PROXIMITY_REFERENCE_KM,
-  });
-
-  if (!stateWide.length) {
-    return { results: [], matchTier: null, matchQuality: undefined };
-  }
-  const { candidates: tiered, matchQuality } = applyMatchQuality(
-    stateWide,
-    stateFloor,
-    isImageQuery,
-  );
-  return { results: tiered.map(mapResult), matchTier: "state", matchQuality };
+  // Tier 4: no Velte vendor matched at all.
+  const externalSuggestions = await googlePlacesFallback(queryText, lat, lng, radiusKm);
+  return {
+    results: [],
+    matchTier: null,
+    matchQuality: undefined,
+    externalSuggestions,
+  };
 }
 
 /**
@@ -736,32 +846,13 @@ export async function searchStores({
     };
   }
 
-  // Tier 4: no Velte vendor matched at all — real nearby businesses via
-  // Google Places, clearly a different kind of result from a Velte
-  // StoreMatch (no trust score, no WhatsApp, no Velte relationship).
-  // Best-effort: null on any failure, same as every other stage here.
-  const places = await searchNearbyBusinesses({ queryText, lat, lng, radiusKm });
-  // Google's locationBias is a soft hint, not a hard radius filter — a
-  // strong text match can still outrank nothing at all even if it's in a
-  // different city or state entirely (found live: a buyer in Enugu got a
-  // business actually in Anambra). Enforce radiusKm ourselves, same as
-  // every Velte-vendor tier above already does, rather than trusting
-  // Google's ranking to respect proximity on its own.
-  const externalSuggestions = places
-    ?.map((p) => ({
-      placeId: p.placeId,
-      name: p.name,
-      address: p.address,
-      lat: p.lat,
-      lng: p.lng,
-      distanceKm: Math.round(haversineKm([lng, lat], [p.lng, p.lat]) * 10) / 10,
-    }))
-    .filter((p) => p.distanceKm <= radiusKm);
+  // Tier 4: no Velte vendor matched at all.
+  const externalSuggestions = await googlePlacesFallback(queryText, lat, lng, radiusKm);
 
   return {
     results: [],
     matchTier: null,
-    externalSuggestions: externalSuggestions?.length ? externalSuggestions : null,
+    externalSuggestions,
   };
 }
 

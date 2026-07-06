@@ -366,6 +366,11 @@ export async function getPublicStore(req, res, next) {
       success: true,
       data: {
         ...serializeStore(store),
+        // Needed by the search flow's getVendorProducts tool result so a
+        // buyer's later "Chat on WhatsApp" click can bill the right vendor's
+        // wallet (see search.controller.js's chargeLead) — not exposed via
+        // the shared serializeStore since getMyStore has no such use for it.
+        vendorId: store.vendorId,
         avatar: user?.avatar ?? null,
         area: user?.area ?? null,
         businessType: user?.businessType ?? "retail",
