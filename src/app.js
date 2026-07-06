@@ -20,6 +20,7 @@ import categoriesRoutes from "./routes/categories.routes.js";
 import walletRoutes from "./routes/wallet.routes.js";
 import storeRoutes from "./routes/store.routes.js";
 import searchRoutes from "./routes/search.routes.js";
+import { startKeepAlive } from "./initializers/keepAlive.js";
 
 const app = express();
 
@@ -124,4 +125,7 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 7000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT} (${env})`);
+
+  // Keep free-tier hosting from idling the instance to sleep
+  startKeepAlive();
 });
