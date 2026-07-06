@@ -8,6 +8,7 @@
     "test": "jest",
     "seed:categories": "node src/seeds/categories.seed.js",
     "backfill:embeddings": "node src/scripts/backfill-embeddings.js",
+    "backfill:lead-descriptions": "node src/scripts/backfill-lead-descriptions.js",
     "test:retrieval": "node src/scripts/test-retrieval.js"
   },
   "dependencies": {

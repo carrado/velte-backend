@@ -16,12 +16,22 @@ import {
 // for one — removes the cold-start "prepay with zero track record" barrier.
 const STARTER_CREDIT_KOBO = 200_000; // ₦2,000
 
+// ₦400 per WhatsApp click-through. Exported: retrieval.service.js filters a
+// vendor out of search results entirely once their wallet can't cover this
+// (see rankCandidates' wallet-eligibility filter), and search.controller.js
+// charges exactly this amount when the lead actually lands.
+export const LEAD_COST_KOBO = 40_000;
+
 // Floor for top-ups and auto-recharge amounts — keeps card fees proportionate
 // and matches the frontend's client-side minimum.
 const MIN_AMOUNT_NAIRA = 1000;
 const MIN_AMOUNT_KOBO = MIN_AMOUNT_NAIRA * 100;
 
-async function getOrCreateWallet(vendorId) {
+// Exported for retrieval.service.js's wallet-eligibility filter — a vendor
+// with no wallet yet must still get auto-provisioned (starter credit and
+// all) the moment they'd otherwise be shown in search, not silently excluded
+// until they happen to open the wallet page first.
+export async function getOrCreateWallet(vendorId) {
   // Atomic get-or-create: concurrent callers all converge on the same document
   // via the unique index on vendorId — upsert can't create duplicates.
   let wallet = await Wallet.findOneAndUpdate(
