@@ -1,6 +1,4 @@
-import dotenv from "dotenv-flow";
-
-dotenv.config();
+import "./loadEnv.js";
 
 import express from "express";
 import mongoose from "mongoose";
