@@ -17,9 +17,13 @@ export const LOW_BALANCE_KOBO = 160_000;
  * recovers back to/above the threshold, which resets the flag below.
  */
 export async function checkLowWalletBalances() {
+  // $lte, not $lt — a balance sitting exactly AT the threshold (found live:
+  // a wallet parked at exactly ₦1,600 with the threshold also ₦1,600) must
+  // still count as low. The recovery query below uses the complementary
+  // $gt so the boundary value belongs to exactly one side, never both.
   const lowWallets = await Wallet.find({
     status: "active",
-    balanceKobo: { $lt: LOW_BALANCE_KOBO },
+    balanceKobo: { $lte: LOW_BALANCE_KOBO },
     lowBalanceNotified: { $ne: true },
   }).select("vendorId balanceKobo");
 
@@ -42,7 +46,7 @@ export async function checkLowWalletBalances() {
   // Recovered wallets: clear the flag so the next dip below the threshold
   // notifies again instead of staying silenced forever.
   const { modifiedCount } = await Wallet.updateMany(
-    { balanceKobo: { $gte: LOW_BALANCE_KOBO }, lowBalanceNotified: true },
+    { balanceKobo: { $gt: LOW_BALANCE_KOBO }, lowBalanceNotified: true },
     { $set: { lowBalanceNotified: false } },
   );
 
