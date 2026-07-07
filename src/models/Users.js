@@ -128,6 +128,14 @@ const userSchema = new mongoose.Schema({
   addressChangedAt:   { type: Date, default: null },
   trustScore:         { type: Number, default: 0, min: 0, max: 100 },
   paystackSubaccount: { type: String, default: null },
+
+  // ── Referrals ──────────────────────────────────────────────────────────────
+  // Every vendor gets one at signup (see auth.js register) so they always have
+  // something to share, whether or not they ever use it.
+  referralCode: { type: String, default: null, unique: true, sparse: true },
+  // Set once, at signup, from whatever referral code (if any) they signed up
+  // with — never changes after. null for a vendor who signed up organically.
+  referredBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 }, {
   timestamps: true
 });
