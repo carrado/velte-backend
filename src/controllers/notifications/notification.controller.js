@@ -5,6 +5,7 @@ const PAGE_SIZE = 20;
 // Maps backend type enum → frontend NotificationType
 const TYPE_MAP = {
   'new-order': 'order',
+  'new-lead': 'lead',
   'low-stock': 'product',
   'payment': 'payment',
   'wallet': 'wallet',

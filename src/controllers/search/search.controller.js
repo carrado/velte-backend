@@ -7,6 +7,7 @@ import { AppError } from "../../middleware/errorHandler.js";
 import RecruitmentLead from "../../models/RecruitmentLead.model.js";
 import Product from "../../models/Product.model.js";
 import { debitWalletForLead, LEAD_COST_KOBO } from "../wallet/wallet.controller.js";
+import { notifyUser } from "../../services/pushNotification.service.js";
 
 // ── POST /api/search/products ─────────────────────────────────────────────────
 // Public — called by the frontend's searchProducts tool, for a buyer naming a
@@ -175,11 +176,15 @@ export async function chargeLead(req, res, next) {
     // white sneakers", never a raw ObjectId — if the lookup fails (bad id,
     // product since deleted), fall back to the generic description rather
     // than let a Mongo _id leak into the vendor-facing Spend History table.
+    let productName = null;
     let description = "WhatsApp lead";
     if (typeof productId === "string" && productId) {
       try {
         const product = await Product.findById(productId).select("name");
-        if (product?.name) description = `WhatsApp lead — ${product.name}`;
+        if (product?.name) {
+          productName = product.name;
+          description = `WhatsApp lead — ${product.name}`;
+        }
       } catch {
         // keep the generic description
       }
@@ -188,6 +193,23 @@ export async function chargeLead(req, res, next) {
     const result = await debitWalletForLead(vendorId, LEAD_COST_KOBO, {
       leadId,
       description,
+    });
+
+    // Best-effort, same as the wallet-low-balance and referral notifiers —
+    // the buyer's chat has already opened client-side by now, so a failure
+    // here must never surface as an error to them. Fires regardless of
+    // `billed`: an unbilled lead (drained wallet) is still a real lead the
+    // vendor should know about.
+    notifyUser(vendorId, {
+      type: "new-lead",
+      title: "New WhatsApp lead",
+      body: productName
+        ? `A buyer wants to chat about ${productName}.`
+        : "A buyer clicked through to chat on WhatsApp.",
+      url: `/${vendorId}/wallet`,
+      tag: "new-lead",
+    }).catch((err) => {
+      console.error(`[chargeLead] notify failed for ${vendorId}:`, err.message);
     });
 
     res.json({ success: true, data: { billed: result.debited } });
