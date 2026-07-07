@@ -1,6 +1,11 @@
 import jwt from "jsonwebtoken";
 import User from "../../models/Users.js";
 import { sendVerificationEmail } from "../../helpers/emailSender.js";
+import {
+  prepareReferralForSignup,
+  recordPendingReferral,
+  creditPendingReferral,
+} from "../../services/referral.service.js";
 
 
 export const register = async (req, res) => {
@@ -21,6 +26,7 @@ export const register = async (req, res) => {
       sector,
       description,
       location,
+      referralCode,
     } = req.body;
 
     // 🔹 Validate required fields
@@ -108,7 +114,17 @@ export const register = async (req, res) => {
       },
     });
 
+    // Assigns this new user's own referralCode, and — if `referralCode`
+    // above matches a real vendor — sets `user.referredBy` too. Must run
+    // before save() so both land in the same insert.
+    const referralInfo = await prepareReferralForSignup(user, referralCode);
+
     await user.save();
+
+    // Needs the real user._id from the save above, so this can't be folded
+    // into prepareReferralForSignup. A no-op when referralInfo is null
+    // (no code given, or an invalid one).
+    await recordPendingReferral(user, referralInfo);
 
     // 🔹 Send verification email
     await sendVerificationEmail(email, name, otp);
@@ -263,13 +279,12 @@ export const verifyEmail = async (req, res) => {
     // Find the user by email
     const user = await User.findOne({ email });
 
-    if (user.accountVerified) {
-      return res.status(400).json({ message: "The user is already verified." });
-    }
-
-
     if (!user) {
       return res.status(404).json({ message: "User not found" });
+    }
+
+    if (user.accountVerified) {
+      return res.status(400).json({ message: "The user is already verified." });
     }
 
     // Check if OTP exists and matches
@@ -290,6 +305,16 @@ export const verifyEmail = async (req, res) => {
     user.emailOtp = undefined;
 
     await user.save();
+
+    // Email verification is the anti-abuse gate for referral payouts (a bare
+    // signup with no real email behind it never converts) — a no-op if this
+    // user wasn't referred. Wrapped separately so a referral-crediting
+    // failure never blocks the verification response itself.
+    try {
+      await creditPendingReferral(user);
+    } catch (err) {
+      console.error("[referral] credit-on-verify failed:", err.message);
+    }
 
     res.status(201).json({ message: "Account verified successfully" });
   } catch (err) {

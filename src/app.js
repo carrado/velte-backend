@@ -20,8 +20,10 @@ import storeRoutes from "./routes/store.routes.js";
 import searchRoutes from "./routes/search.routes.js";
 import notificationsRoutes from "./routes/notifications.routes.js";
 import pushRoutes from "./routes/push.routes.js";
+import referralsRoutes from "./routes/referrals.routes.js";
 import { startKeepAlive } from "./initializers/keepAlive.js";
 import { startWalletLowBalanceCron } from "./initializers/walletLowBalanceCron.js";
+import { startUnverifiedUsersCleanupCron } from "./initializers/unverifiedUsersCleanupCron.js";
 
 const app = express();
 
@@ -108,6 +110,7 @@ app.use("/api/store", storeRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/push", pushRoutes);
+app.use("/api/referrals", referralsRoutes);
 
 // Health check route
 app.get("/health", (req, res) => {
@@ -135,4 +138,8 @@ app.listen(PORT, () => {
   // Hourly sweep — notifies any vendor whose wallet has drifted low, not
   // just the ones who happen to trigger a new debit (see [[vendor_wallet]]).
   startWalletLowBalanceCron();
+
+  // Daily sweep — deletes signups that never verified their email within
+  // 7 days, freeing their email/username for a fresh registration.
+  startUnverifiedUsersCleanupCron();
 });

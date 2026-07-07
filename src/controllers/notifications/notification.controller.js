@@ -8,6 +8,7 @@ const TYPE_MAP = {
   'low-stock': 'product',
   'payment': 'payment',
   'wallet': 'wallet',
+  'referral': 'referral',
   'system': 'system',
   'new-message': 'system',
 };

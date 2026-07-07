@@ -634,6 +634,45 @@ export async function debitWalletForLead(vendorId, amountKobo, { leadId, descrip
   return { debited: true, wallet };
 }
 
+// ── Referral-bonus hook (not an HTTP endpoint) ──────────────────────────────
+// Called from referral.service.js's creditPendingReferral, once the referred
+// vendor verifies their email. Unlike debitWalletForLead there's no
+// insufficient-balance case to guard against — crediting a wallet can't fail
+// on the balance itself — so getOrCreateWallet (not a bare findOneAndUpdate)
+// handles the rare case where the referrer somehow has no wallet row yet.
+export async function creditWalletForReferral(vendorId, amountKobo, { referralId, description } = {}) {
+  const wallet = await getOrCreateWallet(vendorId);
+  wallet.balanceKobo += amountKobo;
+  await wallet.save();
+
+  try {
+    await WalletTransaction.create({
+      walletId: wallet._id,
+      vendorId,
+      type: "topup",
+      amountKobo,
+      balanceAfterKobo: wallet.balanceKobo,
+      reference: `referral_${referralId}`,
+      status: "success",
+      channel: "referral",
+      description: description ?? "Referral bonus",
+    });
+  } catch (err) {
+    // Duplicate reference — this referral was already credited (the
+    // caller's `status: 'pending'` guard should already prevent this, but
+    // the unique index is the real guarantee) — back out the balance bump
+    // above rather than leave a double-credit with no matching ledger row.
+    if (err.code === 11000) {
+      wallet.balanceKobo -= amountKobo;
+      await wallet.save();
+      return { credited: false, reason: "already_credited" };
+    }
+    throw err;
+  }
+
+  return { credited: true, wallet };
+}
+
 // Fires when a debit drops the balance below the vendor's configured
 // threshold. Never called per-lead directly — batches into one recharge
 // (spec §11) instead of charging the card on every lead.
