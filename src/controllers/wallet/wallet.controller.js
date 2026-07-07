@@ -10,6 +10,19 @@ import {
   createDedicatedVirtualAccount,
   chargeAuthorization,
 } from "../../services/paystack.service.js";
+import { LOW_BALANCE_KOBO } from "../../jobs/walletLowBalance.job.js";
+
+// Every direct balance credit must clear this immediately, not wait for the
+// hourly cron's point-in-time sample — a wallet that dips below the
+// threshold, gets topped up back above it, then dips low again inside one
+// poll window never gets observed above the threshold by the cron, so its
+// `lowBalanceNotified` flag would otherwise stay stuck true forever and
+// silently suppress every future low-balance alert for that wallet.
+function clearLowBalanceFlagIfRecovered(wallet) {
+  if (wallet.lowBalanceNotified && wallet.balanceKobo > LOW_BALANCE_KOBO) {
+    wallet.lowBalanceNotified = false;
+  }
+}
 
 // New vendors get a one-time, non-refundable starter credit so they can see
 // real leads land before ever having to trust the AI matching enough to pay
@@ -226,6 +239,7 @@ async function creditWalletFromReference(reference, expectedVendorId = null) {
   const amountKobo = transaction.amount; // Paystack already reports amount in kobo
 
   wallet.balanceKobo += amountKobo;
+  clearLowBalanceFlagIfRecovered(wallet);
 
   // First successful card top-up captures a reusable authorization for
   // auto-recharge — never charged per-lead, only for future batched top-ups.
@@ -343,6 +357,7 @@ async function creditWalletFromDvaTransfer(data) {
 
   const amountKobo = data.amount;
   wallet.balanceKobo += amountKobo;
+  clearLowBalanceFlagIfRecovered(wallet);
   await wallet.save();
 
   try {
@@ -643,6 +658,7 @@ export async function debitWalletForLead(vendorId, amountKobo, { leadId, descrip
 export async function creditWalletForReferral(vendorId, amountKobo, { referralId, description } = {}) {
   const wallet = await getOrCreateWallet(vendorId);
   wallet.balanceKobo += amountKobo;
+  clearLowBalanceFlagIfRecovered(wallet);
   await wallet.save();
 
   try {
