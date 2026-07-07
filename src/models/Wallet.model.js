@@ -53,6 +53,13 @@ const walletSchema = new mongoose.Schema(
       enum: ["active", "suspended"],
       default: "active",
     },
+
+    // Set by the hourly low-balance cron (jobs/walletLowBalance.job.js) once
+    // it notifies a vendor under the threshold — prevents renotifying every
+    // run while they stay low. Reset back to false by the same job once the
+    // balance rises back to/above the threshold, so the NEXT dip notifies
+    // again ("once per low episode").
+    lowBalanceNotified: { type: Boolean, default: false },
   },
   { timestamps: true },
 );

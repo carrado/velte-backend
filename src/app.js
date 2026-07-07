@@ -20,7 +20,10 @@ import categoriesRoutes from "./routes/categories.routes.js";
 import walletRoutes from "./routes/wallet.routes.js";
 import storeRoutes from "./routes/store.routes.js";
 import searchRoutes from "./routes/search.routes.js";
+import notificationsRoutes from "./routes/notifications.routes.js";
+import pushRoutes from "./routes/push.routes.js";
 import { startKeepAlive } from "./initializers/keepAlive.js";
+import { startWalletLowBalanceCron } from "./initializers/walletLowBalanceCron.js";
 
 const app = express();
 
@@ -105,6 +108,8 @@ app.use("/api/categories", categoriesRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/store", storeRoutes);
 app.use("/api/search", searchRoutes);
+app.use("/api/notifications", notificationsRoutes);
+app.use("/api/push", pushRoutes);
 
 // Health check route
 app.get("/health", (req, res) => {
@@ -128,4 +133,8 @@ app.listen(PORT, () => {
 
   // Keep free-tier hosting from idling the instance to sleep
   startKeepAlive();
+
+  // Hourly sweep — notifies any vendor whose wallet has drifted low, not
+  // just the ones who happen to trigger a new debit (see [[vendor_wallet]]).
+  startWalletLowBalanceCron();
 });
