@@ -746,7 +746,7 @@ export async function searchStores({
 
   const vendorIds = [...new Set(candidates.map((c) => String(c.vendorId)))];
   const vendors = await User.find({ _id: { $in: vendorIds } }).select(
-    "geo trustScore area state",
+    "geo trustScore area state phone",
   );
   const vendorById = new Map(vendors.map((v) => [String(v._id), v]));
 
@@ -761,9 +761,12 @@ export async function searchStores({
     name: store.name,
     description: store.description,
     sectors: store.sectors,
-    // Store has its own `whatsapp` field (unlike User, which only has
-    // `phone`) — already the field the public /store/:handle page uses.
-    whatsapp: store.whatsapp,
+    // Same precedence as searchProducts' own mapper: Store.whatsapp is the
+    // number a vendor can update any time from their store settings, so
+    // it's more likely current than vendor.phone (captured once at
+    // onboarding and never revisited) — but either can be the only one
+    // actually set, and a missing chat button was a real bug found live.
+    whatsapp: store.whatsapp || vendor.phone || null,
     area: vendor.area,
     state: vendor.state,
     distanceKm: distanceKm != null ? Math.round(distanceKm * 10) / 10 : null,

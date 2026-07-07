@@ -599,13 +599,13 @@ export async function getTransactions(req, res, next) {
 }
 
 // ── Lead-billing hook (not an HTTP endpoint) ────────────────────────────────
-// Exported for the future searches/leads core (Velte Connect Bucket D) to call
-// atomically inside its lead-creation transaction. Not wired to anything yet —
-// there's no leads endpoint in this repo to call it. `debited: false` is the
-// hook a future ranking layer uses to decide whether a vendor stays eligible
-// for matching (see "Known gaps" in the teardown plan — the actual grace vs.
-// hard-block policy on that signal is undecided, that's a matching-layer call,
-// not a wallet one).
+// Called from search.controller.js's chargeLead (POST /api/search/lead),
+// fired the instant a buyer clicks "Chat on WhatsApp" on a search result
+// card. `debited: false` (insufficient balance) is a no-op today — a drained
+// wallet already keeps a vendor out of search results entirely via
+// retrieval.service.js's wallet-eligibility filter, so this path is a
+// last-resort race (balance dropped between that filter running and the
+// buyer actually clicking), not the primary gate.
 export async function debitWalletForLead(vendorId, amountKobo, { leadId, description } = {}) {
   const wallet = await Wallet.findOneAndUpdate(
     { vendorId, balanceKobo: { $gte: amountKobo } },
