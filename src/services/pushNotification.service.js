@@ -8,12 +8,13 @@ import Notification from '../models/Notification.model.js';
 // subscription, not us. A success resets the counter (see below).
 const MAX_AUTH_FAILURES = 5;
 
-// These two notify a vendor about something time-sensitive they can act on
-// right now (a buyer waiting to chat, a wallet about to stop bidding on
-// leads) — worth pushing through OS/FCM battery-saving states rather than
-// getting deferred like a routine notification. Everything else keeps the
-// library defaults (urgency "normal", short TTL).
-const HIGH_URGENCY_TYPES = new Set(['new-lead', 'wallet']);
+// All current notification types are worth pushing through OS/FCM
+// battery-saving states rather than getting deferred like a routine
+// notification — a buyer waiting to chat, a wallet about to stop bidding on
+// leads, a referral payout, or a system alert. Kept as an allowlist (rather
+// than applying high urgency unconditionally) so a future low-priority type
+// (e.g. a marketing/announcement notification) can opt out by omission.
+const HIGH_URGENCY_TYPES = new Set(['new-lead', 'wallet', 'referral', 'system']);
 const HIGH_URGENCY_TTL_SECONDS = 60 * 60 * 4;
 
 // Configure VAPID at module load. setVapidDetails THROWS on a missing/malformed
