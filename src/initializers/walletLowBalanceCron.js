@@ -5,7 +5,7 @@ import { checkLowWalletBalances } from "../jobs/walletLowBalance.job.js";
 // dependency or external scheduler infra. Runs once immediately on boot too,
 // so a vendor already under the threshold isn't left waiting up to an hour
 // after every deploy/restart before hearing about it.
-const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const CHECK_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 
 export function startWalletLowBalanceCron() {
   const run = () => {
