@@ -8,6 +8,14 @@ import Notification from '../models/Notification.model.js';
 // subscription, not us. A success resets the counter (see below).
 const MAX_AUTH_FAILURES = 5;
 
+// These two notify a vendor about something time-sensitive they can act on
+// right now (a buyer waiting to chat, a wallet about to stop bidding on
+// leads) — worth pushing through OS/FCM battery-saving states rather than
+// getting deferred like a routine notification. Everything else keeps the
+// library defaults (urgency "normal", short TTL).
+const HIGH_URGENCY_TYPES = new Set(['new-lead', 'wallet']);
+const HIGH_URGENCY_TTL_SECONDS = 60 * 60 * 4;
+
 // Configure VAPID at module load. setVapidDetails THROWS on a missing/malformed
 // subject or key — and because this module can be imported from request-handling
 // paths (e.g. the wallet debit hook), an unguarded throw here would take down
@@ -69,6 +77,9 @@ export async function notifyUser(userId, payload) {
   }
 
   const pushPayload = JSON.stringify({ title, body, url, tag, icon, badge, requireInteraction });
+  const sendOptions = HIGH_URGENCY_TYPES.has(type)
+    ? { TTL: HIGH_URGENCY_TTL_SECONDS, urgency: 'high' }
+    : undefined;
   console.log(`[Push] notifyUser(${userId}): pushing to ${subscriptions.length} subscription(s)`);
 
   await Promise.allSettled(
@@ -77,6 +88,7 @@ export async function notifyUser(userId, payload) {
         await webpush.sendNotification(
           { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
           pushPayload,
+          sendOptions,
         );
         // Mark it alive: refresh freshness (so the per-user prune keeps it) and clear
         // any earlier auth failures. Note: a 201 here means the push SERVICE accepted
