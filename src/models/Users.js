@@ -117,7 +117,7 @@ const userSchema = new mongoose.Schema({
 
   // ── Velte Connect vendor fields (discovery matching: geo + trust + payouts) ──
   geo: {
-    type:        { type: String, enum: ['Point'], default: 'Point' },
+    type:        { type: String, enum: ['Point'] },
     coordinates: { type: [Number], default: undefined }, // [lng, lat]
   },
   area:               { type: String, default: null }, // neighbourhood/market tag
