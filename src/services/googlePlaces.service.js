@@ -1,5 +1,6 @@
-// Google Places API (New) — Tier 3 fallback for searchStores, only reached
-// when Velte has no matching vendor in either the local or state tier.
+// Google Places API (New) — Tier 5 fallback for searchStores, only reached
+// when Velte has no matching vendor in the local, nearby, state, or
+// nationwide tier.
 // Isolated in its own service file the same way voyage.service.js and
 // nominatim.service.js isolate their third-party calls.
 //
