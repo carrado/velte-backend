@@ -32,13 +32,17 @@ export const sendVerificationEmail = async (to, name, otp) => {
     // Build email message
     const msg = {
       to,
-      from: "no-reply@devcamp.com.ng", // ✅ use verified sender in SendGrid
+      from: "no-reply@velte.ng",
       subject: "Verify Your Velte Account",
       html: htmlContent,
     };
 
-    // Send the email
-    await resend.emails.send(msg);
+    // Send the email — Resend's SDK resolves normally (doesn't throw) on an
+    // API-level rejection (unverified domain, bad recipient, etc.); it comes
+    // back as `error` in the response instead, so it must be checked here or
+    // a rejected send silently logs as a success.
+    const { error } = await resend.emails.send(msg);
+    if (error) throw new Error(error.message);
     console.log(`✅ Verification email sent to ${to}`);
   } catch (error) {
     console.error("❌ Error sending verification email:", error);
@@ -63,12 +67,13 @@ export const sendPasswordChangeEmail = async (to, name, otp) => {
       .replace(/{{name}}/g, name)
       .replace(/{{otp}}/g, otp);
 
-    await resend.emails.send({
+    const { error } = await resend.emails.send({
       to,
-      from: "no-reply@devcamp.com.ng",
+      from: "no-reply@velte.ng",
       subject: "Velte Password Change Verification",
       html: htmlContent,
     });
+    if (error) throw new Error(error.message);
 
     console.log(`✅ Password change email sent to ${to}`);
   } catch (error) {
@@ -102,12 +107,13 @@ export const sendOrderTrackingEmail = async (to, name, key, orderRef) => {
       .replace(/{{key}}/g, key)
       .replace(/{{orderRef}}/g, orderRef || "");
 
-    await resend.emails.send({
+    const { error } = await resend.emails.send({
       to,
-      from: "no-reply@devcamp.com.ng",
+      from: "no-reply@velte.ng",
       subject: "Your order tracking key",
       html: htmlContent,
     });
+    if (error) throw new Error(error.message);
 
     console.log(`✅ Order tracking email sent to ${to}`);
   } catch (error) {
@@ -152,7 +158,7 @@ export const sendReceiptEmail = async (
 
     const msg = {
       to,
-      from: "no-reply@devcamp.com.ng",
+      from: "no-reply@velte.ng",
       subject: `Your receipt${orderRef ? ` for order ${orderRef}` : ""}`,
       html: htmlContent,
     };
@@ -168,7 +174,8 @@ export const sendReceiptEmail = async (
       ];
     }
 
-    await resend.emails.send(msg);
+    const { error } = await resend.emails.send(msg);
+    if (error) throw new Error(error.message);
     console.log(`✅ Receipt email sent to ${to}`);
   } catch (error) {
     console.error("❌ Error sending receipt email:", error);
@@ -197,13 +204,14 @@ export const sendPasswordResetEmail = async (to, name, otp) => {
     // Build email message
     const msg = {
       to,
-      from: "no-reply@devcamp.com.ng", // ✅ use verified sender in SendGrid
+      from: "no-reply@velte.ng",
       subject: "Password Reset",
       html: htmlContent,
     };
 
     // Send the email
-    await resend.emails.send(msg);
+    const { error } = await resend.emails.send(msg);
+    if (error) throw new Error(error.message);
     console.log(`✅ Password Reset email sent to ${to}`);
   } catch (error) {
     console.error("❌ Error sending password reset email:", error);

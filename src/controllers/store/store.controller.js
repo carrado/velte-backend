@@ -20,7 +20,12 @@ function slugify(source) {
     .slice(0, 24);
 }
 
-async function getOrCreateStore(vendorId) {
+// `seed` is only ever applied on first creation (an existing store is
+// returned as-is) — lets a caller with extra context on hand (signup's own
+// description/sector/phone, see auth.js register) pre-populate a new store
+// beyond the bare handle+name, instead of leaving it blank until the vendor
+// happens to visit store settings themselves.
+export async function getOrCreateStore(vendorId, seed = {}) {
   const existing = await Store.findOne({ vendorId });
   if (existing) return existing;
 
@@ -38,7 +43,14 @@ async function getOrCreateStore(vendorId) {
   }
 
   try {
-    return await Store.create({ vendorId, handle, name: displayName });
+    return await Store.create({
+      vendorId,
+      handle,
+      name: displayName,
+      ...(seed.description ? { description: seed.description } : {}),
+      ...(seed.sectors?.length ? { sectors: seed.sectors } : {}),
+      ...(seed.whatsapp ? { whatsapp: seed.whatsapp } : {}),
+    });
   } catch (err) {
     // Concurrent first-visit race — the unique vendorId index makes the loser
     // land here; return the winner's document.
