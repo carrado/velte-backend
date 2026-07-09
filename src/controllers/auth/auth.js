@@ -6,6 +6,8 @@ import {
   recordPendingReferral,
   creditPendingReferral,
 } from "../../services/referral.service.js";
+import { getOrCreateStore } from "../store/store.controller.js";
+import { embedAndSaveStore } from "../../services/retrieval.service.js";
 
 
 export const register = async (req, res) => {
@@ -125,6 +127,23 @@ export const register = async (req, res) => {
     // into prepareReferralForSignup. A no-op when referralInfo is null
     // (no code given, or an invalid one).
     await recordPendingReferral(user, referralInfo);
+
+    // A Store used to only exist once a vendor visited store settings —
+    // real caterer/service vendors with no such visit were invisible to
+    // searchStores (no Store doc = never a vector-search candidate) even
+    // with products listed. Auto-provision + embed it right away, seeded
+    // from what signup already collected, so every vendor is searchable
+    // from the moment they verify. Best-effort: must never block signup.
+    try {
+      const store = await getOrCreateStore(user._id, {
+        description: user.description,
+        sectors: user.sector ? [user.sector] : [],
+        whatsapp: user.phone,
+      });
+      await embedAndSaveStore(store);
+    } catch (err) {
+      console.error("[signup] store auto-provision failed:", err.message);
+    }
 
     // 🔹 Send verification email
     await sendVerificationEmail(email, name, otp);
