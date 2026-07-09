@@ -42,8 +42,8 @@ export const register = async (req, res) => {
     }
 
     let geo;
-    if (location !== undefined) {
-      const { lat, lng } = location ?? {};
+    if (location !== undefined && location !== null) {
+      const { lat, lng } = location;
       if (
         typeof lat !== "number" ||
         typeof lng !== "number" ||
