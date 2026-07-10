@@ -258,7 +258,7 @@ function haversineKm([lng1, lat1], [lng2, lat2]) {
 }
 
 /**
- * Shared Tier 4 for both searchProducts and searchStores once every
+ * Shared Tier 5 for both searchProducts and searchStores once every
  * Velte-vendor geo tier has come up empty (or been fully wallet-filtered
  * out) — real nearby businesses via Google Places, fed the raw buyer query
  * text either way (a product name matches a store's Places listing about as
@@ -295,7 +295,7 @@ async function googlePlacesFallback(queryText, lat, lng, radiusKm) {
  * matching well. Runs against the full ranked list BEFORE the caller slices
  * to `limit`, so a tier still surfaces up to `limit` genuinely-payable
  * vendors when more than `limit` existed pre-filter, and correctly falls
- * through to the next geo tier (and eventually Tier 4's Google Places
+ * through to the next geo tier (and eventually Tier 5's Google Places
  * fallback in searchStores) when filtering empties a tier out entirely.
  *
  * Batches one query for vendors that already have a wallet; only the rare
@@ -465,16 +465,20 @@ function applyMatchQuality(tierCandidates, relevanceFloor, isImageQuery) {
  * Search products by meaning + proximity + trust. `lat`/`lng` are optional —
  * omit both for a "nationwide" search (no location signal at all: device
  * permission denied/unavailable AND the buyer named no place). When a
- * location IS known, three geo tiers cascade before giving up: a tight
- * radius ("local"), a wider same-city radius ("nearby") only if Tier 1 is
- * empty, then the buyer's whole state ("state") only if Tier 2 is also
- * empty — later tiers don't re-run the vector search, just re-filter/re-rank
- * the same top candidates. Throws only if the query itself can't be
- * embedded (Voyage down / no key) — that's a hard stop, not a degrade,
- * since there's nothing to search without a query vector.
+ * location IS known, geo tiers cascade before giving up: a tight radius
+ * ("local"), a wider same-city radius ("nearby") only if Tier 1 is empty,
+ * then the buyer's whole state ("state") only if Tier 2 is also empty, then
+ * a state-agnostic nationwide pass ("nationwide") only if Tier 3 is also
+ * empty — a real vendor just across a state border (e.g. buyer in Enugu,
+ * vendor in Anambra) is otherwise invisible forever, since Tier 3's state
+ * match is an exact string comparison with no distance-based bridge between
+ * "same state" and nothing. Later tiers don't re-run the vector search, just
+ * re-filter/re-rank the same top candidates. Throws only if the query itself
+ * can't be embedded (Voyage down / no key) — that's a hard stop, not a
+ * degrade, since there's nothing to search without a query vector.
  *
- * Plus a Tier 4, same as searchStores, only reachable when a location IS
- * known and Tiers 1-3 are all empty: real nearby businesses via Google
+ * Plus a Tier 5, same as searchStores, only reachable when a location IS
+ * known and Tiers 1-4 are all empty: real nearby businesses via Google
  * Places, fed the raw product query text since there's no confirmed
  * business type the way searchStores already has one.
  */
@@ -598,7 +602,7 @@ export async function searchProducts({
       weights: NATIONWIDE_WEIGHTS,
     });
     if (!nationwide.length) {
-      // No Tier 4 here, same as searchStores — a "nearby business" fallback
+      // No Tier 5 here, same as searchStores — a "nearby business" fallback
       // is meaningless without somewhere to be near.
       return { results: [], matchTier: null, matchQuality: undefined, externalSuggestions: null };
     }
@@ -660,8 +664,8 @@ export async function searchProducts({
   }
 
   // Tier 3: same state — reachable even when reverseGeocodeState fails,
-  // since Tier 4 below doesn't need a state name, just coordinates (same
-  // as searchStores).
+  // since the tiers below (nationwide, then Google Places) don't need a
+  // state name, just coordinates (same as searchStores).
   const buyerState = await reverseGeocodeState(lat, lng);
   const { candidates: stateWide, relevanceFloor: stateFloor } = buyerState
     ? await rankCandidates({
@@ -687,7 +691,30 @@ export async function searchProducts({
     };
   }
 
-  // Tier 4: no Velte vendor matched at all.
+  // Tier 4: nationwide, state-agnostic — a real vendor just across the
+  // buyer's state border (or anywhere else in the country) shouldn't lose to
+  // an external, non-Velte Google Places result just because Tier 3's state
+  // match is an exact boundary with no distance bridge. Same semantic+trust-
+  // only ranking as the no-location branch above (rankArgs has no lat/lng,
+  // so rankCandidates runs in locationless mode — distanceKm comes back
+  // null, same as a genuinely nationwide search).
+  const { candidates: nationwide, relevanceFloor: nationwideFloor } =
+    await rankCandidates({ ...rankArgs, weights: NATIONWIDE_WEIGHTS });
+  if (nationwide.length) {
+    const { candidates: tiered, matchQuality } = applyMatchQuality(
+      nationwide,
+      nationwideFloor,
+      isImageQuery,
+    );
+    return {
+      results: tiered.map(mapResult),
+      matchTier: "nationwide",
+      matchQuality,
+      externalSuggestions: null,
+    };
+  }
+
+  // Tier 5: no Velte vendor matched at all.
   const externalSuggestions = await googlePlacesFallback(queryText, lat, lng, radiusKm);
   return {
     results: [],
@@ -701,10 +728,10 @@ export async function searchProducts({
  * Search stores (vendors as a business) by meaning + proximity + trust —
  * for a buyer describing a *kind* of business/vendor/shop rather than a
  * specific item. Same tiering as searchProducts (nationwide when no
- * location, then local → nearby → state when one is known), plus a Tier 4
- * only reachable when a location IS known: real nearby businesses via
- * Google Places, since a "nearby business" search is meaningless without
- * somewhere to be near.
+ * location, then local → nearby → state → state-agnostic nationwide when
+ * one is known), plus a Tier 5 only reachable when a location IS known:
+ * real nearby businesses via Google Places, since a "nearby business" search
+ * is meaningless without somewhere to be near.
  */
 export async function searchStores({
   queryText,
@@ -830,7 +857,8 @@ export async function searchStores({
   }
 
   // Tier 3: same state — reachable even when reverseGeocodeState fails,
-  // since Tier 4 below doesn't need a state name, just coordinates.
+  // since the tiers below (nationwide, then Google Places) don't need a
+  // state name, just coordinates.
   const buyerState = await reverseGeocodeState(lat, lng);
   const { candidates: stateWide } = buyerState
     ? await rankCandidates({
@@ -849,7 +877,22 @@ export async function searchStores({
     };
   }
 
-  // Tier 4: no Velte vendor matched at all.
+  // Tier 4: nationwide, state-agnostic — same reasoning as searchProducts'
+  // own Tier 4 above: a real vendor just across the buyer's state border
+  // shouldn't lose to an external, non-Velte Google Places result.
+  const { candidates: nationwide } = await rankCandidates({
+    ...rankArgs,
+    weights: NATIONWIDE_WEIGHTS,
+  });
+  if (nationwide.length) {
+    return {
+      results: nationwide.map(mapResult),
+      matchTier: "nationwide",
+      externalSuggestions: null,
+    };
+  }
+
+  // Tier 5: no Velte vendor matched at all.
   const externalSuggestions = await googlePlacesFallback(queryText, lat, lng, radiusKm);
 
   return {

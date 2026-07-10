@@ -98,6 +98,11 @@ export const register = async (req, res) => {
         services: services,
         phone: phone,
       },
+      // Top-level field — the one Settings, changePassword's OTP-to-phone
+      // flow, and search's WhatsApp fallback (vendor.phone) actually read.
+      // company.phone above is a separate, legacy field nothing else
+      // consults; without this, phone silently only ever landed there.
+      phone: phone || null,
       username,
       country: country,
       businessType: businessType || 'retail',
