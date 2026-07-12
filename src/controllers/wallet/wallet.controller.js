@@ -11,6 +11,7 @@ import {
   chargeAuthorization,
 } from "../../services/paystack.service.js";
 import { LOW_BALANCE_KOBO } from "../../jobs/walletLowBalance.job.js";
+import { notifyUser } from "../../services/pushNotification.service.js";
 
 // Every direct balance credit must clear this immediately, not wait for the
 // hourly cron's point-in-time sample — a wallet that dips below the
@@ -21,6 +22,24 @@ import { LOW_BALANCE_KOBO } from "../../jobs/walletLowBalance.job.js";
 function clearLowBalanceFlagIfRecovered(wallet) {
   if (wallet.lowBalanceNotified && wallet.balanceKobo > LOW_BALANCE_KOBO) {
     wallet.lowBalanceNotified = false;
+  }
+}
+
+// Same idea as clearLowBalanceFlagIfRecovered, but against the vendor's own
+// auto-recharge threshold rather than the fixed global LOW_BALANCE_KOBO —
+// ends a failure episode (see maybeAutoRecharge) the moment the balance
+// recovers via ANY credit, not just a successful auto-recharge charge
+// itself (a manual top-up or DVA transfer should stop the retry/notify
+// cycle just as well). Called from every place a wallet gets credited.
+function clearAutoRechargeFailureIfRecovered(wallet) {
+  if (
+    wallet.autoRecharge.failureFirstAt &&
+    wallet.balanceKobo >= wallet.autoRecharge.thresholdKobo
+  ) {
+    wallet.autoRecharge.failureFirstAt = null;
+    wallet.autoRecharge.failureLastAttemptAt = null;
+    wallet.autoRecharge.failureNotifyCount = 0;
+    wallet.autoRecharge.lastFailureNotifiedAt = null;
   }
 }
 
@@ -240,6 +259,7 @@ async function creditWalletFromReference(reference, expectedVendorId = null) {
 
   wallet.balanceKobo += amountKobo;
   clearLowBalanceFlagIfRecovered(wallet);
+  clearAutoRechargeFailureIfRecovered(wallet);
 
   // First successful card top-up captures a reusable authorization for
   // auto-recharge — never charged per-lead, only for future batched top-ups.
@@ -358,6 +378,7 @@ async function creditWalletFromDvaTransfer(data) {
   const amountKobo = data.amount;
   wallet.balanceKobo += amountKobo;
   clearLowBalanceFlagIfRecovered(wallet);
+  clearAutoRechargeFailureIfRecovered(wallet);
   await wallet.save();
 
   try {
@@ -659,6 +680,7 @@ export async function creditWalletForReferral(vendorId, amountKobo, { referralId
   const wallet = await getOrCreateWallet(vendorId);
   wallet.balanceKobo += amountKobo;
   clearLowBalanceFlagIfRecovered(wallet);
+  clearAutoRechargeFailureIfRecovered(wallet);
   await wallet.save();
 
   try {
@@ -689,36 +711,142 @@ export async function creditWalletForReferral(vendorId, amountKobo, { referralId
   return { credited: true, wallet };
 }
 
+// Failure/retry/notify policy for a failing auto-recharge (user-directed
+// 2026-07-13):
+//  - The first failed attempt of a new episode notifies the vendor right
+//    away (in-app + PWA push, via notifyUser — "wallet" is already a
+//    HIGH_URGENCY_TYPES entry in pushNotification.service.js).
+//  - After that, retries happen silently every AUTO_RECHARGE_RETRY_INTERVAL_MS
+//    (5h) — no notification on a retry that's still failing.
+//  - Every AUTO_RECHARGE_NOTIFY_INTERVAL_MS (20h) that it's STILL failing,
+//    one more notification goes out — a periodic check-in, not a change to
+//    the retry cadence itself.
+//  - Capped at AUTO_RECHARGE_MAX_NOTIFICATIONS (7) notifications per episode;
+//    past that, retries continue silently forever (or until the charge
+//    finally succeeds, or the vendor tops up manually — either ends the
+//    episode, see clearAutoRechargeFailureIfRecovered above).
+//  - A wallet that's been topped up (balance back at/above threshold, by
+//    ANY means) is simply no longer eligible for the claim query below —
+//    "won't auto-debit once topped up" falls out of that $expr check for
+//    free, no separate flag needed.
+const AUTO_RECHARGE_RETRY_INTERVAL_MS = 5 * 60 * 60 * 1000;
+const AUTO_RECHARGE_NOTIFY_INTERVAL_MS = 20 * 60 * 60 * 1000;
+const AUTO_RECHARGE_MAX_NOTIFICATIONS = 7;
+
 // Fires when a debit drops the balance below the vendor's configured
-// threshold. Never called per-lead directly — batches into one recharge
-// (spec §11) instead of charging the card on every lead.
-async function maybeAutoRecharge(wallet) {
-  const { enabled, authorizationCode, thresholdKobo, topupKobo } = wallet.autoRecharge;
-  if (!enabled || !authorizationCode || topupKobo <= 0) return;
-  if (wallet.balanceKobo >= thresholdKobo) return;
+// threshold (debitWalletForLead), AND periodically for a wallet already
+// mid-failure-episode (autoRechargeRetry.job.js's sweep — the ONLY way a
+// failure episode ever gets retried when no new lead happens to land). Both
+// callers share this exact function so the retry-interval/notify-cadence
+// policy lives in one place regardless of what triggered the attempt.
+//
+// Claims an atomic lock (autoRecharge.inFlight) before charging — without
+// it, two triggers landing close together for the same vendor could each
+// independently pass the eligibility checks below and each fire a separate
+// charge_authorization call, double-charging the card. The SAME claim also
+// enforces the 5-hour retry gate ($or below) and the balance-vs-threshold
+// eligibility ($expr — two fields of one document, which a plain filter
+// can't compare) — the whole thing happens in one atomic findOneAndUpdate,
+// no window between "check" and "flip the flag" for a second concurrent
+// call to land in. Same pattern as starterCreditGranted/lowBalanceNotified
+// elsewhere in this file.
+export async function maybeAutoRecharge(wallet) {
+  const retryGateCutoff = new Date(Date.now() - AUTO_RECHARGE_RETRY_INTERVAL_MS);
+
+  const claimed = await Wallet.findOneAndUpdate(
+    {
+      _id: wallet._id,
+      "autoRecharge.enabled": true,
+      "autoRecharge.authorizationCode": { $ne: null },
+      "autoRecharge.topupKobo": { $gt: 0 },
+      "autoRecharge.inFlight": { $ne: true },
+      $expr: { $lt: ["$balanceKobo", "$autoRecharge.thresholdKobo"] },
+      $or: [
+        { "autoRecharge.failureFirstAt": null },
+        { "autoRecharge.failureLastAttemptAt": { $lte: retryGateCutoff } },
+      ],
+    },
+    { $set: { "autoRecharge.inFlight": true } },
+    { new: true },
+  );
+  if (!claimed) return;
+
+  // Read before this attempt's own bookkeeping touches it.
+  const isFirstFailureAttempt = !claimed.autoRecharge.failureFirstAt;
 
   try {
-    const user = await User.findById(wallet.vendorId).select("email");
+    const user = await User.findById(claimed.vendorId).select("email");
     if (!user) return;
 
-    const reference = `autorecharge_${wallet.vendorId}_${Date.now()}`;
+    const reference = `autorecharge_${claimed.vendorId}_${Date.now()}`;
     const transaction = await chargeAuthorization({
-      authorizationCode,
+      authorizationCode: claimed.autoRecharge.authorizationCode,
       email: user.email,
-      amountNaira: topupKobo / 100,
+      amountNaira: claimed.autoRecharge.topupKobo / 100,
       reference,
-      metadata: { type: "wallet_topup", vendorId: wallet.vendorId.toString() },
+      metadata: { type: "wallet_topup", vendorId: claimed.vendorId.toString() },
     });
 
     if (transaction.status !== "success") {
-      console.warn(`[auto-recharge] charge not successful for ${wallet.vendorId}: ${transaction.status}`);
+      console.warn(`[auto-recharge] charge not successful for ${claimed.vendorId}: ${transaction.status}`);
+      await recordAutoRechargeFailure(claimed, isFirstFailureAttempt);
       return;
     }
 
     // Reuse the same idempotent credit path the webhook/verify flow uses —
-    // transaction.reference is the one we just generated above.
+    // transaction.reference is the one we just generated above. That path
+    // also runs clearAutoRechargeFailureIfRecovered, ending the episode once
+    // the resulting balance clears the threshold.
     await creditWalletFromReference(reference);
   } catch (err) {
-    console.error(`[auto-recharge] failed for wallet ${wallet._id}:`, err.message);
+    console.error(`[auto-recharge] failed for wallet ${claimed._id}:`, err.message);
+    await recordAutoRechargeFailure(claimed, isFirstFailureAttempt).catch((e2) =>
+      console.error(`[auto-recharge] failure bookkeeping also failed for ${claimed._id}:`, e2.message),
+    );
+  } finally {
+    // Always release the claim, success or failure — a declined card (or any
+    // other error) must not permanently lock the wallet out of ever
+    // auto-recharging again.
+    await Wallet.updateOne(
+      { _id: claimed._id },
+      { $set: { "autoRecharge.inFlight": false } },
+    );
+  }
+}
+
+// Updates the failure-episode bookkeeping and, per the notify cadence
+// documented above maybeAutoRecharge, decides whether THIS particular
+// failure is one the vendor should actually be told about.
+async function recordAutoRechargeFailure(claimed, isFirstFailureAttempt) {
+  const now = new Date();
+  const notifyCount = claimed.autoRecharge.failureNotifyCount ?? 0;
+  const lastNotifiedAt = claimed.autoRecharge.lastFailureNotifiedAt;
+
+  const shouldNotify =
+    isFirstFailureAttempt ||
+    (notifyCount < AUTO_RECHARGE_MAX_NOTIFICATIONS &&
+      (!lastNotifiedAt ||
+        now.getTime() - lastNotifiedAt.getTime() >= AUTO_RECHARGE_NOTIFY_INTERVAL_MS));
+
+  const update = { "autoRecharge.failureLastAttemptAt": now };
+  if (isFirstFailureAttempt) update["autoRecharge.failureFirstAt"] = now;
+  if (shouldNotify) {
+    update["autoRecharge.failureNotifyCount"] = notifyCount + 1;
+    update["autoRecharge.lastFailureNotifiedAt"] = now;
+  }
+  await Wallet.updateOne({ _id: claimed._id }, { $set: update });
+
+  if (!shouldNotify) return;
+
+  try {
+    await notifyUser(claimed.vendorId, {
+      type: "wallet",
+      title: "Auto-recharge failed",
+      body: "We couldn't auto-recharge your Velte wallet — the card on file was declined. Update your card or top up manually to keep showing up in buyer searches.",
+      url: `/${claimed.vendorId}/wallet`,
+      tag: "auto-recharge-failed",
+    });
+  } catch (err) {
+    console.error(`[auto-recharge] notify failed for ${claimed.vendorId}:`, err.message);
   }
 }

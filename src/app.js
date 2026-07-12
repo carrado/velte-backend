@@ -24,6 +24,7 @@ import referralsRoutes from "./routes/referrals.routes.js";
 import { startKeepAlive } from "./initializers/keepAlive.js";
 import { startWalletLowBalanceCron } from "./initializers/walletLowBalanceCron.js";
 import { startUnverifiedUsersCleanupCron } from "./initializers/unverifiedUsersCleanupCron.js";
+import { startAutoRechargeRetryCron } from "./initializers/autoRechargeRetryCron.js";
 
 const app = express();
 
@@ -142,4 +143,10 @@ app.listen(PORT, () => {
   // Daily sweep — deletes signups that never verified their email within
   // 7 days, freeing their email/username for a fresh registration.
   startUnverifiedUsersCleanupCron();
+
+  // 15-min sweep — retries a failing auto-recharge on a schedule (5h retry /
+  // 20h notify / 7-notification cap, all in maybeAutoRecharge), so a vendor
+  // whose leads dry up mid-episode still gets retried and eventually
+  // notified again, not just the ones lucky enough to get a new lead.
+  startAutoRechargeRetryCron();
 });

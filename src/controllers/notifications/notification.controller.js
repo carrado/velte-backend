@@ -7,6 +7,7 @@ const TYPE_MAP = {
   'new-order': 'order',
   'new-lead': 'lead',
   'low-stock': 'product',
+  'expired-product': 'product',
   'payment': 'payment',
   'wallet': 'wallet',
   'referral': 'referral',
