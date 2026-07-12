@@ -40,6 +40,26 @@ const walletSchema = new mongoose.Schema(
       authorizationCode: { type: String, default: null },
       last4: { type: String, default: null },
       cardType: { type: String, default: null },
+
+      // Atomic claim guard against a concurrent double-charge: two leads
+      // landing close together for the same vendor could otherwise each
+      // independently see "balance below threshold" and each fire a
+      // separate charge_authorization call. Claimed via findOneAndUpdate
+      // right before charging (wallet.controller.js's maybeAutoRecharge),
+      // released in a finally right after — same atomic-flag pattern as
+      // starterCreditGranted/lowBalanceNotified above.
+      inFlight: { type: Boolean, default: false },
+
+      // Failure-episode tracking for maybeAutoRecharge's retry/notify policy
+      // (see the constants above that function in wallet.controller.js).
+      // All four reset to their defaults the moment the episode ends —
+      // either a charge succeeds, or the balance recovers above threshold
+      // via any other credit (manual top-up, DVA transfer, referral bonus;
+      // see clearAutoRechargeFailureIfRecovered).
+      failureFirstAt: { type: Date, default: null },
+      failureLastAttemptAt: { type: Date, default: null },
+      failureNotifyCount: { type: Number, default: 0 },
+      lastFailureNotifiedAt: { type: Date, default: null },
     },
 
     dva: {

@@ -10,9 +10,11 @@ import Product from "../models/Product.model.js";
 import Store from "../models/Store.model.js";
 import User from "../models/Users.js";
 import Wallet from "../models/Wallet.model.js";
+import Notification from "../models/Notification.model.js";
 import { embed, embedImage, rerank } from "./voyage.service.js";
 import { reverseGeocodeState } from "./nominatim.service.js";
 import { searchNearbyBusinesses } from "./googlePlaces.service.js";
+import { notifyUser } from "./pushNotification.service.js";
 import {
   getOrCreateWallet,
   LEAD_COST_KOBO,
@@ -326,6 +328,74 @@ async function filterWalletEligible(rankedCandidates) {
   );
 }
 
+function isExpiredProduct(product) {
+  return Boolean(product.expirationDate) && product.expirationDate.getTime() < Date.now();
+}
+
+// A popular expired listing could otherwise get searched dozens of times a
+// day and fire a notification on every single one — this caps it to once
+// per vendor per product within the window, same "once per episode" idea as
+// walletLowBalance.job.js's lowBalanceNotified flag, just query-based here
+// since there's no per-product boolean field to flip.
+const EXPIRED_MATCH_NOTIFY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Best-effort, fire-and-forget: tells a vendor a buyer just searched for
+ * something that matched one of their listings, except the listing is
+ * expired and so was held back from the buyer's results (see splitExpired
+ * below). Never awaited by callers — notifying is not on the buyer's
+ * critical path, same pattern as chargeLead's own notifyUser call.
+ */
+async function notifyExpiredMatches(expiredCandidates, queryText) {
+  await Promise.allSettled(
+    expiredCandidates.map(async ({ product, vendor }) => {
+      try {
+        const tag = `expired-product-${product._id}`;
+        const recent = await Notification.findOne({
+          userId: vendor._id,
+          tag,
+          createdAt: { $gte: new Date(Date.now() - EXPIRED_MATCH_NOTIFY_COOLDOWN_MS) },
+        }).select("_id");
+        if (recent) return;
+
+        await notifyUser(vendor._id, {
+          type: "expired-product",
+          title: "Buyers are searching for an expired listing",
+          body: `"${product.name}" matched a buyer's search for "${queryText}" but is hidden from results because it's expired. Update its expiration date or remove it so it can be found again.`,
+          url: `/${vendor._id}/products/${product._id}/edit`,
+          tag,
+        });
+      } catch (err) {
+        console.error(
+          `[retrieval] expired-product notify failed for vendor ${vendor._id}, product ${product._id}:`,
+          err.message,
+        );
+      }
+    }),
+  );
+}
+
+/**
+ * Splits a tier's already-ranked candidates into active vs. expired.
+ * Deliberately runs AFTER rerank/floor/wallet-eligibility (rankCandidates +
+ * applyMatchQuality already happened) — only a candidate that already
+ * cleared the exact same bar a real result does gets flagged here, so a
+ * vendor is never notified over a merely embeddings-similar, not-actually-
+ * relevant candidate. Expired candidates are fully removed from what the
+ * buyer sees; a fire-and-forget notification goes out to each one's vendor
+ * instead (never awaited — see notifyExpiredMatches).
+ */
+function splitExpired(tierCandidates, queryText) {
+  const expired = tierCandidates.filter((c) => isExpiredProduct(c.product));
+  const active = tierCandidates.filter((c) => !isExpiredProduct(c.product));
+  if (expired.length) {
+    notifyExpiredMatches(expired, queryText).catch((err) =>
+      console.error("[retrieval] notifyExpiredMatches failed:", err.message),
+    );
+  }
+  return active;
+}
+
 /**
  * Shared core for both searchProducts and searchStores: join vendors, apply
  * a geo filter (different per tier), rerank/floor, and rank by
@@ -626,10 +696,14 @@ export async function searchProducts({
       relevanceFloor,
       tieredQuery,
     );
+    // No further tier to fall through to here (see the "No Tier 5" note
+    // above) — an all-expired tier just reads as "nothing found", same
+    // shape as the !nationwide.length branch above.
+    const active = splitExpired(tiered, queryText);
     return {
-      results: tiered.map(mapResult),
-      matchTier: "nationwide",
-      matchQuality,
+      results: active.map(mapResult),
+      matchTier: active.length ? "nationwide" : null,
+      matchQuality: active.length ? matchQuality : undefined,
       externalSuggestions: null,
     };
   }
@@ -648,12 +722,18 @@ export async function searchProducts({
       localFloor,
       tieredQuery,
     );
-    return {
-      results: tiered.map(mapResult),
-      matchTier: "local",
-      matchQuality,
-      externalSuggestions: null,
-    };
+    // Expired candidates are pulled out (and their vendors notified) before
+    // this counts as a real match — if that was ALL this tier had, fall
+    // through to Tier 2 below same as if local had come back empty.
+    const active = splitExpired(tiered, queryText);
+    if (active.length) {
+      return {
+        results: active.map(mapResult),
+        matchTier: "local",
+        matchQuality,
+        externalSuggestions: null,
+      };
+    }
   }
 
   // Tier 2: "nearby" — wider than Tier 1 but still a local search, tried
@@ -670,12 +750,16 @@ export async function searchProducts({
       nearbyFloor,
       tieredQuery,
     );
-    return {
-      results: tiered.map(mapResult),
-      matchTier: "nearby",
-      matchQuality,
-      externalSuggestions: null,
-    };
+    // Same expired-fallthrough handling as Tier 1 above.
+    const active = splitExpired(tiered, queryText);
+    if (active.length) {
+      return {
+        results: active.map(mapResult),
+        matchTier: "nearby",
+        matchQuality,
+        externalSuggestions: null,
+      };
+    }
   }
 
   // Tier 3: same state — reachable even when reverseGeocodeState fails,
@@ -698,12 +782,16 @@ export async function searchProducts({
       stateFloor,
       tieredQuery,
     );
-    return {
-      results: tiered.map(mapResult),
-      matchTier: "state",
-      matchQuality,
-      externalSuggestions: null,
-    };
+    // Same expired-fallthrough handling as Tiers 1-2 above.
+    const active = splitExpired(tiered, queryText);
+    if (active.length) {
+      return {
+        results: active.map(mapResult),
+        matchTier: "state",
+        matchQuality,
+        externalSuggestions: null,
+      };
+    }
   }
 
   // Tier 4: nationwide, state-agnostic — a real vendor just across the
@@ -721,12 +809,18 @@ export async function searchProducts({
       nationwideFloor,
       tieredQuery,
     );
-    return {
-      results: tiered.map(mapResult),
-      matchTier: "nationwide",
-      matchQuality,
-      externalSuggestions: null,
-    };
+    // Same expired-fallthrough handling as Tiers 1-3 above — an all-expired
+    // Tier 4 falls through to Tier 5's Google Places fallback below, same as
+    // if nationwide had come back genuinely empty.
+    const active = splitExpired(tiered, queryText);
+    if (active.length) {
+      return {
+        results: active.map(mapResult),
+        matchTier: "nationwide",
+        matchQuality,
+        externalSuggestions: null,
+      };
+    }
   }
 
   // Tier 5: no Velte vendor matched at all.
