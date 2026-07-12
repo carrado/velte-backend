@@ -687,6 +687,10 @@ export const changePrice = async (req, res) => {
     }
 
     product.price = price;
+    // Setting a real price on a quote-per-job service converts it off quote
+    // mode — otherwise buyers would keep seeing "Ask for price" with a price
+    // silently stored behind it.
+    if (product.quoteOnRequest) product.quoteOnRequest = false;
     await product.save();
     await product.populate("modifiers.options");
 

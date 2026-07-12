@@ -3,6 +3,7 @@ import Product from "../../models/Product.model.js";
 import User from "../../models/Users.js";
 import { AppError } from "../../middleware/errorHandler.js";
 import { embedAndSaveStore } from "../../services/retrieval.service.js";
+import { sectorLabel, mergeBusinessType } from "../../utils/sectorLabels.js";
 
 const HANDLE_RE = /^[a-z0-9](?:[a-z0-9-]{1,28}[a-z0-9])?$/; // 2–30 chars, no edge hyphens
 const MAX_SECTORS = 5;
@@ -20,16 +21,54 @@ function slugify(source) {
     .slice(0, 24);
 }
 
-// `seed` is only ever applied on first creation (an existing store is
-// returned as-is) — lets a caller with extra context on hand (signup's own
-// description/sector/phone, see auth.js register) pre-populate a new store
-// beyond the bare handle+name, instead of leaving it blank until the vendor
-// happens to visit store settings themselves.
+// `seed` (signup's own description/sector/phone, see auth.js register) is
+// only applied at first creation. An existing store is backfilled instead:
+// any sector/WhatsApp still blank gets pulled from the signup profile — but
+// never overwrites a value the vendor has already edited themselves — so
+// stores created before this existed (or lazily, with no seed) still end up
+// reflecting what the vendor already gave at signup.
 export async function getOrCreateStore(vendorId, seed = {}) {
   const existing = await Store.findOne({ vendorId });
-  if (existing) return existing;
+  if (existing) {
+    let changed = false;
 
-  const user = await User.findById(vendorId).select("company username name");
+    // Self-heal stores seeded by the old bug, which wrote the raw signup
+    // slug (e.g. "catering_event_food") into sectors instead of its display
+    // label — the Store editor's chips only ever matched on the label, so
+    // this silently showed as nothing selected. sectorLabel() is a no-op on
+    // values that are already labels, so this is safe to run unconditionally.
+    const normalizedSectors = existing.sectors.map(sectorLabel);
+    if (
+      JSON.stringify(normalizedSectors) !== JSON.stringify(existing.sectors)
+    ) {
+      existing.sectors = normalizedSectors;
+      changed = true;
+    }
+
+    // Backfill for stores that predate signup auto-provisioning, or whose
+    // seed was otherwise missed — never overwrites a value the vendor has
+    // already set themselves via the Store editor.
+    const needsSectors = existing.sectors.length === 0;
+    const needsWhatsapp = !existing.whatsapp;
+    if (needsSectors || needsWhatsapp) {
+      const profile = await User.findById(vendorId).select("sector phone");
+      if (needsSectors && profile?.sector) {
+        existing.sectors = [sectorLabel(profile.sector)];
+        changed = true;
+      }
+      if (needsWhatsapp && profile?.phone) {
+        existing.whatsapp = profile.phone;
+        changed = true;
+      }
+    }
+
+    if (changed) await existing.save();
+    return existing;
+  }
+
+  const user = await User.findById(vendorId).select(
+    "company username name sector phone",
+  );
   if (!user) throw new AppError("User not found.", 404);
 
   const displayName = user.company?.name || user.name || "My Store";
@@ -42,14 +81,21 @@ export async function getOrCreateStore(vendorId, seed = {}) {
     handle = `${base}-${i}`;
   }
 
+  const sectors = seed.sectors?.length
+    ? seed.sectors.map(sectorLabel)
+    : user.sector
+      ? [sectorLabel(user.sector)]
+      : [];
+  const whatsapp = seed.whatsapp || user.phone || null;
+
   try {
     return await Store.create({
       vendorId,
       handle,
       name: displayName,
       ...(seed.description ? { description: seed.description } : {}),
-      ...(seed.sectors?.length ? { sectors: seed.sectors } : {}),
-      ...(seed.whatsapp ? { whatsapp: seed.whatsapp } : {}),
+      ...(sectors.length ? { sectors } : {}),
+      ...(whatsapp ? { whatsapp } : {}),
     });
   } catch (err) {
     // Concurrent first-visit race — the unique vendorId index makes the loser
@@ -172,6 +218,26 @@ export async function updateMyStore(req, res, next) {
         throw new AppError("Gallery entries must be https image URLs.", 400);
       }
       store.gallery = gallery;
+    }
+
+    // A vendor isn't locked to the single classification their signup sector
+    // implied — adding a service sector later (or any sector of a different
+    // kind) should unlock the matching Add-Offering wizard blocks too.
+    // Recompute from the FULL current sector set (not just what changed this
+    // call), so removing a sector can equally narrow it back down. Only
+    // overwrites when a real classification can be derived — never resets
+    // businessType to a guess just because sectors were cleared.
+    if (sectors !== undefined) {
+      const merged = mergeBusinessType(store.sectors);
+      if (merged) {
+        const user = await User.findById(req.user.userId).select(
+          "businessType",
+        );
+        if (user && user.businessType !== merged) {
+          user.businessType = merged;
+          await user.save();
+        }
+      }
     }
 
     await store.save();

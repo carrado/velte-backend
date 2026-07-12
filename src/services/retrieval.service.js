@@ -124,7 +124,7 @@ const STORE_RAW_SCORE_FLOOR = 0.7;
 // reasoned estimate, not measured against an actual "second photo of the
 // same item" — revisit once there's real buyer photo-search volume to
 // calibrate against.
-const DIRECT_MATCH_MARGIN = 0.08;
+const IMAGE_MATCH_MARGIN = 0.08;
 
 // How much a product's own visual similarity (voyage-multimodal-3 cosine
 // score against the query photo) counts versus its text-derived semantic
@@ -156,7 +156,7 @@ const VISUAL_BLEND_WEIGHT = 0.65;
 // side used. 0.82 sits well below the ~0.95 a photo scores against ITSELF
 // (leaving room for a real buyer photo — different angle/lighting/phone —
 // to still clear it) and well above the ~0.51 two different catalog items
-// scored against each other (live-measured, both cited in DIRECT_MATCH_MARGIN's
+// scored against each other (live-measured, both cited in IMAGE_MATCH_MARGIN's
 // own comment above). Still a reasoned estimate pending real buyer-photo
 // volume to calibrate against, same as every other floor in this file.
 const VISUAL_ELIGIBILITY_FLOOR = 0.82;
@@ -443,18 +443,19 @@ async function rankCandidates({
   return { candidates: eligible.slice(0, limit), relevanceFloor };
 }
 
-// Only meaningful for image-derived searches: splits a tier's already-
-// ranked candidates into "direct" (clears floor + DIRECT_MATCH_MARGIN) vs
-// "similar" (everything else that still cleared the base floor). A non-
-// empty direct set wins outright — the merely-similar candidates are
-// dropped, not just re-ranked lower, per the same "don't show a weak match
-// with no way to say so" reasoning rankCandidates already applies to the
-// base floor. Text queries (isImageQuery false) pass through unchanged.
-function applyMatchQuality(tierCandidates, relevanceFloor, isImageQuery) {
-  if (!isImageQuery || !tierCandidates.length) {
+// Splits a tier's already-ranked candidates into "direct" (clears floor +
+// IMAGE_MATCH_MARGIN) vs "similar" (everything else that still cleared the
+// base floor). A non-empty direct set wins outright — the merely-similar
+// candidates are dropped, not just re-ranked lower, per the same "don't show
+// a weak match with no way to say so" reasoning rankCandidates already
+// applies to the base floor. `tieredQuery` is true for image-derived
+// searches only. Plain text queries (tieredQuery false) pass through
+// unchanged.
+function applyMatchQuality(tierCandidates, relevanceFloor, tieredQuery) {
+  if (!tieredQuery || !tierCandidates.length) {
     return { candidates: tierCandidates, matchQuality: undefined };
   }
-  const directFloor = relevanceFloor + DIRECT_MATCH_MARGIN;
+  const directFloor = relevanceFloor + IMAGE_MATCH_MARGIN;
   const direct = tierCandidates.filter((c) => c.semanticScore >= directFloor);
   return direct.length
     ? { candidates: direct, matchQuality: "direct" }
@@ -498,6 +499,8 @@ export async function searchProducts({
   // Shared across every Voyage call this invocation makes (below, and every
   // rerank inside rankCandidates as tiers cascade) — see SEARCH_DEADLINE_MS.
   const deadlineAt = Date.now() + SEARCH_DEADLINE_MS;
+
+  const tieredQuery = isImageQuery;
 
   const queryVectors = await embed([queryText], "query", deadlineAt);
   const queryVector = queryVectors?.[0];
@@ -552,14 +555,26 @@ export async function searchProducts({
     const store = storeByVendorId.get(String(vendor._id));
     return {
       productId: product._id,
+      kind: product.kind === "service" ? "service" : "product",
       name: product.name,
       // Product.price/priceMax are stored in kobo (AddProductPage.tsx sends
       // Math.round(price * 100)) — convert to the real Naira amount here so
       // neither the LLM nor any UI ever quotes a 100x-inflated price.
       price: product.price / 100,
       priceMax: product.priceMax != null ? product.priceMax / 100 : null,
+      // Quote-per-job service: price is stored as 0 but is NOT a real price —
+      // consumers must show "ask for price"/"quoted per job", never ₦0.
+      quoteOnRequest: product.quoteOnRequest === true,
       currency: product.currency,
       mainImageUrl: product.mainImageUrl,
+      description: product.description ?? null,
+      // Everything the vendor uploaded for this listing — shown in full on a
+      // service result's own card instead of a separate vendor/store card
+      // (see VendorResultCard.tsx on the frontend).
+      attributes: (product.attributes || []).map((a) => ({
+        name: a.name,
+        value: a.value,
+      })),
       vendorId: vendor._id,
       // Store.name (edited via store settings) is the real business
       // identity; company.name (set once at onboarding) is the next-best
@@ -609,7 +624,7 @@ export async function searchProducts({
     const { candidates: tiered, matchQuality } = applyMatchQuality(
       nationwide,
       relevanceFloor,
-      isImageQuery,
+      tieredQuery,
     );
     return {
       results: tiered.map(mapResult),
@@ -631,7 +646,7 @@ export async function searchProducts({
     const { candidates: tiered, matchQuality } = applyMatchQuality(
       local,
       localFloor,
-      isImageQuery,
+      tieredQuery,
     );
     return {
       results: tiered.map(mapResult),
@@ -653,7 +668,7 @@ export async function searchProducts({
     const { candidates: tiered, matchQuality } = applyMatchQuality(
       nearby,
       nearbyFloor,
-      isImageQuery,
+      tieredQuery,
     );
     return {
       results: tiered.map(mapResult),
@@ -681,7 +696,7 @@ export async function searchProducts({
     const { candidates: tiered, matchQuality } = applyMatchQuality(
       stateWide,
       stateFloor,
-      isImageQuery,
+      tieredQuery,
     );
     return {
       results: tiered.map(mapResult),
@@ -704,7 +719,7 @@ export async function searchProducts({
     const { candidates: tiered, matchQuality } = applyMatchQuality(
       nationwide,
       nationwideFloor,
-      isImageQuery,
+      tieredQuery,
     );
     return {
       results: tiered.map(mapResult),
