@@ -1,19 +1,12 @@
 import express from "express";
-import {
-  searchProducts,
-  searchStores,
-  logSearch,
-  chargeLead,
-} from "../controllers/search/search.controller.js";
+import { chargeLead } from "../controllers/search/search.controller.js";
 
 const router = express.Router();
 
-// Public — called by the frontend's /api/search route, no session required.
-router.post("/products", searchProducts);
-router.post("/stores", searchStores);
-router.post("/log", logSearch);
+// /products, /stores, /log moved to the standalone staffly-ai-backend
+// service — see its README. Only /lead stays here (wallet billing).
 // Public — called directly from the buyer's browser (via sendBeacon) when
-// they click "Chat on WhatsApp", not from the /api/search route above.
+// they click "Chat on WhatsApp".
 router.post("/lead", chargeLead);
 
 export default router;

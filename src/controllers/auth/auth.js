@@ -7,7 +7,7 @@ import {
   creditPendingReferral,
 } from "../../services/referral.service.js";
 import { getOrCreateStore } from "../store/store.controller.js";
-import { embedAndSaveStore } from "../../services/retrieval.service.js";
+import { embedAndSaveStore } from "../../services/embedding.service.js";
 
 
 export const register = async (req, res) => {

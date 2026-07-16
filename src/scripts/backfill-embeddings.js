@@ -8,7 +8,7 @@ import { embed, embedImage } from "../services/voyage.service.js";
 import {
   productEmbeddingText,
   storeEmbeddingText,
-} from "../services/retrieval.service.js";
+} from "../services/embedding.service.js";
 
 // One-off: backfills `embedding` for Product/Store docs that predate the
 // embed-on-save hooks (i.e. every real vendor/product created before this

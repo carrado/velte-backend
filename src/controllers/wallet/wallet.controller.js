@@ -48,10 +48,12 @@ function clearAutoRechargeFailureIfRecovered(wallet) {
 // for one — removes the cold-start "prepay with zero track record" barrier.
 const STARTER_CREDIT_KOBO = 200_000; // ₦2,000
 
-// ₦400 per WhatsApp click-through. Exported: retrieval.service.js filters a
-// vendor out of search results entirely once their wallet can't cover this
-// (see rankCandidates' wallet-eligibility filter), and search.controller.js
-// charges exactly this amount when the lead actually lands.
+// ₦400 per WhatsApp click-through. This is the source of truth — this
+// endpoint (chargeLead) charges exactly this amount when a lead actually
+// lands. The standalone staffly-ai-backend service's search-time wallet-
+// eligibility filter reads the SAME value from its own LEAD_COST_KOBO env
+// var (see its README) since it can't import this constant across repos —
+// keep both equal by hand.
 export const LEAD_COST_KOBO = 40_000;
 
 // Floor for top-ups and auto-recharge amounts — keeps card fees proportionate
@@ -59,10 +61,12 @@ export const LEAD_COST_KOBO = 40_000;
 const MIN_AMOUNT_NAIRA = 1000;
 const MIN_AMOUNT_KOBO = MIN_AMOUNT_NAIRA * 100;
 
-// Exported for retrieval.service.js's wallet-eligibility filter — a vendor
-// with no wallet yet must still get auto-provisioned (starter credit and
-// all) the moment they'd otherwise be shown in search, not silently excluded
-// until they happen to open the wallet page first.
+// Wallet creation (incl. the starter-credit grant) is sole-owned here — the
+// standalone staffly-ai-backend search service only ever READS a wallet, it
+// never creates one (see its README). So this must run proactively before a
+// vendor's listings could appear in search, not lazily on first search:
+// store.controller.js's getOrCreateStore calls this right after a store is
+// first created.
 export async function getOrCreateWallet(vendorId) {
   // Atomic get-or-create: concurrent callers all converge on the same document
   // via the unique index on vendorId — upsert can't create duplicates.
@@ -639,9 +643,9 @@ export async function getTransactions(req, res, next) {
 // fired the instant a buyer clicks "Chat on WhatsApp" on a search result
 // card. `debited: false` (insufficient balance) is a no-op today — a drained
 // wallet already keeps a vendor out of search results entirely via
-// retrieval.service.js's wallet-eligibility filter, so this path is a
-// last-resort race (balance dropped between that filter running and the
-// buyer actually clicking), not the primary gate.
+// staffly-ai-backend's retrieval.service.js wallet-eligibility filter, so
+// this path is a last-resort race (balance dropped between that filter
+// running and the buyer actually clicking), not the primary gate.
 export async function debitWalletForLead(vendorId, amountKobo, { leadId, description } = {}) {
   const wallet = await Wallet.findOneAndUpdate(
     { vendorId, balanceKobo: { $gte: amountKobo } },

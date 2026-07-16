@@ -2,8 +2,9 @@ import Store from "../../models/Store.model.js";
 import Product from "../../models/Product.model.js";
 import User from "../../models/Users.js";
 import { AppError } from "../../middleware/errorHandler.js";
-import { embedAndSaveStore } from "../../services/retrieval.service.js";
+import { embedAndSaveStore } from "../../services/embedding.service.js";
 import { sectorLabel, mergeBusinessType } from "../../utils/sectorLabels.js";
+import { getOrCreateWallet } from "../wallet/wallet.controller.js";
 
 const HANDLE_RE = /^[a-z0-9](?:[a-z0-9-]{1,28}[a-z0-9])?$/; // 2–30 chars, no edge hyphens
 const MAX_SECTORS = 5;
@@ -89,7 +90,7 @@ export async function getOrCreateStore(vendorId, seed = {}) {
   const whatsapp = seed.whatsapp || user.phone || null;
 
   try {
-    return await Store.create({
+    const created = await Store.create({
       vendorId,
       handle,
       name: displayName,
@@ -97,6 +98,20 @@ export async function getOrCreateStore(vendorId, seed = {}) {
       ...(sectors.length ? { sectors } : {}),
       ...(whatsapp ? { whatsapp } : {}),
     });
+
+    // Provision the vendor's wallet (incl. starter credit) right away rather
+    // than lazily on first wallet-page visit or first search — staffly-ai-
+    // backend's search-time wallet-eligibility filter only ever READS a
+    // wallet, it never creates one (see that repo's README), so a vendor
+    // whose store/products could now appear in search must already have one.
+    // Fire-and-forget: a transient failure here shouldn't block store
+    // creation, and getOrCreateWallet is idempotent — the wallet page's own
+    // getWallet call would create it anyway on next visit.
+    getOrCreateWallet(vendorId).catch((err) => {
+      console.error(`[store] wallet provisioning failed for ${vendorId}:`, err.message);
+    });
+
+    return created;
   } catch (err) {
     // Concurrent first-visit race — the unique vendorId index makes the loser
     // land here; return the winner's document.

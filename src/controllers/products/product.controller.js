@@ -3,7 +3,7 @@ import ModifierOption from "../../models/ModifierOption.model.js";
 import Category from "../../models/Category.model.js";
 import User from "../../models/Users.js";
 import { errRes } from "../../helpers/apiResponse.js";
-import { embedAndSaveProduct } from "../../services/retrieval.service.js";
+import { embedAndSaveProduct } from "../../services/embedding.service.js";
 
 // ── business-type shape helpers ───────────────────────────────────────────────
 // Product logic branches on *shape*, not the raw businessType:
