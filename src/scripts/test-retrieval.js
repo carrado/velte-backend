@@ -20,19 +20,28 @@ async function run() {
   await mongoose.connect(process.env.MONGODB_URI);
   console.log("Connected to MongoDB");
 
-  const results = await searchProducts({
+  const { results, weakResults, matchTier, matchQuality } = await searchProducts({
     queryText,
     lat: parseFloat(latArg),
     lng: parseFloat(lngArg),
     radiusKm: radiusArg ? parseFloat(radiusArg) : 10,
   });
 
-  console.log(`\n${results.length} result(s) for "${queryText}":\n`);
-  for (const r of results) {
+  const printRow = (r) => {
     const priceLabel = r.priceMax ? `₦${r.price}–₦${r.priceMax}` : `₦${r.price}`;
     console.log(
       `  [score ${r.score}] ${r.name} — ${priceLabel} · ${r.vendorName} (${r.area ?? r.state ?? "?"}) · ${r.distanceKm}km`,
     );
+  };
+
+  console.log(
+    `\n${results.length} result(s) for "${queryText}" (tier: ${matchTier ?? "none"}${matchQuality ? `, quality: ${matchQuality}` : ""}):\n`,
+  );
+  results.forEach(printRow);
+
+  if (weakResults.length) {
+    console.log(`\n${weakResults.length} weak (not-that-close) result(s):\n`);
+    weakResults.forEach(printRow);
   }
 
   await mongoose.disconnect();
