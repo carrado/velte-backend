@@ -11,6 +11,7 @@ import Store from "../models/Store.model.js";
 import User from "../models/Users.js";
 import Wallet from "../models/Wallet.model.js";
 import Notification from "../models/Notification.model.js";
+import VendorExposure from "../models/VendorExposure.model.js";
 import { embed, embedImage, rerank } from "./voyage.service.js";
 import { reverseGeocodeState } from "./nominatim.service.js";
 import { searchNearbyBusinesses } from "./googlePlaces.service.js";
@@ -76,6 +77,140 @@ const STATE_PROXIMITY_REFERENCE_KM = 300;
 // more varied catalog.
 const RERANK_FLOOR = 0.58;
 const RAW_SCORE_FLOOR = 0.75;
+
+// How far below the main relevance floor a candidate can still land and
+// count as "not a close match, but worth mentioning" rather than "not what
+// the buyer asked for at all." Deliberately narrow, not a wide net: the one
+// live RERANK_FLOOR calibration run above found a genuine NON-match ("car
+// engine") scoring as high as 0.53-0.58 — right up against the floor itself
+// — so a bigger margin here risks surfacing that same kind of true
+// non-match as a "weak" suggestion. Reasoned estimate only, same caveat as
+// every other floor in this file — revisit once there's real query variety
+// to calibrate an actual gray-zone gap.
+const WEAK_MATCH_MARGIN = 0.05;
+
+// Buyer-facing ask (spec discussion, not in Velte_Connect_Technical_
+// Implementation.md yet): show a couple of not-that-close alternatives,
+// clearly labeled as such, rather than either hiding them completely or
+// presenting them as confidently as a real match. Capped small on purpose —
+// this is a lower-confidence supplement to the real results, not a second
+// results page.
+const WEAK_MATCH_LIMIT = 2;
+
+// Exposure-based rotation ("equal share of visibility" — no vendor should
+// permanently win the same query just because their score is a hair ahead
+// of an equally-good competitor's). Both reasoned estimates, not measured —
+// same caveat as every other tunable in this file.
+//
+// EXPOSURE_WINDOW_DAYS: how far back "recently shown" looks.
+// EXPOSURE_DECAY: multiplier applied to a candidate's ranking weight PER
+// recent showing within that window — e.g. a vendor shown 10 times recently
+// keeps 0.85^10 ≈ 20% of their score-based weight, so score still matters
+// but repetition costs real ground. A vendor with zero recent showings pays
+// no penalty at all (0.85^0 = 1) — no cold-start disadvantage for new or
+// rarely-matched vendors.
+const EXPOSURE_WINDOW_DAYS = 3;
+const EXPOSURE_DECAY = 0.85;
+
+function todayDateBucket() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function exposureWindowCutoff() {
+  return new Date(Date.now() - EXPOSURE_WINDOW_DAYS * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+// String key, not a nested Map, since (vendorId, categoryId) is what both
+// the fetch and the lookup need to agree on — categoryId is genuinely null
+// for service-kind products (Product.model.js: "Services carry no
+// category"), so those fall back to a per-vendor-only key rather than
+// per-vendor-per-category.
+function exposureKey(vendorId, categoryId) {
+  return `${vendorId}|${categoryId ?? ""}`;
+}
+
+/**
+ * Sum of each candidate's shownCount over the last EXPOSURE_WINDOW_DAYS,
+ * keyed the same way rotation looks them up. One batched query for the
+ * whole candidate pool (already capped at 50 from the vector search) rather
+ * than one query per candidate.
+ */
+async function fetchRecentExposure(pairs) {
+  if (!pairs.length) return new Map();
+  const vendorIds = [...new Set(pairs.map((p) => String(p.vendorId)))];
+  const rows = await VendorExposure.find({
+    vendorId: { $in: vendorIds },
+    dateBucket: { $gte: exposureWindowCutoff() },
+  }).select("vendorId categoryId shownCount");
+
+  const counts = new Map();
+  for (const row of rows) {
+    const key = exposureKey(row.vendorId, row.categoryId);
+    counts.set(key, (counts.get(key) ?? 0) + row.shownCount);
+  }
+  return counts;
+}
+
+/**
+ * Fire-and-forget: bump today's bucket for every vendor whose product
+ * actually made it into a shown result set (not just the eligible
+ * candidate pool — only what the buyer actually saw counts as exposure).
+ * Best-effort, same reasoning as notifyExpiredMatches below — a logging
+ * failure here should never fail the buyer's search.
+ */
+async function recordExposure(shown) {
+  if (!shown.length) return;
+  const dateBucket = todayDateBucket();
+  try {
+    await VendorExposure.bulkWrite(
+      shown.map(({ vendorId, categoryId }) => ({
+        updateOne: {
+          filter: { vendorId, categoryId: categoryId ?? null, dateBucket },
+          update: {
+            $inc: { shownCount: 1 },
+            $setOnInsert: { createdAt: new Date() },
+          },
+          upsert: true,
+        },
+      })),
+      { ordered: false },
+    );
+  } catch (err) {
+    console.error("[retrieval] recordExposure failed:", err.message);
+  }
+}
+
+// Convenience wrapper for the 5 searchProducts return sites below — pulls
+// vendorId/categoryId off the already-ranked candidate shape (pre-mapResult)
+// and fires the write without making the caller await it.
+function recordActiveExposure(active) {
+  if (!active.length) return;
+  recordExposure(
+    active.map((c) => ({
+      vendorId: c.vendor._id,
+      categoryId: c.product.categoryId ?? null,
+    })),
+  );
+}
+
+/**
+ * Efraimidis-Spirakis weighted random sample without replacement: assign
+ * each item a key of random()^(1/weight) and take the k largest keys.
+ * Higher weight -> more likely to be drawn, never guaranteed — this is the
+ * actual mechanism that turns "always the top N by score" into "usually the
+ * best matches, with real odds for everyone else." A non-positive weight is
+ * floored to a tiny epsilon rather than allowed to break the exponent.
+ */
+function weightedSampleWithoutReplacement(items, weights, k) {
+  const keyed = items.map((item, i) => ({
+    item,
+    key: Math.random() ** (1 / Math.max(weights[i], 1e-9)),
+  }));
+  keyed.sort((a, b) => b.key - a.key);
+  return keyed.slice(0, k).map((k) => k.item);
+}
 
 // Shared time budget for every Voyage call (embed + embedImage + however
 // many geo tiers' rerank calls) within ONE searchProducts or searchStores
@@ -429,6 +564,11 @@ async function rankCandidates({
   // Shared across every Voyage call within one searchProducts/searchStores
   // invocation — see SEARCH_DEADLINE_MS above.
   deadlineAt,
+  // Opt-in, off by default — only searchProducts turns this on (see its own
+  // rankArgs). Exposure/rotation is scoped by Product.categoryId, which
+  // doesn't exist on a Store, so leaving this false is correct for
+  // searchStores rather than a gap to close later.
+  trackExposure = false,
 }) {
   const locationless = lat == null || lng == null;
 
@@ -445,7 +585,9 @@ async function rankCandidates({
       return { [entityKey]: entity, vendor, distanceKm };
     })
     .filter(Boolean);
-  if (!withVendor.length) return { candidates: [], relevanceFloor: null };
+  if (!withVendor.length) {
+    return { candidates: [], weakCandidates: [], relevanceFloor: null };
+  }
 
   // Optional precision pass — silently falls back to vector-search score if
   // Voyage's rerank endpoint is unavailable.
@@ -455,8 +597,9 @@ async function rankCandidates({
     deadlineAt,
   );
   const relevanceFloor = rerankScores ? rerankFloor : rawScoreFloor;
+  const weakFloor = relevanceFloor - WEAK_MATCH_MARGIN;
 
-  const ranked = withVendor
+  const scored = withVendor
     .map((c, i) => ({
       ...c,
       textScore: rerankScores ? rerankScores[i] : c[entityKey].score,
@@ -470,47 +613,100 @@ async function rankCandidates({
           ? cosineSimilarity(queryImageVector, imageEmbedding)
           : null;
       return { ...c, visualScore };
-    })
-    // Eligibility is gated on textScore alone by default — a genuine match
-    // that already cleared the floor on text must never be knocked back out
-    // by a merely-average visual score (found live: a real catalog match
-    // stopped surfacing entirely once a weak cosine similarity dragged its
-    // blended score under the floor). The OR here is a narrow, deliberate
-    // exception, not a loophole: only a visual score far above what two
-    // genuinely different catalog items ever scored against each other can
-    // grant eligibility on its own (see VISUAL_ELIGIBILITY_FLOOR above) —
-    // this never lowers the bar for a text-only search, since visualScore is
-    // null whenever there's no query photo at all.
-    .filter(
-      (c) =>
-        c.textScore >= relevanceFloor ||
-        (c.visualScore != null && c.visualScore >= VISUAL_ELIGIBILITY_FLOOR),
-    )
-    .map((c) => {
-      const semanticScore =
-        c.visualScore != null
-          ? VISUAL_BLEND_WEIGHT * c.visualScore + (1 - VISUAL_BLEND_WEIGHT) * c.textScore
-          : c.textScore;
-      return { ...c, semanticScore };
-    })
-    .map((c) => {
-      const trustComponent = (c.vendor.trustScore ?? 0) / 100;
-      if (locationless) {
-        const score = weights.semantic * c.semanticScore + weights.trust * trustComponent;
+    });
+
+  // Eligibility for the REAL result set is gated on textScore alone by
+  // default — a genuine match that already cleared the floor on text must
+  // never be knocked back out by a merely-average visual score (found live:
+  // a real catalog match stopped surfacing entirely once a weak cosine
+  // similarity dragged its blended score under the floor). The OR here is a
+  // narrow, deliberate exception, not a loophole: only a visual score far
+  // above what two genuinely different catalog items ever scored against
+  // each other can grant eligibility on its own (see
+  // VISUAL_ELIGIBILITY_FLOOR above) — this never lowers the bar for a
+  // text-only search, since visualScore is null whenever there's no query
+  // photo at all.
+  const isEligible = (c) =>
+    c.textScore >= relevanceFloor ||
+    (c.visualScore != null && c.visualScore >= VISUAL_ELIGIBILITY_FLOOR);
+  // "Weak" is everyone who missed the real bar but is still within
+  // WEAK_MATCH_MARGIN of it — see that constant's own comment for why the
+  // margin is deliberately narrow rather than a wide net.
+  const isWeak = (c) => !isEligible(c) && c.textScore >= weakFloor;
+
+  // Shared scoring/ranking tail for both pools (eligible and weak) — kept
+  // as one function so the blend/sort/wallet-filter logic can't drift
+  // between the two. `useRotation` is only ever true for the eligible pool
+  // on the searchProducts path — the weak pool stays a plain top-N by score,
+  // same reasoning as WEAK_MATCH_LIMIT's own comment: it's already a small,
+  // low-stakes supplement, not the scarce-slots contest rotation exists for.
+  const finalize = async (pool, poolLimit, useRotation) => {
+    const withScore = pool
+      .map((c) => {
+        const semanticScore =
+          c.visualScore != null
+            ? VISUAL_BLEND_WEIGHT * c.visualScore + (1 - VISUAL_BLEND_WEIGHT) * c.textScore
+            : c.textScore;
+        return { ...c, semanticScore };
+      })
+      .map((c) => {
+        const trustComponent = (c.vendor.trustScore ?? 0) / 100;
+        if (locationless) {
+          const score = weights.semantic * c.semanticScore + weights.trust * trustComponent;
+          return { ...c, score };
+        }
+        const proximityScore = Math.max(0, 1 - c.distanceKm / proximityReferenceKm);
+        const score =
+          weights.semantic * c.semanticScore +
+          weights.proximity * proximityScore +
+          weights.trust * trustComponent;
         return { ...c, score };
-      }
-      const proximityScore = Math.max(0, 1 - c.distanceKm / proximityReferenceKm);
-      const score =
-        weights.semantic * c.semanticScore +
-        weights.proximity * proximityScore +
-        weights.trust * trustComponent;
-      return { ...c, score };
-    })
-    .sort((a, b) => b.score - a.score);
+      })
+      .sort((a, b) => b.score - a.score);
 
-  const eligible = await filterWalletEligible(ranked);
+    const eligible = await filterWalletEligible(withScore);
 
-  return { candidates: eligible.slice(0, limit), relevanceFloor };
+    // No competition, nothing to rotate — every eligible candidate already
+    // fits in poolLimit, so this is exactly the buyer's earlier "unless
+    // there are no other [vendors]" case. Also skips the exposure query
+    // entirely in the common case, not just the sampling step.
+    if (!useRotation || eligible.length <= poolLimit) {
+      return eligible.slice(0, poolLimit);
+    }
+
+    const exposureCounts = await fetchRecentExposure(
+      eligible.map((c) => ({
+        vendorId: c.vendor._id,
+        categoryId: c[entityKey].categoryId ?? null,
+      })),
+    );
+    const rotationWeights = eligible.map((c) => {
+      const shownCount =
+        exposureCounts.get(
+          exposureKey(c.vendor._id, c[entityKey].categoryId ?? null),
+        ) ?? 0;
+      return c.score * EXPOSURE_DECAY ** shownCount;
+    });
+    const winners = weightedSampleWithoutReplacement(
+      eligible,
+      rotationWeights,
+      poolLimit,
+    );
+    // Rotation decided WHO gets a slot — buyers still see the best of the
+    // selected set first, same display order as before.
+    return winners.sort((a, b) => b.score - a.score);
+  };
+
+  const [eligibleFinal, weakFinal] = await Promise.all([
+    finalize(scored.filter(isEligible), limit, trackExposure),
+    finalize(scored.filter(isWeak), WEAK_MATCH_LIMIT, false),
+  ]);
+
+  return {
+    candidates: eligibleFinal,
+    weakCandidates: weakFinal,
+    relevanceFloor,
+  };
 }
 
 // Splits a tier's already-ranked candidates into "direct" (clears floor +
@@ -677,19 +873,33 @@ export async function searchProducts({
     limit,
     queryImageVector,
     deadlineAt,
+    trackExposure: true,
   };
 
   const hasLocation = typeof lat === "number" && typeof lng === "number";
 
   if (!hasLocation) {
-    const { candidates: nationwide, relevanceFloor } = await rankCandidates({
+    const {
+      candidates: nationwide,
+      weakCandidates: nationwideWeak,
+      relevanceFloor,
+    } = await rankCandidates({
       ...rankArgs,
       weights: NATIONWIDE_WEIGHTS,
     });
     if (!nationwide.length) {
       // No Tier 5 here, same as searchStores — a "nearby business" fallback
-      // is meaningless without somewhere to be near.
-      return { results: [], matchTier: null, matchQuality: undefined, externalSuggestions: null };
+      // is meaningless without somewhere to be near. Weak matches are a
+      // supplement to real results, not a fallback of their own — see
+      // WEAK_MATCH_LIMIT's comment — so an empty real result set means no
+      // weak results either, even if some existed.
+      return {
+        results: [],
+        weakResults: [],
+        matchTier: null,
+        matchQuality: undefined,
+        externalSuggestions: null,
+      };
     }
     const { candidates: tiered, matchQuality } = applyMatchQuality(
       nationwide,
@@ -700,8 +910,12 @@ export async function searchProducts({
     // above) — an all-expired tier just reads as "nothing found", same
     // shape as the !nationwide.length branch above.
     const active = splitExpired(tiered, queryText);
+    recordActiveExposure(active);
     return {
       results: active.map(mapResult),
+      weakResults: active.length
+        ? splitExpired(nationwideWeak, queryText).map(mapResult)
+        : [],
       matchTier: active.length ? "nationwide" : null,
       matchQuality: active.length ? matchQuality : undefined,
       externalSuggestions: null,
@@ -711,7 +925,11 @@ export async function searchProducts({
   const locatedArgs = { ...rankArgs, lat, lng };
 
   // Tier 1: tight radius.
-  const { candidates: local, relevanceFloor: localFloor } = await rankCandidates({
+  const {
+    candidates: local,
+    weakCandidates: localWeak,
+    relevanceFloor: localFloor,
+  } = await rankCandidates({
     ...locatedArgs,
     geoFilter: (_vendor, distanceKm) => distanceKm <= radiusKm,
     proximityReferenceKm: radiusKm,
@@ -727,8 +945,14 @@ export async function searchProducts({
     // through to Tier 2 below same as if local had come back empty.
     const active = splitExpired(tiered, queryText);
     if (active.length) {
+      recordActiveExposure(active);
       return {
         results: active.map(mapResult),
+        // Weak matches ride along with whichever tier actually won — same
+        // radius the real results came from, not a separately widened
+        // search. See WEAK_MATCH_LIMIT's comment: a supplement to real
+        // results, never surfaced on their own.
+        weakResults: splitExpired(localWeak, queryText).map(mapResult),
         matchTier: "local",
         matchQuality,
         externalSuggestions: null,
@@ -739,7 +963,11 @@ export async function searchProducts({
   // Tier 2: "nearby" — wider than Tier 1 but still a local search, tried
   // before giving up on distance altogether and going state-wide.
   const nearbyRadiusKm = radiusKm * NEARBY_RADIUS_MULTIPLIER;
-  const { candidates: nearby, relevanceFloor: nearbyFloor } = await rankCandidates({
+  const {
+    candidates: nearby,
+    weakCandidates: nearbyWeak,
+    relevanceFloor: nearbyFloor,
+  } = await rankCandidates({
     ...locatedArgs,
     geoFilter: (_vendor, distanceKm) => distanceKm <= nearbyRadiusKm,
     proximityReferenceKm: nearbyRadiusKm,
@@ -753,8 +981,10 @@ export async function searchProducts({
     // Same expired-fallthrough handling as Tier 1 above.
     const active = splitExpired(tiered, queryText);
     if (active.length) {
+      recordActiveExposure(active);
       return {
         results: active.map(mapResult),
+        weakResults: splitExpired(nearbyWeak, queryText).map(mapResult),
         matchTier: "nearby",
         matchQuality,
         externalSuggestions: null,
@@ -766,7 +996,11 @@ export async function searchProducts({
   // since the tiers below (nationwide, then Google Places) don't need a
   // state name, just coordinates (same as searchStores).
   const buyerState = await reverseGeocodeState(lat, lng);
-  const { candidates: stateWide, relevanceFloor: stateFloor } = buyerState
+  const {
+    candidates: stateWide,
+    weakCandidates: stateWideWeak,
+    relevanceFloor: stateFloor,
+  } = buyerState
     ? await rankCandidates({
         ...locatedArgs,
         geoFilter: (vendor) =>
@@ -774,7 +1008,7 @@ export async function searchProducts({
           vendor.state.toLowerCase() === buyerState.toLowerCase(),
         proximityReferenceKm: STATE_PROXIMITY_REFERENCE_KM,
       })
-    : { candidates: [], relevanceFloor: null };
+    : { candidates: [], weakCandidates: [], relevanceFloor: null };
 
   if (stateWide.length) {
     const { candidates: tiered, matchQuality } = applyMatchQuality(
@@ -785,8 +1019,10 @@ export async function searchProducts({
     // Same expired-fallthrough handling as Tiers 1-2 above.
     const active = splitExpired(tiered, queryText);
     if (active.length) {
+      recordActiveExposure(active);
       return {
         results: active.map(mapResult),
+        weakResults: splitExpired(stateWideWeak, queryText).map(mapResult),
         matchTier: "state",
         matchQuality,
         externalSuggestions: null,
@@ -801,8 +1037,11 @@ export async function searchProducts({
   // only ranking as the no-location branch above (rankArgs has no lat/lng,
   // so rankCandidates runs in locationless mode — distanceKm comes back
   // null, same as a genuinely nationwide search).
-  const { candidates: nationwide, relevanceFloor: nationwideFloor } =
-    await rankCandidates({ ...rankArgs, weights: NATIONWIDE_WEIGHTS });
+  const {
+    candidates: nationwide,
+    weakCandidates: nationwideTier4Weak,
+    relevanceFloor: nationwideFloor,
+  } = await rankCandidates({ ...rankArgs, weights: NATIONWIDE_WEIGHTS });
   if (nationwide.length) {
     const { candidates: tiered, matchQuality } = applyMatchQuality(
       nationwide,
@@ -814,8 +1053,12 @@ export async function searchProducts({
     // if nationwide had come back genuinely empty.
     const active = splitExpired(tiered, queryText);
     if (active.length) {
+      recordActiveExposure(active);
       return {
         results: active.map(mapResult),
+        weakResults: splitExpired(nationwideTier4Weak, queryText).map(
+          mapResult,
+        ),
         matchTier: "nationwide",
         matchQuality,
         externalSuggestions: null,
@@ -827,6 +1070,7 @@ export async function searchProducts({
   const externalSuggestions = await googlePlacesFallback(queryText, lat, lng, radiusKm);
   return {
     results: [],
+    weakResults: [],
     matchTier: null,
     matchQuality: undefined,
     externalSuggestions,
