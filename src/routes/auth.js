@@ -13,7 +13,7 @@ import { profile } from '../controllers/userProfile.js';
 import { updateProfile } from '../controllers/auth/updateProfile.js';
 import { passwordResetOTP, resendOTP } from '../controllers/auth/resend-verification.js';
 import { requestPasswordChange, confirmPasswordChange } from '../controllers/auth/changePassword.js';
-import { updateBusinessType, updateFoodSettings } from '../controllers/auth/businessType.js';
+import { updateSectors, updateFoodSettings } from '../controllers/auth/sectors.js';
 
 const router = express.Router();
 
@@ -34,8 +34,8 @@ router.get("/me", verifyAuth, profile)
 router.post("/change-password/request", verifyAuth, requestPasswordChange);
 router.post("/change-password/confirm", verifyAuth, confirmPasswordChange);
 
-// Business type
-router.patch("/business-type", verifyAuth, updateBusinessType);
+// Vendor sectors
+router.patch("/sectors", verifyAuth, updateSectors);
 
 // Food vendor settings
 router.put("/settings/food", verifyAuth, updateFoodSettings);

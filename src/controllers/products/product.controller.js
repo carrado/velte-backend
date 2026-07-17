@@ -1,21 +1,39 @@
-import Product, { FOOD_CATEGORIES } from "../../models/Product.model.js";
+import Product from "../../models/Product.model.js";
 import ModifierOption from "../../models/ModifierOption.model.js";
 import Category from "../../models/Category.model.js";
 import User from "../../models/Users.js";
 import { errRes } from "../../helpers/apiResponse.js";
 import { embedAndSaveProduct } from "../../services/embedding.service.js";
+import {
+  SECTOR_CLASSIFICATION_BY_VALUE,
+  isKnownSector,
+} from "../../utils/sectorLabels.js";
 
-// ── business-type shape helpers ───────────────────────────────────────────────
-// Product logic branches on *shape*, not the raw businessType:
+// ── sector shape helpers ──────────────────────────────────────────────────────
+// Product logic branches on *shape*, not a frozen account-wide businessType —
+// each listing carries its own `sectorValue` (which of the vendor's sectors it
+// was posted under), and shape is derived from that ONE sector's own
+// classification:
 //   • food-shaped  → dish tooling (prep time, modifiers, availability)
 //   • retail-shaped → stock, low-stock threshold, dates
-// "food" and "food_both" are food vendors; but in a food_both account a *service*
-// listing is still service-shaped (retail-shaped, no stock), so shape depends on
-// both the account type AND the listing's kind.
-const FOOD_TYPES = ["food", "food_both"];
-const isFoodVendor = (businessType) => FOOD_TYPES.includes(businessType);
-const usesFoodShape = (businessType, kind) =>
-  isFoodVendor(businessType) && kind !== "service";
+// "food" and "food_both" are food-classified; but a *service* listing under a
+// "food_both" sector is still service-shaped (retail-shaped, no stock), so
+// shape depends on both the sector's classification AND the listing's kind.
+const FOOD_CLASSIFICATIONS = ["food", "food_both"];
+const classificationOf = (sectorValue) =>
+  SECTOR_CLASSIFICATION_BY_VALUE[sectorValue];
+const isFoodClassification = (classification) =>
+  FOOD_CLASSIFICATIONS.includes(classification);
+const usesFoodShape = (sectorValue, kind) =>
+  isFoodClassification(classificationOf(sectorValue)) && kind !== "service";
+
+// Precomputed once at module load — every sector slug classified as food or
+// food_both. Used by getProducts' tab filters, which need to match shape
+// per-product in a single Mongo query rather than branch on one account-wide
+// flag (a vendor can now have both food- and non-food-classified listings).
+const FOOD_SECTOR_VALUES = Object.entries(SECTOR_CLASSIFICATION_BY_VALUE)
+  .filter(([, classification]) => isFoodClassification(classification))
+  .map(([value]) => value);
 
 // ── formatters ────────────────────────────────────────────────────────────────
 
@@ -33,7 +51,7 @@ function formatProduct(doc) {
   const base = {
     id: p._id,
     vendor_id: p.vendorId,
-    business_type: p.businessType,
+    sector_value: p.sectorValue,
     kind: p.kind ?? "product",
     quote_on_request: p.quoteOnRequest ?? false,
     name: p.name,
@@ -52,7 +70,7 @@ function formatProduct(doc) {
     updated_at: p.updatedAt,
   };
 
-  if (!usesFoodShape(p.businessType, p.kind)) {
+  if (!usesFoodShape(p.sectorValue, p.kind)) {
     return {
       ...base,
       stock_quantity: p.stockQuantity,
@@ -70,7 +88,6 @@ function formatProduct(doc) {
 
   return {
     ...base,
-    estimated_prep_mins: p.estimatedPrepMins,
     is_currently_available: p.isCurrentlyAvailable,
     daily_limit: p.dailyLimit,
     allow_pre_order: p.allowPreOrder,
@@ -90,17 +107,23 @@ function formatProduct(doc) {
 
 // ── validation ────────────────────────────────────────────────────────────────
 
-function validateProductInput(body, businessType) {
+function validateProductInput(body, vendorSectors) {
   const fields = {};
   const kind = body.kind ?? "product";
 
   if (!["product", "service"].includes(kind)) {
     fields.kind = 'kind must be "product" or "service"';
   }
-  // Food catalogs are dish-shaped (prep time, modifiers, daily limits) —
-  // services don't fit that mold, so they're retail-only for now.
-  if (kind === "service" && businessType === "food") {
-    fields.kind = "Services are not supported for food vendors yet";
+
+  // Every listing belongs to one of the vendor's own sectors — this is what
+  // makes the account's sector cap meaningful and drives its shape (a
+  // food-classified sector's wizard never even offers a service kind, so
+  // there's no separate "services aren't supported for X" rule to enforce
+  // here beyond "is this actually one of your sectors").
+  if (!body.sector_value || !isKnownSector(body.sector_value)) {
+    fields.sector_value = "sector_value must be a known sector";
+  } else if (!(vendorSectors ?? []).includes(body.sector_value)) {
+    fields.sector_value = "sector_value must be one of your own sectors";
   }
 
   if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
@@ -128,8 +151,13 @@ function validateProductInput(body, businessType) {
     }
   }
 
-  // Services carry no category — discovered by meaning, not a fixed bucket.
-  if (kind !== "service" && !body.category_id) {
+  // Services and dishes carry no category — discovered by meaning, not a
+  // fixed bucket. Only retail products need one.
+  if (
+    kind !== "service" &&
+    !usesFoodShape(body.sector_value, kind) &&
+    !body.category_id
+  ) {
     fields.category_id = "category_id is required";
   }
 
@@ -151,7 +179,7 @@ function validateProductInput(body, businessType) {
     fields.thumbnail_urls = "Maximum 5 thumbnail URLs allowed";
   }
 
-  if (!usesFoodShape(businessType, kind)) {
+  if (!usesFoodShape(body.sector_value, kind)) {
     // Services carry no stock — quantity only required for stocked goods.
     if (
       kind !== "service" &&
@@ -167,20 +195,7 @@ function validateProductInput(body, businessType) {
     }
   }
 
-  if (usesFoodShape(businessType, kind)) {
-    if (body.category_id && !FOOD_CATEGORIES.includes(body.category_id)) {
-      fields.category_id = `category_id must be one of: ${FOOD_CATEGORIES.join(", ")}`;
-    }
-    if (
-      body.estimated_prep_mins === undefined ||
-      body.estimated_prep_mins === null
-    ) {
-      fields.estimated_prep_mins =
-        "estimated_prep_mins is required for food products";
-    } else if (body.estimated_prep_mins < 5) {
-      fields.estimated_prep_mins =
-        "estimated_prep_mins must be at least 5 minutes";
-    }
+  if (usesFoodShape(body.sector_value, kind)) {
     if (body.daily_limit !== undefined && body.daily_limit !== null) {
       if (!Number.isInteger(body.daily_limit) || body.daily_limit <= 0) {
         fields.daily_limit = "daily_limit must be a positive integer";
@@ -272,35 +287,45 @@ export const getProducts = async (req, res) => {
     const pageNum = Math.max(1, parseInt(page, 10));
     const limitNum = Math.min(50, Math.max(1, parseInt(limit, 10)));
 
-    const vendor = await User.findById(userId).select("businessType").lean();
-    if (!vendor) return errRes(res, 401, "UNAUTHORIZED", "Vendor not found");
-
-    const { businessType } = vendor;
     const filter = { vendorId: userId };
 
     if (category_id) filter.categoryId = category_id;
     if (search) filter.name = { $regex: search, $options: "i" };
 
     if (tab === "featured") filter.isFeatured = true;
-    // Services carry no stock: never "out of stock", always "in stock".
-    const foodVendor = isFoodVendor(businessType);
-    if (tab === "out-of-stock") {
-      if (!foodVendor) {
-        filter.stockQuantity = 0;
-        filter.kind = { $ne: "service" };
-      } else filter.isCurrentlyAvailable = false;
-    }
 
-    if (stock_status === "in-stock") {
-      if (!foodVendor) {
-        filter.$or = [{ stockQuantity: { $gt: 0 } }, { kind: "service" }];
-      } else filter.isCurrentlyAvailable = true;
-    } else if (stock_status === "out-of-stock") {
-      if (!foodVendor) {
-        filter.stockQuantity = 0;
-        filter.kind = { $ne: "service" };
-      } else filter.isCurrentlyAvailable = false;
-    }
+    // Services carry no stock: never "out of stock", always "in stock". Shape
+    // is per-PRODUCT now (a vendor can have both food- and non-food-shaped
+    // listings), so each tab/stock_status condition matches food-shaped and
+    // non-food-shaped docs separately in one query rather than branching the
+    // whole filter on one account-wide flag. Collected into `$and` (not
+    // reused `$or` keys) so tab and stock_status can both apply at once.
+    const outOfStockCondition = {
+      $or: [
+        { sectorValue: { $in: FOOD_SECTOR_VALUES }, isCurrentlyAvailable: false },
+        {
+          sectorValue: { $nin: FOOD_SECTOR_VALUES },
+          stockQuantity: 0,
+          kind: { $ne: "service" },
+        },
+      ],
+    };
+    const inStockCondition = {
+      $or: [
+        { sectorValue: { $in: FOOD_SECTOR_VALUES }, isCurrentlyAvailable: true },
+        {
+          sectorValue: { $nin: FOOD_SECTOR_VALUES },
+          $or: [{ stockQuantity: { $gt: 0 } }, { kind: "service" }],
+        },
+      ],
+    };
+
+    const shapeConditions = [];
+    if (tab === "out-of-stock") shapeConditions.push(outOfStockCondition);
+    if (stock_status === "in-stock") shapeConditions.push(inStockCondition);
+    else if (stock_status === "out-of-stock")
+      shapeConditions.push(outOfStockCondition);
+    if (shapeConditions.length) filter.$and = shapeConditions;
 
     const sortField = sort_by === "price" ? "price" : "createdAt";
     const sortDir = sort_order === "asc" ? 1 : -1;
@@ -351,14 +376,13 @@ export const getProduct = async (req, res) => {
 export const createProduct = async (req, res) => {
   try {
     const vendor = await User.findById(req.user.userId)
-      .select("businessType")
+      .select("sectors")
       .lean();
     if (!vendor) return errRes(res, 401, "UNAUTHORIZED", "Vendor not found");
 
-    const { businessType } = vendor;
     const body = req.body;
 
-    const validationError = validateProductInput(body, businessType);
+    const validationError = validateProductInput(body, vendor.sectors);
     if (validationError)
       return errRes(
         res,
@@ -370,11 +394,11 @@ export const createProduct = async (req, res) => {
 
     const isService = body.kind === "service";
     const foodShape = usesFoodShape(
-      businessType,
+      body.sector_value,
       isService ? "service" : "product",
     );
     // Retail-shaped products validate against the seeded Category collection;
-    // food dishes use FOOD_CATEGORIES (checked in validateProductInput).
+    // services and dishes carry no category at all.
     if (!foodShape && !isService) {
       const cat = await Category.findById(body.category_id);
       if (!cat)
@@ -390,12 +414,12 @@ export const createProduct = async (req, res) => {
 
     const product = await Product.create({
       vendorId: req.user.userId,
-      businessType,
+      sectorValue: body.sector_value,
       kind: isService ? "service" : "product",
       quoteOnRequest: isService ? (body.quote_on_request ?? false) : false,
       name: body.name.trim(),
       description: body.description ?? null,
-      categoryId: isService ? null : body.category_id,
+      categoryId: isService || foodShape ? null : body.category_id,
       price: isService && body.quote_on_request ? 0 : body.price,
       priceMax: body.price_max ?? null,
       currency: body.currency ?? "NGN",
@@ -415,7 +439,6 @@ export const createProduct = async (req, res) => {
       }),
 
       ...(foodShape && {
-        estimatedPrepMins: body.estimated_prep_mins,
         isCurrentlyAvailable: body.is_currently_available ?? true,
         dailyLimit: body.daily_limit ?? null,
         allowPreOrder: body.allow_pre_order ?? false,
@@ -444,9 +467,10 @@ export const updateProduct = async (req, res) => {
     });
     if (!product) return errRes(res, 404, "NOT_FOUND", "Product not found");
 
-    const { businessType } = product;
-    // Shape is fixed by the stored listing (kind never changes on update).
-    const foodShape = usesFoodShape(businessType, product.kind);
+    // Shape is fixed by the stored listing (kind/sectorValue never change on
+    // update — an offering's identity, including which sector it belongs to,
+    // is fixed at creation).
+    const foodShape = usesFoodShape(product.sectorValue, product.kind);
     const body = req.body;
 
     // Partial validation — only validate provided fields
@@ -468,19 +492,14 @@ export const updateProduct = async (req, res) => {
         price_max: "price_max must be greater than price",
       });
     }
-    if (body.category_id) {
-      if (!foodShape) {
-        const cat = await Category.findById(body.category_id);
-        if (!cat)
-          return errRes(res, 400, "VALIDATION_ERROR", "Validation failed", {
-            category_id:
-              "category_id must be one of the seeded retail categories",
-          });
-      } else if (!FOOD_CATEGORIES.includes(body.category_id)) {
+    // Dishes carry no category at all — an incoming category_id for a
+    // food-shaped product is simply ignored below (never assigned).
+    if (body.category_id && !foodShape) {
+      const cat = await Category.findById(body.category_id);
+      if (!cat)
         return errRes(res, 400, "VALIDATION_ERROR", "Validation failed", {
-          category_id: `category_id must be one of: ${FOOD_CATEGORIES.join(", ")}`,
+          category_id: "category_id must be one of the seeded retail categories",
         });
-      }
     }
     if (body.tags !== undefined && body.tags.length > 20) {
       return errRes(res, 400, "VALIDATION_ERROR", "Validation failed", {
@@ -500,7 +519,6 @@ export const updateProduct = async (req, res) => {
       quote_on_request: "quoteOnRequest",
       name: "name",
       description: "description",
-      category_id: "categoryId",
       price: "price",
       price_max: "priceMax",
       currency: "currency",
@@ -518,6 +536,10 @@ export const updateProduct = async (req, res) => {
     }
 
     if (!foodShape) {
+      // category_id lives here (not the generic `shared` map above) since
+      // dishes carry no category at all — an incoming category_id on a
+      // food-shaped update is silently ignored rather than assigned.
+      if (body.category_id !== undefined) product.categoryId = body.category_id;
       const retailMap = {
         stock_quantity: "stockQuantity",
         low_stock_threshold: "lowStockThreshold",
@@ -532,7 +554,6 @@ export const updateProduct = async (req, res) => {
 
     if (foodShape) {
       const foodMap = {
-        estimated_prep_mins: "estimatedPrepMins",
         is_currently_available: "isCurrentlyAvailable",
         daily_limit: "dailyLimit",
         allow_pre_order: "allowPreOrder",
@@ -569,7 +590,7 @@ export const deleteProduct = async (req, res) => {
     });
     if (!product) return errRes(res, 404, "NOT_FOUND", "Product not found");
 
-    const foodShape = usesFoodShape(product.businessType, product.kind);
+    const foodShape = usesFoodShape(product.sectorValue, product.kind);
     if (!foodShape && product.stockQuantity > 0) {
       return errRes(
         res,
@@ -602,7 +623,7 @@ export const toggleAvailability = async (req, res) => {
       vendorId: req.user.userId,
     });
     if (!product) return errRes(res, 404, "NOT_FOUND", "Product not found");
-    if (!usesFoodShape(product.businessType, product.kind)) {
+    if (!usesFoodShape(product.sectorValue, product.kind)) {
       return errRes(
         res,
         400,
@@ -642,7 +663,7 @@ export const restockProduct = async (req, res) => {
     });
     if (!product) return errRes(res, 404, "NOT_FOUND", "Product not found");
     if (
-      usesFoodShape(product.businessType, product.kind) ||
+      usesFoodShape(product.sectorValue, product.kind) ||
       product.kind === "service"
     ) {
       return errRes(
@@ -705,8 +726,11 @@ export const changePrice = async (req, res) => {
 // that were auto-disabled when their daily_limit was exhausted.
 export const resetDailyLimits = async (req, res) => {
   try {
+    // Was `{ businessType: "food", ... }` — silently missed food_both
+    // vendors' dishes. "Was this disabled by hitting a daily limit" only
+    // ever applies to non-service listings, regardless of sector.
     const result = await Product.updateMany(
-      { businessType: "food", dailyLimitDisabled: true },
+      { kind: { $ne: "service" }, dailyLimitDisabled: true },
       {
         $set: {
           isCurrentlyAvailable: true,

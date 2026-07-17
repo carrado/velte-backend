@@ -1,16 +1,33 @@
 import User from "../../models/Users.js";
+import { getOrCreateStore } from "../store/store.controller.js";
+import { embedAndSaveStore } from "../../services/embedding.service.js";
+import { sectorLabel, isKnownSector } from "../../utils/sectorLabels.js";
 
-export const updateBusinessType = async (req, res) => {
+const MAX_SECTORS = 5;
+
+// The single write path for a vendor's operating sectors, post-signup —
+// called both by a future "add sectors" settings surface and by the Store
+// editor's Sectors card (which used to write Store.sectors directly; now it
+// calls this instead, so User.sectors stays the one canonical list and
+// Store.sectors is just its derived display-label cache).
+export const updateSectors = async (req, res) => {
   try {
-    const { businessType } = req.body;
+    const { sectors } = req.body;
 
-    if (!businessType || !['retail', 'food', 'service', 'both', 'food_both'].includes(businessType)) {
-      return res.status(400).json({ message: "businessType must be one of 'retail', 'food', 'service', 'both', 'food_both'" });
+    if (
+      !Array.isArray(sectors) ||
+      sectors.length === 0 ||
+      sectors.length > MAX_SECTORS ||
+      !sectors.every(isKnownSector)
+    ) {
+      return res.status(400).json({
+        message: `sectors must be an array of 1-${MAX_SECTORS} known sector values`,
+      });
     }
 
     const user = await User.findByIdAndUpdate(
       req.user.userId,
-      { businessType },
+      { sectors },
       { new: true, runValidators: true }
     ).select("-password -emailOtp -changePasswordOtp");
 
@@ -18,10 +35,21 @@ export const updateBusinessType = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
+    try {
+      const store = await getOrCreateStore(user._id, {
+        sectors: sectors.map(sectorLabel),
+      });
+      store.sectors = sectors.map(sectorLabel);
+      await store.save();
+      await embedAndSaveStore(store);
+    } catch (err) {
+      console.error("[sectors] store sync failed:", err.message);
+    }
+
     res.status(200).json({ success: true, user });
   } catch (error) {
-    console.error("Update business type error:", error);
-    res.status(500).json({ message: "Failed to update business type" });
+    console.error("Update sectors error:", error);
+    res.status(500).json({ message: "Failed to update sectors" });
   }
 };
 

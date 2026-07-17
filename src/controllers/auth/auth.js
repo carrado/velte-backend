@@ -8,6 +8,9 @@ import {
 } from "../../services/referral.service.js";
 import { getOrCreateStore } from "../store/store.controller.js";
 import { embedAndSaveStore } from "../../services/embedding.service.js";
+import { sectorLabel, isKnownSector } from "../../utils/sectorLabels.js";
+
+const MAX_SECTORS = 5;
 
 
 export const register = async (req, res) => {
@@ -22,10 +25,9 @@ export const register = async (req, res) => {
       address,
       username,
       agreeToTerms,
-      businessType,
       phone,
       state,
-      sector,
+      sectors,
       description,
       location,
       referralCode,
@@ -39,8 +41,15 @@ export const register = async (req, res) => {
       });
     }
 
-    if (businessType !== undefined && !['retail', 'food', 'service', 'both', 'food_both'].includes(businessType)) {
-      return res.status(400).json({ message: "businessType must be one of 'retail', 'food', 'service', 'both', 'food_both'" });
+    if (
+      !Array.isArray(sectors) ||
+      sectors.length === 0 ||
+      sectors.length > MAX_SECTORS ||
+      !sectors.every(isKnownSector)
+    ) {
+      return res.status(400).json({
+        message: `sectors must be an array of 1-${MAX_SECTORS} known sector values`,
+      });
     }
 
     let geo;
@@ -105,8 +114,7 @@ export const register = async (req, res) => {
       phone: phone || null,
       username,
       country: country,
-      businessType: businessType || 'retail',
-      sector: sector || null,
+      sectors,
       description: description || '',
       // Discovery matching (store display + proximity) reads area/state/geo,
       // not company.location/company.state — write the real fields here so
@@ -142,7 +150,7 @@ export const register = async (req, res) => {
     try {
       const store = await getOrCreateStore(user._id, {
         description: user.description,
-        sectors: user.sector ? [user.sector] : [],
+        sectors: user.sectors.map(sectorLabel),
         whatsapp: user.phone,
       });
       await embedAndSaveStore(store);

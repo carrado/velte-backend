@@ -1,10 +1,11 @@
-// Mirrors the `value -> label` pairs of the frontend's sector taxonomy
-// (velte/src/lib/sectors.ts, SECTOR_TAXONOMY). Signup's `sector` field stores
-// the slug (e.g. "phones_accessories"); the Store's `sectors` field is meant
-// to hold display labels (e.g. "Phones & Accessories") — the vendor-facing
-// Store editor only highlights a chip when it matches a label, so seeding a
-// raw slug in there silently shows as "nothing selected". Keep this in sync
-// by hand if the frontend taxonomy changes.
+// Mirrors the frontend's sector taxonomy (velte/src/lib/sectors.ts,
+// SECTOR_TAXONOMY) — the Enugu-pilot-scoped list, not the full canonical
+// taxonomy. `User.sectors` / a listing's `sectorValue` store slugs (e.g.
+// "phones_accessories"); `Store.sectors` stores display LABELS (e.g.
+// "Phones & Accessories") since that's what feeds the AI embedding text and
+// what the Store editor's chip UI matches against. Keep both maps in sync by
+// hand if the frontend taxonomy changes — there is no shared source of truth
+// between the two repos.
 export const SECTOR_LABEL_BY_VALUE = {
   restaurants_quick_service: "Restaurants & Quick Service",
   catering_event_food: "Catering & Event Food",
@@ -13,7 +14,9 @@ export const SECTOR_LABEL_BY_VALUE = {
   street_food_local_delicacies: "Street Food & Local Delicacies",
   confectionery_snacks: "Confectionery & Snacks",
   hotels_shortlets: "Hotels & Short-lets",
+
   event_planning_services: "Event Planning Services",
+  ushering_services: "Ushering Services",
 
   groceries_supermarket: "Groceries & Supermarket",
   provision_stores_kiosks: "Provision Stores & Kiosks",
@@ -38,20 +41,10 @@ export const SECTOR_LABEL_BY_VALUE = {
   computer_repairs_it_support: "Computer Repairs & IT Support",
 
   cosmetics_skincare_retail: "Cosmetics & Skincare Retail",
-  hairdressing_barbing: "Hairdressing & Barbing",
   makeup_artistry: "Makeup Artistry",
   spa_massage: "Spa & Massage",
   nail_care: "Nail Care",
   perfumes_fragrances: "Perfumes & Fragrances",
-
-  pharmacy_medicines: "Pharmacy & Medicines",
-  medical_equipment_supplies: "Medical Equipment & Supplies",
-  clinics_hospitals: "Clinics & Hospitals",
-  dental_services: "Dental Services",
-  diagnostic_lab_services: "Diagnostic & Lab Services",
-  fitness_gyms: "Fitness & Gyms",
-  nutrition_dietetics: "Nutrition & Dietetics",
-  traditional_herbal_medicine: "Traditional & Herbal Medicine",
 
   furniture: "Furniture",
   home_decor_furnishings: "Home Decor & Furnishings",
@@ -59,8 +52,6 @@ export const SECTOR_LABEL_BY_VALUE = {
   bedding_linens: "Bedding & Linens",
   interior_design_services: "Interior Design Services",
 
-  building_materials: "Building Materials",
-  hardware_tools: "Hardware & Tools",
   construction_contracting: "Construction & Contracting",
   architecture_engineering_design: "Architecture & Engineering Design",
   plumbing_services: "Plumbing Services",
@@ -76,7 +67,8 @@ export const SECTOR_LABEL_BY_VALUE = {
   tyre_sales_vulcanizing: "Tyre Sales & Vulcanizing",
   motorcycle_keke_sales: "Motorcycle & Tricycle (Keke) Sales",
 
-  generator_solar_install_repair: "Generator & Solar Installation/Repair",
+  generator_sales_repair: "Generator Sales & Repair",
+  solar_installation: "Solar Panel Installation & Repair",
   appliance_repair: "Appliance Repair",
   shoe_bag_repair_cobbling: "Shoe & Bag Repair (Cobbling)",
   watch_repair: "Watch Repair",
@@ -96,14 +88,6 @@ export const SECTOR_LABEL_BY_VALUE = {
   vocational_skills_training: "Vocational & Skills Training",
   online_courses_elearning: "Online Courses & E-learning",
   daycare_creche: "Daycare & Creche",
-  educational_materials: "Educational Materials & Publishing",
-
-  crop_farming_produce: "Crop Farming & Produce Sales",
-  livestock_poultry: "Livestock & Poultry",
-  fishery_aquaculture: "Fishery & Aquaculture",
-  agro_processing: "Agro-processing (Milling, Packaging)",
-  farm_inputs_equipment: "Farm Inputs & Equipment",
-  agricultural_consulting: "Agricultural Consulting Services",
 
   logistics_courier_services: "Logistics & Courier Services",
   ride_hailing_car_hire: "Ride-hailing & Car Hire",
@@ -111,24 +95,9 @@ export const SECTOR_LABEL_BY_VALUE = {
   moving_relocation_services: "Moving & Relocation Services",
   freight_forwarding_clearing: "Freight Forwarding & Clearing",
 
-  microfinance_loans: "Microfinance & Loans",
-  insurance_services: "Insurance Services",
-  bureau_de_change_forex: "Bureau de Change / Forex",
-  investment_wealth_advisory: "Investment & Wealth Advisory",
-  cooperative_societies: "Cooperative Societies",
-
   music_audio_production: "Music & Audio Production",
   film_video_production: "Film & Video Production",
-  event_centers_rentals: "Event Centers & Rentals",
-  dj_mc_services: "DJ & MC Services",
-  art_craft_sales: "Art & Craft Sales",
   content_creation_influencer: "Content Creation & Influencer Services",
-
-  food_beverage_manufacturing: "Food & Beverage Manufacturing",
-  textile_manufacturing: "Textile Manufacturing",
-  furniture_manufacturing: "Furniture Manufacturing",
-  plastics_packaging_manufacturing: "Plastics & Packaging Manufacturing",
-  cosmetics_manufacturing: "Cosmetics Manufacturing",
 
   cleaning_services: "Cleaning Services",
   laundry_dry_cleaning: "Laundry & Dry Cleaning",
@@ -136,189 +105,171 @@ export const SECTOR_LABEL_BY_VALUE = {
   domestic_staffing: "Domestic Staffing (Nanny, Cook, etc.)",
   gardening_landscaping: "Gardening & Landscaping",
   security_services: "Security Services",
-
-  religious_organizations: "Religious Organizations & Ministries",
-  ngos_nonprofits: "NGOs & Nonprofits",
-  community_associations: "Community Associations",
-
-  import_export_trading: "Import & Export Trading",
-  government_public_sector_contracting:
-    "Government & Public Sector Contracting",
-  other: "Other",
 };
 
-/** Converts a signup sector slug to its display label; passes unknown values through as-is. */
+/** Converts a sector slug to its display label; passes unknown values through as-is. */
 export function sectorLabel(value) {
   if (!value) return value;
   return SECTOR_LABEL_BY_VALUE[value] || value;
 }
 
-// Mirrors each leaf's own `classification` from the frontend taxonomy — needed
-// to recompute a vendor's overall businessType from their full Store.sectors
-// list (a vendor isn't locked to the single classification derived from their
-// signup sector; adding a service sector later should unlock service listing
-// blocks too). Keep in sync by hand alongside SECTOR_LABEL_BY_VALUE above.
-export const SECTOR_CLASSIFICATION_BY_LABEL = {
-  "Restaurants & Quick Service": "food",
-  "Catering & Event Food": "food_both",
-  "Bakery & Pastries": "food",
-  "Bars, Lounges & Nightlife": "food",
-  "Street Food & Local Delicacies": "food",
-  "Confectionery & Snacks": "food",
-  "Hotels & Short-lets": "service",
-  "Event Planning Services": "service",
+/** True if `value` is a slug in the current taxonomy — used to validate
+ * signup/listing input server-side instead of trusting any string. */
+export function isKnownSector(value) {
+  return Object.prototype.hasOwnProperty.call(SECTOR_LABEL_BY_VALUE, value);
+}
 
-  "Groceries & Supermarket": "retail",
-  "Provision Stores & Kiosks": "retail",
-  "Wholesale & Distribution": "retail",
-  "Stationery & Books": "both",
-  "Toys & Kids' Items": "retail",
-  "Gift Items & Souvenirs": "retail",
+// Mirrors each leaf's own `classification` from the frontend taxonomy —
+// needed to derive a listing's shape (food/retail/service tooling) from
+// whichever sector it was posted under, and to merge a vendor's/store's full
+// sector list into one overall businessType-shaped summary for the
+// storefront/dashboard-chrome shims. Keep in sync by hand alongside
+// SECTOR_LABEL_BY_VALUE above.
+export const SECTOR_CLASSIFICATION_BY_VALUE = {
+  restaurants_quick_service: "food",
+  catering_event_food: "food_both",
+  bakery_pastries: "food",
+  bars_lounges_nightlife: "food",
+  street_food_local_delicacies: "food",
+  confectionery_snacks: "food",
+  hotels_shortlets: "service",
 
-  "Clothing & Apparel": "retail",
-  "Shoes & Footwear": "retail",
-  "Bags & Accessories": "retail",
-  "Jewelry & Watches": "both",
-  "Tailoring & Fashion Design": "both",
-  "Textile & Fabric Sales": "retail",
+  event_planning_services: "service",
+  ushering_services: "service",
 
-  "Phones & Accessories": "both",
-  "Computers & Laptops": "both",
-  "Home Electronics & Appliances": "both",
-  "Gaming & Consoles": "retail",
-  "Software Development & IT Services": "service",
-  "Phone & Gadget Repairs": "service",
-  "Computer Repairs & IT Support": "service",
+  groceries_supermarket: "retail",
+  provision_stores_kiosks: "retail",
+  wholesale_distribution: "retail",
+  stationery_books: "both",
+  toys_kids_items: "retail",
+  gift_items_souvenirs: "retail",
 
-  "Cosmetics & Skincare Retail": "retail",
-  "Hairdressing & Barbing": "both",
-  "Makeup Artistry": "service",
-  "Spa & Massage": "service",
-  "Nail Care": "service",
-  "Perfumes & Fragrances": "retail",
+  clothing_apparel: "retail",
+  shoes_footwear: "retail",
+  bags_accessories: "retail",
+  jewelry_watches: "both",
+  tailoring_fashion_design: "both",
+  textile_fabric_sales: "retail",
 
-  "Pharmacy & Medicines": "both",
-  "Medical Equipment & Supplies": "retail",
-  "Clinics & Hospitals": "service",
-  "Dental Services": "service",
-  "Diagnostic & Lab Services": "service",
-  "Fitness & Gyms": "service",
-  "Nutrition & Dietetics": "service",
-  "Traditional & Herbal Medicine": "both",
+  phones_accessories: "both",
+  computers_laptops: "both",
+  home_electronics_appliances: "both",
+  gaming_consoles: "retail",
+  software_development_it: "service",
+  phone_gadget_repairs: "service",
+  computer_repairs_it_support: "service",
 
-  Furniture: "both",
-  "Home Decor & Furnishings": "retail",
-  "Kitchenware & Appliances": "retail",
-  "Bedding & Linens": "retail",
-  "Interior Design Services": "service",
+  cosmetics_skincare_retail: "retail",
+  makeup_artistry: "service",
+  spa_massage: "service",
+  nail_care: "service",
+  perfumes_fragrances: "retail",
 
-  "Building Materials": "retail",
-  "Hardware & Tools": "retail",
-  "Construction & Contracting": "service",
-  "Architecture & Engineering Design": "service",
-  "Plumbing Services": "service",
-  "Electrical Installation Services": "service",
-  "Painting & Decorating Services": "service",
-  "Real Estate & Property Sales": "service",
-  "Property Management": "service",
+  furniture: "both",
+  home_decor_furnishings: "retail",
+  kitchenware_appliances: "retail",
+  bedding_linens: "retail",
+  interior_design_services: "service",
 
-  "Auto Parts & Accessories": "both",
-  "Vehicle Sales": "retail",
-  "Auto Repair & Mechanic Services": "service",
-  "Car Wash & Detailing": "service",
-  "Tyre Sales & Vulcanizing": "both",
-  "Motorcycle & Tricycle (Keke) Sales": "retail",
+  construction_contracting: "service",
+  architecture_engineering_design: "service",
+  plumbing_services: "service",
+  electrical_installation_services: "service",
+  painting_decorating_services: "service",
+  real_estate_property_sales: "service",
+  property_management: "service",
 
-  "Generator & Solar Installation/Repair": "both",
-  "Appliance Repair": "service",
-  "Shoe & Bag Repair (Cobbling)": "service",
-  "Watch Repair": "service",
+  auto_parts_accessories: "both",
+  vehicle_sales: "retail",
+  auto_repair_mechanic: "service",
+  car_wash_detailing: "service",
+  tyre_sales_vulcanizing: "both",
+  motorcycle_keke_sales: "retail",
 
-  "Consulting & Advisory": "service",
-  "Accounting & Bookkeeping": "service",
-  "Legal Services": "service",
-  "Marketing & Advertising": "service",
-  "Graphic Design & Branding": "service",
-  "Photography & Videography": "service",
-  "Printing & Publishing": "service",
-  "Recruitment & HR Services": "service",
-  "Translation & Interpretation": "service",
-  "Virtual Assistance & Admin Support": "service",
+  generator_sales_repair: "both",
+  solar_installation: "both",
+  appliance_repair: "service",
+  shoe_bag_repair_cobbling: "service",
+  watch_repair: "service",
 
-  "Schools & Tutorial Centers": "service",
-  "Vocational & Skills Training": "service",
-  "Online Courses & E-learning": "service",
-  "Daycare & Creche": "service",
-  "Educational Materials & Publishing": "retail",
+  consulting_advisory: "service",
+  accounting_bookkeeping: "service",
+  legal_services: "service",
+  marketing_advertising: "service",
+  graphic_design_branding: "service",
+  photography_videography: "service",
+  printing_publishing: "service",
+  recruitment_hr_services: "service",
+  translation_interpretation: "service",
+  virtual_assistance_admin: "service",
 
-  "Crop Farming & Produce Sales": "retail",
-  "Livestock & Poultry": "retail",
-  "Fishery & Aquaculture": "retail",
-  "Agro-processing (Milling, Packaging)": "both",
-  "Farm Inputs & Equipment": "retail",
-  "Agricultural Consulting Services": "service",
+  schools_tutorial_centers: "service",
+  vocational_skills_training: "service",
+  online_courses_elearning: "service",
+  daycare_creche: "service",
 
-  "Logistics & Courier Services": "service",
-  "Ride-hailing & Car Hire": "service",
-  "Haulage & Trucking": "service",
-  "Moving & Relocation Services": "service",
-  "Freight Forwarding & Clearing": "service",
+  logistics_courier_services: "service",
+  ride_hailing_car_hire: "service",
+  haulage_trucking: "service",
+  moving_relocation_services: "service",
+  freight_forwarding_clearing: "service",
 
-  "Microfinance & Loans": "service",
-  "Insurance Services": "service",
-  "Bureau de Change / Forex": "service",
-  "Investment & Wealth Advisory": "service",
-  "Cooperative Societies": "service",
+  music_audio_production: "service",
+  film_video_production: "service",
+  content_creation_influencer: "service",
 
-  "Music & Audio Production": "service",
-  "Film & Video Production": "service",
-  "Event Centers & Rentals": "service",
-  "DJ & MC Services": "service",
-  "Art & Craft Sales": "both",
-  "Content Creation & Influencer Services": "service",
-
-  "Food & Beverage Manufacturing": "food",
-  "Textile Manufacturing": "retail",
-  "Furniture Manufacturing": "both",
-  "Plastics & Packaging Manufacturing": "retail",
-  "Cosmetics Manufacturing": "retail",
-
-  "Cleaning Services": "service",
-  "Laundry & Dry Cleaning": "service",
-  "Fumigation & Pest Control": "service",
-  "Domestic Staffing (Nanny, Cook, etc.)": "service",
-  "Gardening & Landscaping": "service",
-  "Security Services": "service",
-
-  "Religious Organizations & Ministries": "service",
-  "NGOs & Nonprofits": "service",
-  "Community Associations": "service",
-
-  "Import & Export Trading": "retail",
-  "Government & Public Sector Contracting": "service",
-  Other: "both",
+  cleaning_services: "service",
+  laundry_dry_cleaning: "service",
+  fumigation_pest_control: "service",
+  domestic_staffing: "service",
+  gardening_landscaping: "service",
+  security_services: "service",
 };
 
-/**
- * Merges the classifications of a Store's current sectors into one overall
- * businessType. Returns null when nothing recognized is selected — callers
- * should leave the existing businessType untouched in that case rather than
- * overwrite it with a guess.
- */
-export function mergeBusinessType(sectorLabels) {
-  const classifications = (sectorLabels || [])
-    .map((label) => SECTOR_CLASSIFICATION_BY_LABEL[label])
-    .filter(Boolean);
-  if (classifications.length === 0) return null;
+/** Label-keyed mirror of the map above, purely for `Store.sectors` (which
+ * stores labels) — e.g. the public-storefront businessType shim, which only
+ * has labels on hand and shouldn't need a reverse slug lookup. */
+const SECTOR_CLASSIFICATION_BY_LABEL = Object.fromEntries(
+  Object.entries(SECTOR_LABEL_BY_VALUE).map(([value, label]) => [
+    label,
+    SECTOR_CLASSIFICATION_BY_VALUE[value],
+  ]),
+);
 
-  const hasFood = classifications.some((c) => c === "food" || c === "food_both");
-  const hasService = classifications.some(
+function mergeClassifications(classifications) {
+  const known = classifications.filter(Boolean);
+  if (known.length === 0) return null;
+
+  const hasFood = known.some((c) => c === "food" || c === "food_both");
+  const hasService = known.some(
     (c) => c === "service" || c === "both" || c === "food_both",
   );
-  const hasRetail = classifications.some((c) => c === "retail" || c === "both");
+  const hasRetail = known.some((c) => c === "retail" || c === "both");
 
   if (hasFood) return hasService ? "food_both" : "food";
   if (hasRetail && hasService) return "both";
   if (hasService) return "service";
   return "retail";
+}
+
+/**
+ * Merges a vendor's sector SLUGS (User.sectors) into one overall
+ * businessType-shaped summary — used by the dashboard-chrome shim. Returns
+ * null when nothing recognized is selected.
+ */
+export function mergeBusinessType(sectorValues) {
+  return mergeClassifications(
+    (sectorValues || []).map((v) => SECTOR_CLASSIFICATION_BY_VALUE[v]),
+  );
+}
+
+/**
+ * Merges a store's sector LABELS (Store.sectors) into one overall
+ * businessType-shaped summary — used by the public-storefront shim, which
+ * only has labels on hand. Returns null when nothing recognized is selected.
+ */
+export function mergeBusinessTypeFromLabels(sectorLabels) {
+  return mergeClassifications(
+    (sectorLabels || []).map((l) => SECTOR_CLASSIFICATION_BY_LABEL[l]),
+  );
 }

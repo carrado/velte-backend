@@ -1,17 +1,9 @@
 import mongoose from "mongoose";
+import { SECTOR_CLASSIFICATION_BY_VALUE } from "../utils/sectorLabels.js";
 
-export const FOOD_CATEGORIES = [
-  "rice",
-  "soups",
-  "swallow",
-  "grilled",
-  "protein",
-  "snacks",
-  "drinks",
-  "breakfast",
-  "desserts",
-  "party",
-];
+const FOOD_CLASSIFICATIONS = ["food", "food_both"];
+const isFoodSector = (sectorValue) =>
+  FOOD_CLASSIFICATIONS.includes(SECTOR_CLASSIFICATION_BY_VALUE[sectorValue]);
 
 const attributeSchema = new mongoose.Schema(
   {
@@ -42,11 +34,14 @@ const productSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
-    // Mirrors the vendor's account type. "service"/"both" behave retail-shaped
-    // (stock gated by `kind`); only "food" gets the dish tooling.
-    businessType: {
+    // Which of the vendor's own sectors (taxonomy slug) this specific listing
+    // was posted under — drives shape (food/retail/service tooling) per
+    // LISTING rather than one frozen account-wide type, so a vendor can post
+    // a dish under a food sector and a service under a different sector on
+    // the same account. No Mongoose enum: the taxonomy lives in code and is
+    // validated in the controller so a taxonomy edit never needs a migration.
+    sectorValue: {
       type: String,
-      enum: ["retail", "food", "service", "both", "food_both"],
       required: true,
     },
 
@@ -61,12 +56,14 @@ const productSchema = new mongoose.Schema(
     // ── shared fields ───────────────────────────────────────────────────────
     name: { type: String, required: true, trim: true, maxlength: 120 },
     description: { type: String, maxlength: 1000, default: null },
-    // Services carry no category — discovered by meaning (description + sector).
+    // Services and dishes carry no category — discovered by meaning
+    // (description + sector) rather than a fixed bucket. Only retail
+    // products need one.
     categoryId: {
       type: String,
       default: null,
       required: function () {
-        return this.kind !== "service";
+        return this.kind !== "service" && !isFoodSector(this.sectorValue);
       },
     },
     // `price` is the single price, or the low end of a range. `priceMax` (when
@@ -90,7 +87,6 @@ const productSchema = new mongoose.Schema(
     attributes: { type: [attributeSchema], default: [] },
 
     // ── food-only ───────────────────────────────────────────────────────────
-    estimatedPrepMins: { type: Number, default: null },
     isCurrentlyAvailable: { type: Boolean, default: true },
     dailyLimit: { type: Number, default: null },
     dailyOrderCount: { type: Number, default: 0 },

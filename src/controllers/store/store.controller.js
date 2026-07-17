@@ -3,11 +3,10 @@ import Product from "../../models/Product.model.js";
 import User from "../../models/Users.js";
 import { AppError } from "../../middleware/errorHandler.js";
 import { embedAndSaveStore } from "../../services/embedding.service.js";
-import { sectorLabel, mergeBusinessType } from "../../utils/sectorLabels.js";
+import { sectorLabel, mergeBusinessTypeFromLabels } from "../../utils/sectorLabels.js";
 import { getOrCreateWallet } from "../wallet/wallet.controller.js";
 
 const HANDLE_RE = /^[a-z0-9](?:[a-z0-9-]{1,28}[a-z0-9])?$/; // 2–30 chars, no edge hyphens
-const MAX_SECTORS = 5;
 const MAX_GALLERY = 6;
 
 function slugify(source) {
@@ -52,9 +51,9 @@ export async function getOrCreateStore(vendorId, seed = {}) {
     const needsSectors = existing.sectors.length === 0;
     const needsWhatsapp = !existing.whatsapp;
     if (needsSectors || needsWhatsapp) {
-      const profile = await User.findById(vendorId).select("sector phone");
-      if (needsSectors && profile?.sector) {
-        existing.sectors = [sectorLabel(profile.sector)];
+      const profile = await User.findById(vendorId).select("sectors phone");
+      if (needsSectors && profile?.sectors?.length) {
+        existing.sectors = profile.sectors.map(sectorLabel);
         changed = true;
       }
       if (needsWhatsapp && profile?.phone) {
@@ -68,7 +67,7 @@ export async function getOrCreateStore(vendorId, seed = {}) {
   }
 
   const user = await User.findById(vendorId).select(
-    "company username name sector phone",
+    "company username name sectors phone",
   );
   if (!user) throw new AppError("User not found.", 404);
 
@@ -84,8 +83,8 @@ export async function getOrCreateStore(vendorId, seed = {}) {
 
   const sectors = seed.sectors?.length
     ? seed.sectors.map(sectorLabel)
-    : user.sector
-      ? [sectorLabel(user.sector)]
+    : user.sectors?.length
+      ? user.sectors.map(sectorLabel)
       : [];
   const whatsapp = seed.whatsapp || user.phone || null;
 
@@ -173,6 +172,18 @@ export async function updateMyStore(req, res, next) {
     const { handle, name, description, sectors, whatsapp, gallery } =
       req.body ?? {};
 
+    // Sectors are no longer edited here — they're canonical on User.sectors
+    // (set at signup, edited via PATCH /auth/sectors) and this store's own
+    // `sectors` is just that list's derived display-label cache. Reject
+    // rather than silently ignore, so a stale client build fails loudly
+    // instead of writing to a field nothing else reads from anymore.
+    if (sectors !== undefined) {
+      throw new AppError(
+        "Sectors are managed via your account's sectors, not the store profile.",
+        400,
+      );
+    }
+
     if (handle !== undefined) {
       const next_ = String(handle).toLowerCase().trim();
       if (!HANDLE_RE.test(next_)) {
@@ -205,15 +216,6 @@ export async function updateMyStore(req, res, next) {
       store.description = trimmed;
     }
 
-    if (sectors !== undefined) {
-      if (!Array.isArray(sectors) || sectors.length > MAX_SECTORS) {
-        throw new AppError(`Pick at most ${MAX_SECTORS} sectors.`, 400);
-      }
-      store.sectors = sectors
-        .map((s) => String(s).trim().slice(0, 30))
-        .filter(Boolean);
-    }
-
     if (whatsapp !== undefined) {
       const digits = String(whatsapp).replace(/[^\d]/g, "");
       if (digits && (digits.length < 7 || digits.length > 15)) {
@@ -233,26 +235,6 @@ export async function updateMyStore(req, res, next) {
         throw new AppError("Gallery entries must be https image URLs.", 400);
       }
       store.gallery = gallery;
-    }
-
-    // A vendor isn't locked to the single classification their signup sector
-    // implied — adding a service sector later (or any sector of a different
-    // kind) should unlock the matching Add-Offering wizard blocks too.
-    // Recompute from the FULL current sector set (not just what changed this
-    // call), so removing a sector can equally narrow it back down. Only
-    // overwrites when a real classification can be derived — never resets
-    // businessType to a guess just because sectors were cleared.
-    if (sectors !== undefined) {
-      const merged = mergeBusinessType(store.sectors);
-      if (merged) {
-        const user = await User.findById(req.user.userId).select(
-          "businessType",
-        );
-        if (user && user.businessType !== merged) {
-          user.businessType = merged;
-          await user.save();
-        }
-      }
     }
 
     await store.save();
@@ -445,7 +427,7 @@ export async function getPublicStore(req, res, next) {
     if (!store) throw new AppError("Store not found.", 404);
 
     const [user, products] = await Promise.all([
-      User.findById(store.vendorId).select("avatar area businessType"),
+      User.findById(store.vendorId).select("avatar area"),
       Product.find({ vendorId: store.vendorId })
         .sort({ isFeatured: -1, createdAt: -1 })
         .limit(12)
@@ -466,7 +448,12 @@ export async function getPublicStore(req, res, next) {
         vendorId: store.vendorId,
         avatar: user?.avatar ?? null,
         area: user?.area ?? null,
-        businessType: user?.businessType ?? "retail",
+        // Shim: keeps the API response shape stable for the frontend (which
+        // still reads PublicStore.businessType) now that the account no
+        // longer stores one frozen businessType — derived fresh from the
+        // store's current sectors instead, so it also reflects any sectors
+        // added/removed after signup.
+        businessType: mergeBusinessTypeFromLabels(store.sectors) ?? "retail",
         products: products.map((p) => ({
           id: p._id,
           name: p.name,

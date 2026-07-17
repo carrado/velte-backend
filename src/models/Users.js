@@ -90,14 +90,13 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
-  businessType: {
-    type: String,
-    enum: ['retail', 'food', 'service', 'both', 'food_both'],
-    default: 'retail',
-  },
-  sector: {
-    type: String,
-    default: null,
+  // The vendor's operating sectors (taxonomy slugs, e.g. "phones_accessories")
+  // — chosen at signup, editable later from the Store editor. Drives listing
+  // shape per-listing (see Product.sectorValue) rather than one frozen
+  // account-wide businessType. Capped at 5 (enforced in the controller).
+  sectors: {
+    type: [String],
+    default: [],
   },
   description: {
     type: String,
