@@ -14,14 +14,15 @@ import { LOW_BALANCE_KOBO } from "../../jobs/walletLowBalance.job.js";
 import { notifyUser } from "../../services/pushNotification.service.js";
 
 // Every direct balance credit must clear this immediately, not wait for the
-// hourly cron's point-in-time sample — a wallet that dips below the
-// threshold, gets topped up back above it, then dips low again inside one
-// poll window never gets observed above the threshold by the cron, so its
-// `lowBalanceNotified` flag would otherwise stay stuck true forever and
-// silently suppress every future low-balance alert for that wallet.
+// cron's point-in-time sample — a wallet that dips below the threshold,
+// gets topped up back above it, then dips low again inside one poll window
+// never gets observed above the threshold by the cron, so its
+// `lowBalanceLastNotifiedAt` would otherwise stay stuck set forever and
+// silently suppress every future low-balance alert (both the initial one
+// for a new episode AND the 24h reminder) for that wallet.
 function clearLowBalanceFlagIfRecovered(wallet) {
-  if (wallet.lowBalanceNotified && wallet.balanceKobo > LOW_BALANCE_KOBO) {
-    wallet.lowBalanceNotified = false;
+  if (wallet.lowBalanceLastNotifiedAt && wallet.balanceKobo > LOW_BALANCE_KOBO) {
+    wallet.lowBalanceLastNotifiedAt = null;
   }
 }
 
@@ -752,8 +753,8 @@ const AUTO_RECHARGE_MAX_NOTIFICATIONS = 7;
 // eligibility ($expr — two fields of one document, which a plain filter
 // can't compare) — the whole thing happens in one atomic findOneAndUpdate,
 // no window between "check" and "flip the flag" for a second concurrent
-// call to land in. Same pattern as starterCreditGranted/lowBalanceNotified
-// elsewhere in this file.
+// call to land in. Same pattern as starterCreditGranted/
+// lowBalanceLastNotifiedAt elsewhere in this file.
 export async function maybeAutoRecharge(wallet) {
   const retryGateCutoff = new Date(Date.now() - AUTO_RECHARGE_RETRY_INTERVAL_MS);
 

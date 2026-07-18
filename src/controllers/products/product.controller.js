@@ -15,7 +15,7 @@ import {
 // was posted under), and shape is derived from that ONE sector's own
 // classification:
 //   • food-shaped  → dish tooling (prep time, modifiers, availability)
-//   • retail-shaped → stock, low-stock threshold, dates
+//   • retail-shaped → attributes, manufacturing/expiration dates
 // "food" and "food_both" are food-classified; but a *service* listing under a
 // "food_both" sector is still service-shaped (retail-shaped, no stock), so
 // shape depends on both the sector's classification AND the listing's kind.
@@ -26,14 +26,6 @@ const isFoodClassification = (classification) =>
   FOOD_CLASSIFICATIONS.includes(classification);
 const usesFoodShape = (sectorValue, kind) =>
   isFoodClassification(classificationOf(sectorValue)) && kind !== "service";
-
-// Precomputed once at module load — every sector slug classified as food or
-// food_both. Used by getProducts' tab filters, which need to match shape
-// per-product in a single Mongo query rather than branch on one account-wide
-// flag (a vendor can now have both food- and non-food-classified listings).
-const FOOD_SECTOR_VALUES = Object.entries(SECTOR_CLASSIFICATION_BY_VALUE)
-  .filter(([, classification]) => isFoodClassification(classification))
-  .map(([value]) => value);
 
 // ── formatters ────────────────────────────────────────────────────────────────
 
@@ -73,9 +65,6 @@ function formatProduct(doc) {
   if (!usesFoodShape(p.sectorValue, p.kind)) {
     return {
       ...base,
-      stock_quantity: p.stockQuantity,
-      ordered_quantity: p.orderedQuantity,
-      low_stock_threshold: p.lowStockThreshold,
       manufacturing_date: p.manufacturingDate,
       expiration_date: p.expirationDate,
       attributes: (p.attributes ?? []).map((a) => ({
@@ -180,13 +169,6 @@ function validateProductInput(body, vendorSectors) {
   }
 
   if (!usesFoodShape(body.sector_value, kind)) {
-    // Services carry no stock — quantity only required for stocked goods.
-    if (
-      kind !== "service" &&
-      (body.stock_quantity === undefined || body.stock_quantity === null)
-    ) {
-      fields.stock_quantity = "stock_quantity is required for retail products";
-    }
     if (body.manufacturing_date && body.expiration_date) {
       if (new Date(body.expiration_date) <= new Date(body.manufacturing_date)) {
         fields.expiration_date =
@@ -279,7 +261,6 @@ export const getProducts = async (req, res) => {
       category_id,
       tab = "all",
       search,
-      stock_status,
       sort_by = "created_at",
       sort_order = "desc",
     } = req.query;
@@ -293,39 +274,6 @@ export const getProducts = async (req, res) => {
     if (search) filter.name = { $regex: search, $options: "i" };
 
     if (tab === "featured") filter.isFeatured = true;
-
-    // Services carry no stock: never "out of stock", always "in stock". Shape
-    // is per-PRODUCT now (a vendor can have both food- and non-food-shaped
-    // listings), so each tab/stock_status condition matches food-shaped and
-    // non-food-shaped docs separately in one query rather than branching the
-    // whole filter on one account-wide flag. Collected into `$and` (not
-    // reused `$or` keys) so tab and stock_status can both apply at once.
-    const outOfStockCondition = {
-      $or: [
-        { sectorValue: { $in: FOOD_SECTOR_VALUES }, isCurrentlyAvailable: false },
-        {
-          sectorValue: { $nin: FOOD_SECTOR_VALUES },
-          stockQuantity: 0,
-          kind: { $ne: "service" },
-        },
-      ],
-    };
-    const inStockCondition = {
-      $or: [
-        { sectorValue: { $in: FOOD_SECTOR_VALUES }, isCurrentlyAvailable: true },
-        {
-          sectorValue: { $nin: FOOD_SECTOR_VALUES },
-          $or: [{ stockQuantity: { $gt: 0 } }, { kind: "service" }],
-        },
-      ],
-    };
-
-    const shapeConditions = [];
-    if (tab === "out-of-stock") shapeConditions.push(outOfStockCondition);
-    if (stock_status === "in-stock") shapeConditions.push(inStockCondition);
-    else if (stock_status === "out-of-stock")
-      shapeConditions.push(outOfStockCondition);
-    if (shapeConditions.length) filter.$and = shapeConditions;
 
     const sortField = sort_by === "price" ? "price" : "createdAt";
     const sortDir = sort_order === "asc" ? 1 : -1;
@@ -431,8 +379,6 @@ export const createProduct = async (req, res) => {
       colorClass: body.color_class ?? null,
 
       ...(!foodShape && {
-        stockQuantity: body.kind === "service" ? 0 : body.stock_quantity,
-        lowStockThreshold: body.low_stock_threshold ?? null,
         manufacturingDate: body.manufacturing_date ?? null,
         expirationDate: body.expiration_date ?? null,
         attributes: body.attributes ?? [],
@@ -513,7 +459,7 @@ export const updateProduct = async (req, res) => {
     }
 
     // `kind` is deliberately absent — an offering's identity is fixed at
-    // creation; flipping product↔service mid-life would corrupt stock/lead
+    // creation; flipping product↔service mid-life would corrupt lead
     // semantics.
     const shared = {
       quote_on_request: "quoteOnRequest",
@@ -541,8 +487,6 @@ export const updateProduct = async (req, res) => {
       // food-shaped update is silently ignored rather than assigned.
       if (body.category_id !== undefined) product.categoryId = body.category_id;
       const retailMap = {
-        stock_quantity: "stockQuantity",
-        low_stock_threshold: "lowStockThreshold",
         manufacturing_date: "manufacturingDate",
         expiration_date: "expirationDate",
         attributes: "attributes",
@@ -591,14 +535,6 @@ export const deleteProduct = async (req, res) => {
     if (!product) return errRes(res, 404, "NOT_FOUND", "Product not found");
 
     const foodShape = usesFoodShape(product.sectorValue, product.kind);
-    if (!foodShape && product.stockQuantity > 0) {
-      return errRes(
-        res,
-        409,
-        "CONFLICT",
-        "Cannot delete a product with remaining stock. Set stock to 0 first",
-      );
-    }
     if (foodShape && product.isCurrentlyAvailable) {
       return errRes(
         res,
@@ -652,43 +588,6 @@ export const toggleAvailability = async (req, res) => {
   } catch (err) {
     console.error("Toggle availability error:", err);
     return errRes(res, 500, "INTERNAL_ERROR", "Failed to update availability");
-  }
-};
-
-export const restockProduct = async (req, res) => {
-  try {
-    const product = await Product.findOne({
-      _id: req.params.id,
-      vendorId: req.user.userId,
-    });
-    if (!product) return errRes(res, 404, "NOT_FOUND", "Product not found");
-    if (
-      usesFoodShape(product.sectorValue, product.kind) ||
-      product.kind === "service"
-    ) {
-      return errRes(
-        res,
-        400,
-        "VALIDATION_ERROR",
-        "Restock is only available for stocked products",
-      );
-    }
-
-    const quantity = parseInt(req.body.quantity, 10);
-    if (!Number.isInteger(quantity) || quantity <= 0) {
-      return errRes(res, 400, "VALIDATION_ERROR", "Validation failed", {
-        quantity: "Must be a positive integer",
-      });
-    }
-
-    product.stockQuantity =
-      product.stockQuantity === 0 ? quantity : product.stockQuantity + quantity;
-    await product.save();
-
-    return res.json({ success: true, data: formatProduct(product) });
-  } catch (err) {
-    console.error("Restock error:", err);
-    return errRes(res, 500, "INTERNAL_ERROR", "Failed to restock product");
   }
 };
 

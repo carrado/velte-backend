@@ -47,7 +47,7 @@ const walletSchema = new mongoose.Schema(
       // separate charge_authorization call. Claimed via findOneAndUpdate
       // right before charging (wallet.controller.js's maybeAutoRecharge),
       // released in a finally right after — same atomic-flag pattern as
-      // starterCreditGranted/lowBalanceNotified above.
+      // starterCreditGranted/lowBalanceLastNotifiedAt above.
       inFlight: { type: Boolean, default: false },
 
       // Failure-episode tracking for maybeAutoRecharge's retry/notify policy
@@ -74,12 +74,16 @@ const walletSchema = new mongoose.Schema(
       default: "active",
     },
 
-    // Set by the hourly low-balance cron (jobs/walletLowBalance.job.js) once
-    // it notifies a vendor under the threshold — prevents renotifying every
-    // run while they stay low. Reset back to false by the same job once the
-    // balance rises back to/above the threshold, so the NEXT dip notifies
-    // again ("once per low episode").
-    lowBalanceNotified: { type: Boolean, default: false },
+    // Set by the low-balance cron (jobs/walletLowBalance.job.js) to the time
+    // of the last low-balance push — the first notification for a low
+    // episode fires immediately, then this timestamp gates a repeat
+    // reminder to once every REMINDER_INTERVAL_MS (24h) while the vendor
+    // stays under threshold without topping up, instead of either spamming
+    // every cron tick or (the old behavior) notifying only once ever per
+    // episode. Reset back to null by the same job once the balance rises
+    // back above the threshold, so a NEW dip later starts a fresh episode
+    // (immediate notification, not waiting out the old reminder cadence).
+    lowBalanceLastNotifiedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

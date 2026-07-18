@@ -96,7 +96,6 @@ export const validateWhatsAppProfile = [
     .optional()
     .isNumeric()
     .withMessage("Product price must be numeric"),
-  body("featuredProducts.*.inStock").optional().isInt({ min: 0 }),
   validate,
 ];
 

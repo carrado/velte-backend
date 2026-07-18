@@ -7,7 +7,6 @@ import {
   updateProduct,
   deleteProduct,
   toggleAvailability,
-  restockProduct,
   changePrice,
   resetDailyLimits,
 } from '../controllers/products/product.controller.js';
@@ -26,7 +25,6 @@ router.put('/:id', updateProduct);
 router.delete('/:id', deleteProduct);
 
 router.patch('/:id/availability', toggleAvailability);
-router.post('/:id/restock',       restockProduct);
 router.patch('/:id/price',        changePrice);
 
 export default router;
