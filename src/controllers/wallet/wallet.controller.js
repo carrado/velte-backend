@@ -21,7 +21,7 @@ import { notifyUser } from "../../services/pushNotification.service.js";
 // silently suppress every future low-balance alert (both the initial one
 // for a new episode AND the 24h reminder) for that wallet.
 function clearLowBalanceFlagIfRecovered(wallet) {
-  if (wallet.lowBalanceLastNotifiedAt && wallet.balanceKobo > LOW_BALANCE_KOBO) {
+  if (wallet.lowBalanceLastNotifiedAt && wallet.balanceKobo >= LOW_BALANCE_KOBO) {
     wallet.lowBalanceLastNotifiedAt = null;
   }
 }

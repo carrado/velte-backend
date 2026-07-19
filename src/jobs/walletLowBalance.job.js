@@ -25,16 +25,15 @@ const REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 export async function checkLowWalletBalances() {
   const reminderCutoff = new Date(Date.now() - REMINDER_INTERVAL_MS);
 
-  // $lte, not $lt — a balance sitting exactly AT the threshold (found live
-  // at the old ₦1,600 threshold, same logic applies at ₦1,000) must still
-  // count as low. The recovery query below uses the complementary
-  // $gt so the boundary value belongs to exactly one side, never both.
-  // The $or covers both "never notified this episode" (null — also matches
-  // a doc predating this field) and "notified last, but that was a full
-  // reminder interval ago or more".
+  // $lt, not $lte — a balance sitting exactly AT the threshold (₦1,000) does
+  // NOT count as low; only ₦999 down to ₦0 does. The recovery query below
+  // uses the complementary $gte so the boundary value belongs to exactly
+  // one side, never both. The $or covers both "never notified this episode"
+  // (null — also matches a doc predating this field) and "notified last,
+  // but that was a full reminder interval ago or more".
   const lowWallets = await Wallet.find({
     status: "active",
-    balanceKobo: { $lte: LOW_BALANCE_KOBO },
+    balanceKobo: { $lt: LOW_BALANCE_KOBO },
     $or: [
       { lowBalanceLastNotifiedAt: null },
       { lowBalanceLastNotifiedAt: { $lte: reminderCutoff } },
@@ -62,7 +61,7 @@ export async function checkLowWalletBalances() {
   // of inheriting whatever was left of the old reminder cadence.
   const { modifiedCount } = await Wallet.updateMany(
     {
-      balanceKobo: { $gt: LOW_BALANCE_KOBO },
+      balanceKobo: { $gte: LOW_BALANCE_KOBO },
       lowBalanceLastNotifiedAt: { $ne: null },
     },
     { $set: { lowBalanceLastNotifiedAt: null } },
