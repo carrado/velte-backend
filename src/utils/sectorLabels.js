@@ -44,6 +44,7 @@ export const SECTOR_LABEL_BY_VALUE = {
   makeup_artistry: "Makeup Artistry",
   spa_massage: "Spa & Massage",
   nail_care: "Nail Care",
+  barbing_hair_styling: "Barbing & Hair Styling",
   perfumes_fragrances: "Perfumes & Fragrances",
 
   furniture: "Furniture",
@@ -163,6 +164,7 @@ export const SECTOR_CLASSIFICATION_BY_VALUE = {
   makeup_artistry: "service",
   spa_massage: "service",
   nail_care: "service",
+  barbing_hair_styling: "service",
   perfumes_fragrances: "retail",
 
   furniture: "both",
