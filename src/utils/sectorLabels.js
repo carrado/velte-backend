@@ -238,6 +238,143 @@ const SECTOR_CLASSIFICATION_BY_LABEL = Object.fromEntries(
   ]),
 );
 
+// Buyer-facing synonyms/Nigerian-English terms per sector, folded into
+// storeEmbeddingText() (embedding.service.js) alongside a vendor's own
+// bio/sector labels — attacks the exact failure mode found live with
+// "Ushering Services": a vendor tagged the right sector but their own store
+// description never said "ushers"/"protocol" anywhere, so a buyer searching
+// those words scored too far from the embedding to match. The sector label
+// alone ("Ushering Services") isn't enough either — it's the formal name,
+// not how a buyer actually phrases the request. This is a first pass and
+// will drift from how Nigerian buyers actually talk — review/extend rather
+// than treat as final. Keep in sync by hand alongside SECTOR_LABEL_BY_VALUE
+// above (same caveat as everywhere else in this file).
+export const SECTOR_KEYWORDS_BY_VALUE = {
+  restaurants_quick_service: "restaurant, fast food, quick service, eatery, bukka, buka, canteen, food joint, food spot, diner, cafeteria, chops",
+  catering_event_food: "caterer, catering, event food, small chops, party food, cook for event, food vendor for party, jollof rice caterer, wedding caterer, party jollof, buffet",
+  bakery_pastries: "bakery, baker, cake, cakes, pastries, small chops, meat pie, birthday cake, wedding cake, cupcakes, pies, doughnut, confectioner",
+  bars_lounges_nightlife: "bar, lounge, club, nightlife, pub, drinks spot, beer parlour, night club, hangout spot, chill spot, cocktail bar",
+  street_food_local_delicacies: "street food, local food, suya, roadside food, mama put, akara, boli, roasted corn, local delicacy, native food",
+  confectionery_snacks: "snacks, confectionery, chin chin, sweets, biscuits, small chops, puff puff, plantain chips, candy, treats",
+  hotels_shortlets: "hotel, shortlet, short let, guest house, lodge, apartment for rent, hotel room, event centre with rooms, guesthouse, inn, resort",
+
+  event_planning_services: "event planner, event planning, wedding planner, party planner, decoration, event decor, event coordinator, event management, birthday planner, owanbe planner",
+  ushering_services: "ushers, ushering, protocol, protocol officers, event protocol, guest management, red carpet ushers, ushering agency, wedding ushers, hostesses, event hostesses, guest reception",
+
+  groceries_supermarket: "grocery, supermarket, mini mart, food store, mart, shopping mall, grocery store, foodstuff seller",
+  provision_stores_kiosks: "provision store, kiosk, corner shop, mama put shop, mini shop, convenience store, roadside shop",
+  wholesale_distribution: "wholesale, distributor, bulk supply, distribution, bulk buyer, bulk seller, wholesaler, supplier",
+  stationery_books: "stationery, bookshop, books, office supplies, school supplies, exercise books, textbooks, bookstore",
+  toys_kids_items: "toys, kids items, children's items, baby items, playthings, toy store, baby gear",
+  gift_items_souvenirs: "gifts, souvenirs, gift shop, hampers, gift items, gift baskets, party favours, wedding souvenirs",
+
+  clothing_apparel: "clothes, clothing, fashion, apparel, wears, outfits, boutique, ready to wear, senator wear, native wear, kaftan, agbada",
+  shoes_footwear: "shoes, footwear, sneakers, sandals, slippers, palm slippers, corporate shoes, native shoes",
+  bags_accessories: "bags, handbags, accessories, purses, wallets, backpacks, clutch bags, totes",
+  jewelry_watches: "jewelry, jewellery, watches, gold, accessories, beads, necklace, bangles, earrings, wristwatch",
+  tailoring_fashion_design: "tailor, tailoring, fashion designer, seamstress, aso ebi, sewing, ankara styles, native attire maker, dressmaker, cloth sewing, custom outfit",
+  textile_fabric_sales: "fabric, textile, ankara, lace, material seller, aso ebi fabric, george fabric, adire, brocade, senator material",
+
+  phones_accessories: "phone, phones, mobile phone, phone accessories, GSM, phone charger, phone case, earpiece, phone screen protector",
+  computers_laptops: "computer, laptop, computers, PC, desktop, notebook computer",
+  home_electronics_appliances: "electronics, home appliances, TV, fridge, electronics store, washing machine, home theatre, blender, microwave",
+  gaming_consoles: "gaming, console, PlayStation, Xbox, video games, PS5, gamepad, gaming accessories",
+  software_development_it: "software development, web developer, app developer, IT services, programmer, website, web app, mobile app, software engineer, coder, tech consultant, custom software, ecommerce website, database developer",
+  phone_gadget_repairs: "phone repair, gadget repair, screen repair, fix phone, phone technician, cracked screen fix, battery replacement",
+  computer_repairs_it_support: "computer repair, laptop repair, IT support, tech support, laptop technician, virus removal, data recovery",
+
+  cosmetics_skincare_retail: "cosmetics, skincare, beauty products, makeup products, skincare products, beauty store, cream seller",
+  makeup_artistry: "makeup artist, MUA, bridal makeup, makeup, glam, face beat, makeover",
+  spa_massage: "spa, massage, masseuse, relaxation, wellness, body massage, spa treatment, therapy",
+  nail_care: "nail tech, manicure, pedicure, nails, nail art, gel nails, acrylics",
+  barbing_hair_styling: "barber, barbing salon, hairstylist, hair salon, braiding, weaving, hairdresser, wig maker, haircut, dreadlocks, cornrows, salon",
+  perfumes_fragrances: "perfume, fragrance, cologne, scent, oil perfume, body spray, attar",
+
+  furniture: "furniture, chairs, tables, sofa, furniture maker, carpenter, wardrobe, bed frame, dining set",
+  home_decor_furnishings: "home decor, furnishings, interior decor, decoration items, wall art, curtains, rugs, decorative items",
+  kitchenware_appliances: "kitchenware, cookware, kitchen appliances, pots, pans, cutlery, kitchen utensils",
+  bedding_linens: "bedding, linens, bedsheets, duvet, pillows, mattress cover, bedspread",
+  interior_design_services: "interior designer, interior design, home styling, space planning, home makeover",
+
+  construction_contracting: "construction, contractor, builder, building contractor, mason, building construction, renovation",
+  architecture_engineering_design: "architect, architecture, engineering design, building design, structural engineer, building plan, building drawing",
+  plumbing_services: "plumber, plumbing, pipe repair, water leak, pipe fitting, toilet repair, water tank installation",
+  electrical_installation_services: "electrician, electrical, wiring, rewiring, installation, electrical fault, generator wiring, socket repair",
+  painting_decorating_services: "painter, painting, decorator, wall painting, house painting, POP design",
+  real_estate_property_sales: "real estate, property, land for sale, house for sale, realtor, agent, apartment for sale, plot of land, property agent",
+  property_management: "property manager, property management, facility management, landlord services, rent collection, estate management",
+
+  auto_parts_accessories: "auto parts, car parts, spare parts, car accessories, tokunbo parts, engine parts",
+  vehicle_sales: "car sales, vehicle sales, cars for sale, dealership, buy a car, tokunbo cars, used cars",
+  auto_repair_mechanic: "mechanic, auto repair, car repair, panel beater, engine repair, car servicing",
+  car_wash_detailing: "car wash, auto detailing, car cleaning, car wash service",
+  tyre_sales_vulcanizing: "tyre, tire, vulcanizer, vulcanizing, tyre repair, tyre change, wheel balancing",
+  motorcycle_keke_sales: "motorcycle, okada, keke, tricycle, bike sales, motorbike",
+
+  generator_sales_repair: "generator, gen repair, power plant, generator technician, gen set, soundproof generator",
+  solar_installation: "solar, solar panel, solar installation, inverter, solar system, battery inverter",
+  appliance_repair: "appliance repair, fridge repair, AC repair, washing machine repair, air conditioner repair, freezer repair",
+  shoe_bag_repair_cobbling: "cobbler, shoe repair, bag repair, cobbling, shoe mender",
+  watch_repair: "watch repair, watchmaker, clock repair, watch battery replacement",
+
+  consulting_advisory: "consultant, consulting, advisory, business advisor, strategy consultant",
+  accounting_bookkeeping: "accountant, accounting, bookkeeping, tax, audit, tax filing, financial statements",
+  legal_services: "lawyer, legal services, attorney, solicitor, legal advice, contract drafting",
+  marketing_advertising: "marketing, advertising, ads, brand promotion, digital marketing, social media marketing, ad campaign",
+  graphic_design_branding: "graphic designer, branding, logo design, flyer design, brand identity, poster design",
+  photography_videography: "photographer, videographer, photography, video coverage, event coverage, wedding photographer, portrait photography",
+  printing_publishing: "printing, printer, publishing, print shop, flyer printing, banner printing, business cards",
+  recruitment_hr_services: "recruitment, HR, headhunting, staffing agency, job placement, talent sourcing",
+  translation_interpretation: "translator, interpreter, translation services, language translation",
+  virtual_assistance_admin: "virtual assistant, VA, admin support, remote assistant, executive assistant",
+
+  schools_tutorial_centers: "school, tutorial center, lesson teacher, extra lessons, private lessons, home lessons, coaching class",
+  vocational_skills_training: "vocational training, skills acquisition, trade school, skill center",
+  online_courses_elearning: "online course, e-learning, online class, online training, virtual class",
+  daycare_creche: "daycare, creche, childminder, babysitter, nursery",
+
+  logistics_courier_services: "logistics, courier, delivery service, dispatch rider, package delivery, errand runner",
+  ride_hailing_car_hire: "ride hailing, car hire, taxi, chauffeur, private driver, drop service, car with driver",
+  haulage_trucking: "haulage, trucking, truck for hire, cargo transport, truck driver",
+  moving_relocation_services: "movers, moving service, relocation, house moving, office relocation",
+  freight_forwarding_clearing: "freight forwarding, customs clearing, clearing agent, shipping, import export agent",
+
+  music_audio_production: "music producer, audio production, studio, sound engineer, DJ, beat maker, recording studio",
+  film_video_production: "film production, video production, filmmaker, videographer, cinematographer",
+  content_creation_influencer: "content creator, influencer, social media content, UGC, brand ambassador",
+
+  cleaning_services: "cleaner, cleaning service, house cleaning, office cleaning, post construction cleaning",
+  laundry_dry_cleaning: "laundry, dry cleaning, wash and iron, laundromat, ironing service",
+  fumigation_pest_control: "fumigation, pest control, exterminator, insect control, rodent control, termite control",
+  domestic_staffing: "nanny, cook, house help, domestic staff, maid, steward, housekeeper, driver for hire",
+  gardening_landscaping: "gardener, landscaping, lawn care, garden maintenance, lawn mowing",
+  security_services: "security guard, security services, bouncer, surveillance, CCTV installation, night guard",
+};
+
+/** Label-keyed mirror, same reasoning as SECTOR_CLASSIFICATION_BY_LABEL. */
+const SECTOR_KEYWORDS_BY_LABEL = Object.fromEntries(
+  Object.entries(SECTOR_LABEL_BY_VALUE).map(([value, label]) => [
+    label,
+    SECTOR_KEYWORDS_BY_VALUE[value],
+  ]),
+);
+
+/**
+ * Flattens a store's sector LABELS into one deduped keyword string for
+ * embedding text — e.g. ["Ushering Services"] → "ushers, ushering,
+ * protocol, ...". Unknown labels (custom/legacy) are silently skipped
+ * rather than breaking embedding generation.
+ */
+export function sectorKeywordsForLabels(sectorLabels) {
+  const seen = new Set();
+  for (const label of sectorLabels || []) {
+    const kw = SECTOR_KEYWORDS_BY_LABEL[label];
+    if (!kw) continue;
+    for (const term of kw.split(",")) seen.add(term.trim());
+  }
+  return [...seen].join(", ");
+}
+
 function mergeClassifications(classifications) {
   const known = classifications.filter(Boolean);
   if (known.length === 0) return null;

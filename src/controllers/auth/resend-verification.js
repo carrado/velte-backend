@@ -50,7 +50,13 @@ export const passwordResetOTP = async (req, res) => {
     // 🔹 Find user
     const user = await User.findOne({ email });
     if (!user) {
-      return res.status(401).json({ message: "Invalid email address" });
+      // 404, not 401 — this is a public, pre-auth endpoint; "no account
+      // with this email" is a lookup miss, not an authentication failure.
+      // The distinction matters because the frontend's api-client treats
+      // ANY 401 as "session expired" and force-redirects to /auth/login —
+      // harmless today only because this happens to be called from a page
+      // already under /auth/*, not because the status code was correct.
+      return res.status(404).json({ message: "Invalid email address" });
     }
 
     // 🔹 Generate OTP
