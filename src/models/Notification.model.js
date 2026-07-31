@@ -17,7 +17,7 @@ const notificationSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['new-order', 'new-message', 'new-lead', 'low-stock', 'expired-product', 'payment', 'wallet', 'referral', 'system'],
+    enum: ['new-order', 'new-message', 'new-lead', 'expired-product', 'payment', 'wallet', 'referral', 'system'],
     default: 'system',
   },
   url: {

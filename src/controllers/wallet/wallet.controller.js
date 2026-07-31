@@ -14,14 +14,15 @@ import { LOW_BALANCE_KOBO } from "../../jobs/walletLowBalance.job.js";
 import { notifyUser } from "../../services/pushNotification.service.js";
 
 // Every direct balance credit must clear this immediately, not wait for the
-// hourly cron's point-in-time sample — a wallet that dips below the
-// threshold, gets topped up back above it, then dips low again inside one
-// poll window never gets observed above the threshold by the cron, so its
-// `lowBalanceNotified` flag would otherwise stay stuck true forever and
-// silently suppress every future low-balance alert for that wallet.
+// cron's point-in-time sample — a wallet that dips below the threshold,
+// gets topped up back above it, then dips low again inside one poll window
+// never gets observed above the threshold by the cron, so its
+// `lowBalanceLastNotifiedAt` would otherwise stay stuck set forever and
+// silently suppress every future low-balance alert (both the initial one
+// for a new episode AND the 24h reminder) for that wallet.
 function clearLowBalanceFlagIfRecovered(wallet) {
-  if (wallet.lowBalanceNotified && wallet.balanceKobo > LOW_BALANCE_KOBO) {
-    wallet.lowBalanceNotified = false;
+  if (wallet.lowBalanceLastNotifiedAt && wallet.balanceKobo >= LOW_BALANCE_KOBO) {
+    wallet.lowBalanceLastNotifiedAt = null;
   }
 }
 
@@ -235,10 +236,26 @@ export async function verifyTopup(req, res, next) {
   }
 }
 
-// Shared credit path — called from verifyTopup (buyer-initiated poll) AND from
-// the Paystack webhook (server-to-server, authoritative). Whichever gets there
-// first wins; the unique index on WalletTransaction.reference makes the other
-// a no-op instead of a double-credit.
+// Shared credit path — called from verifyTopup (buyer-initiated poll), from
+// the Paystack webhook (server-to-server, authoritative), AND from
+// maybeAutoRecharge right after a successful charge_authorization call — a
+// charge made via charge_authorization ALSO fires Paystack's own
+// charge.success webhook for that same underlying transaction, so the direct
+// post-charge call and the webhook race for the SAME reference exactly like
+// verify + webhook already did for a hosted-checkout top-up. Whichever gets
+// there first wins; the unique index on WalletTransaction.reference makes
+// the other a no-op instead of a double-credit — found live (2026-07-23):
+// that index existed in the DB WITHOUT the unique constraint actually
+// applied (a pre-existing plain index from before `unique: true` was added
+// to the schema — Mongoose's autoIndex never retroactively upgrades an
+// existing index's options), so it silently let both racing calls insert a
+// ledger row for the identical reference, double-crediting an auto-recharge
+// by ₦2,000. Fixed the index itself in a one-off migration (see
+// scripts/fix-wallet-transaction-index.js), but this function no longer
+// trusts the index alone: the credit itself is now applied via atomic $inc
+// (never a stale-snapshot `.save()`), and reverted via the same atomic $inc
+// if the ledger insert turns out to be the loser of the race — correct
+// regardless of whether any index is present at all.
 async function creditWalletFromReference(reference, expectedVendorId = null) {
   const existing = await WalletTransaction.findOne({ reference });
   if (existing) {
@@ -258,10 +275,48 @@ async function creditWalletFromReference(reference, expectedVendorId = null) {
     throw new AppError("Reference does not belong to this account.", 403);
   }
 
-  const wallet = await getOrCreateWallet(meta.vendorId);
+  const walletBefore = await getOrCreateWallet(meta.vendorId);
   const amountKobo = transaction.amount; // Paystack already reports amount in kobo
 
-  wallet.balanceKobo += amountKobo;
+  // Atomic credit — never a read-modify-write `.save()`, which two racing
+  // callers could otherwise both base on the same stale snapshot and silently
+  // lose one of the two increments (a DIFFERENT failure mode than the
+  // double-credit this whole function is about, but just as real a risk from
+  // the exact same "two callers, one reference" race).
+  let wallet = await Wallet.findOneAndUpdate(
+    { _id: walletBefore._id },
+    { $inc: { balanceKobo: amountKobo } },
+    { new: true },
+  );
+
+  try {
+    await WalletTransaction.create({
+      walletId: wallet._id,
+      vendorId: wallet.vendorId,
+      type: "topup",
+      amountKobo,
+      balanceAfterKobo: wallet.balanceKobo,
+      reference,
+      status: "success",
+      channel: transaction.channel ?? "card",
+      description: "Wallet top-up",
+    });
+  } catch (err) {
+    // Duplicate reference raced us (webhook + verify, or webhook +
+    // maybeAutoRecharge's direct call, landed together) — we lost the race:
+    // revert this call's own credit atomically (the winner's credit and
+    // ledger row already stand) and return the wallet as the winner left it.
+    if (err.code === 11000) {
+      wallet = await Wallet.findOneAndUpdate(
+        { _id: wallet._id },
+        { $inc: { balanceKobo: -amountKobo } },
+        { new: true },
+      );
+      return wallet;
+    }
+    throw err;
+  }
+
   clearLowBalanceFlagIfRecovered(wallet);
   clearAutoRechargeFailureIfRecovered(wallet);
 
@@ -309,30 +364,6 @@ async function creditWalletFromReference(reference, expectedVendorId = null) {
   }
 
   await wallet.save();
-
-  try {
-    await WalletTransaction.create({
-      walletId: wallet._id,
-      vendorId: wallet.vendorId,
-      type: "topup",
-      amountKobo,
-      balanceAfterKobo: wallet.balanceKobo,
-      reference,
-      status: "success",
-      channel: transaction.channel ?? "card",
-      description: "Wallet top-up",
-    });
-  } catch (err) {
-    // Duplicate reference raced us (webhook + verify landed together) — the
-    // balance update above already happened once per Paystack idempotency of
-    // `transaction.amount`, so back it out to avoid a double-credit.
-    if (err.code === 11000) {
-      wallet.balanceKobo -= amountKobo;
-      await wallet.save();
-      return Wallet.findById(wallet._id);
-    }
-    throw err;
-  }
 
   return wallet;
 }
@@ -752,8 +783,8 @@ const AUTO_RECHARGE_MAX_NOTIFICATIONS = 7;
 // eligibility ($expr — two fields of one document, which a plain filter
 // can't compare) — the whole thing happens in one atomic findOneAndUpdate,
 // no window between "check" and "flip the flag" for a second concurrent
-// call to land in. Same pattern as starterCreditGranted/lowBalanceNotified
-// elsewhere in this file.
+// call to land in. Same pattern as starterCreditGranted/
+// lowBalanceLastNotifiedAt elsewhere in this file.
 export async function maybeAutoRecharge(wallet) {
   const retryGateCutoff = new Date(Date.now() - AUTO_RECHARGE_RETRY_INTERVAL_MS);
 

@@ -45,3 +45,5 @@ coverage/
 CLAUDE.md
 *.md
 /scripts/
+/src/scripts/
+/src/seeds

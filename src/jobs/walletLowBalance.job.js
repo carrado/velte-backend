@@ -1,11 +1,16 @@
 import Wallet from "../models/Wallet.model.js";
 import { notifyUser } from "../services/pushNotification.service.js";
 
-// ₦1,600 — deliberately higher than a single LEAD_COST_KOBO (₦400) so a
-// vendor gets warned with room to top up before search-eligibility (which
-// gates on a single lead's cost) actually cuts them off. "For now" per the
-// user — expect this to move.
-export const LOW_BALANCE_KOBO = 160_000;
+// ₦1,000 — still higher than a single LEAD_COST_KOBO (₦400) so a vendor
+// gets warned with room to top up before search-eligibility (which gates on
+// a single lead's cost) actually cuts them off. "For now" per the user —
+// expect this to move.
+export const LOW_BALANCE_KOBO = 100_000;
+
+// How often a vendor still under threshold gets reminded if they never
+// topped up — the FIRST notification for a low episode always fires
+// immediately (see the query below); this only paces the repeats.
+const REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
  * Scans every active wallet for a low balance and notifies the vendor — a
@@ -13,18 +18,26 @@ export const LOW_BALANCE_KOBO = 160_000;
  * warned even if nothing happens to charge their wallet for a while (an
  * on-debit trigger only ever fires when a NEW lead lands, which says
  * nothing about balances that are already low and just sitting there).
- * "Once per low episode": a wallet already flagged is skipped until it
- * recovers back to/above the threshold, which resets the flag below.
+ * Reminds every REMINDER_INTERVAL_MS while still low, not just once per
+ * episode — a vendor who misses/dismisses the first push otherwise never
+ * hears about it again until they happen to check their wallet themselves.
  */
 export async function checkLowWalletBalances() {
-  // $lte, not $lt — a balance sitting exactly AT the threshold (found live:
-  // a wallet parked at exactly ₦1,600 with the threshold also ₦1,600) must
-  // still count as low. The recovery query below uses the complementary
-  // $gt so the boundary value belongs to exactly one side, never both.
+  const reminderCutoff = new Date(Date.now() - REMINDER_INTERVAL_MS);
+
+  // $lt, not $lte — a balance sitting exactly AT the threshold (₦1,000) does
+  // NOT count as low; only ₦999 down to ₦0 does. The recovery query below
+  // uses the complementary $gte so the boundary value belongs to exactly
+  // one side, never both. The $or covers both "never notified this episode"
+  // (null — also matches a doc predating this field) and "notified last,
+  // but that was a full reminder interval ago or more".
   const lowWallets = await Wallet.find({
     status: "active",
-    balanceKobo: { $lte: LOW_BALANCE_KOBO },
-    lowBalanceNotified: { $ne: true },
+    balanceKobo: { $lt: LOW_BALANCE_KOBO },
+    $or: [
+      { lowBalanceLastNotifiedAt: null },
+      { lowBalanceLastNotifiedAt: { $lte: reminderCutoff } },
+    ],
   }).select("vendorId balanceKobo");
 
   for (const wallet of lowWallets) {
@@ -36,18 +49,22 @@ export async function checkLowWalletBalances() {
         url: `/${wallet.vendorId}/wallet`,
         tag: "wallet-low-balance",
       });
-      wallet.lowBalanceNotified = true;
+      wallet.lowBalanceLastNotifiedAt = new Date();
       await wallet.save();
     } catch (err) {
       console.error(`[wallet-cron] low-balance notify failed for ${wallet.vendorId}:`, err.message);
     }
   }
 
-  // Recovered wallets: clear the flag so the next dip below the threshold
-  // notifies again instead of staying silenced forever.
+  // Recovered wallets: clear the timestamp so the next dip below the
+  // threshold starts a brand new episode (immediate notification) instead
+  // of inheriting whatever was left of the old reminder cadence.
   const { modifiedCount } = await Wallet.updateMany(
-    { balanceKobo: { $gt: LOW_BALANCE_KOBO }, lowBalanceNotified: true },
-    { $set: { lowBalanceNotified: false } },
+    {
+      balanceKobo: { $gte: LOW_BALANCE_KOBO },
+      lowBalanceLastNotifiedAt: { $ne: null },
+    },
+    { $set: { lowBalanceLastNotifiedAt: null } },
   );
 
   if (lowWallets.length || modifiedCount) {

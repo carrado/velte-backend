@@ -46,8 +46,8 @@ const productSchema = new mongoose.Schema(
     },
 
     // ── offering identity (marketplace model) ───────────────────────────────
-    // A catalog entry is an "offering": a stocked good OR a service (repairs,
-    // tailoring, cleaning…). Services carry no stock semantics.
+    // A catalog entry is an "offering": a physical good OR a service (repairs,
+    // tailoring, cleaning…).
     kind: { type: String, enum: ["product", "service"], default: "product" },
     // Service with no upfront price — buyers "Contact for quote" and the price
     // is agreed per job in chat. Only meaningful for kind === 'service'.
@@ -79,9 +79,6 @@ const productSchema = new mongoose.Schema(
     colorClass: { type: String, default: null },
 
     // ── retail-only ─────────────────────────────────────────────────────────
-    stockQuantity: { type: Number, default: 0 },
-    orderedQuantity: { type: Number, default: 0 },
-    lowStockThreshold: { type: Number, default: null },
     manufacturingDate: { type: Date, default: null },
     expirationDate: { type: Date, default: null },
     attributes: { type: [attributeSchema], default: [] },

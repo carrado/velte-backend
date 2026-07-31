@@ -12,6 +12,7 @@
 import Product from "../models/Product.model.js";
 import Store from "../models/Store.model.js";
 import { embed, embedImage } from "./voyage.service.js";
+import { sectorKeywordsForLabels } from "../utils/sectorLabels.js";
 
 export function productEmbeddingText(product) {
   const attrs = (product.attributes || [])
@@ -23,7 +24,18 @@ export function productEmbeddingText(product) {
 }
 
 export function storeEmbeddingText(store) {
-  return [store.name, (store.sectors || []).join(" "), store.description]
+  // Folds in each sector's buyer-facing keyword list (see sectorLabels.js's
+  // SECTOR_KEYWORDS_BY_VALUE) alongside the vendor's own bio — a store
+  // tagged "Ushering Services" but whose bio only ever describes catering
+  // (found live) still gets "ushers, protocol, ..." into its embedding text,
+  // so a buyer searching those exact words has a real shot at matching even
+  // when the vendor's own prose never mentions them.
+  return [
+    store.name,
+    (store.sectors || []).join(" "),
+    sectorKeywordsForLabels(store.sectors),
+    store.description,
+  ]
     .filter(Boolean)
     .join(". ");
 }
