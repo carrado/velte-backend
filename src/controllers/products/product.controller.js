@@ -513,7 +513,9 @@ export const updateProduct = async (req, res) => {
       }
     }
 
-    await product.save();
+    // See changePrice's own comment on validateModifiedOnly — same legacy-
+    // document/full-revalidation risk applies to any partial update here.
+    await product.save({ validateModifiedOnly: true });
     await product.populate("modifiers.options");
     // Semantic fields (name/description/category/attributes) may have
     // changed — re-embed. Fire-and-forget, same as create.
@@ -576,7 +578,9 @@ export const toggleAvailability = async (req, res) => {
     }
 
     product.isCurrentlyAvailable = is_currently_available;
-    await product.save();
+    // See changePrice's own comment on validateModifiedOnly — same legacy-
+    // document/full-revalidation risk applies here too.
+    await product.save({ validateModifiedOnly: true });
 
     return res.json({
       success: true,
@@ -611,7 +615,13 @@ export const changePrice = async (req, res) => {
     // mode — otherwise buyers would keep seeing "Ask for price" with a price
     // silently stored behind it.
     if (product.quoteOnRequest) product.quoteOnRequest = false;
-    await product.save();
+    // .save() re-validates the WHOLE document by default — a product
+    // created before `sectorValue` became required on the schema (see
+    // Product.model.js) would otherwise fail here on a field this endpoint
+    // never touches. validateModifiedOnly limits validation to fields
+    // actually changed in this request (found live: "Path `sectorValue` is
+    // required" blocking a price-only change on a legacy product).
+    await product.save({ validateModifiedOnly: true });
     await product.populate("modifiers.options");
 
     return res.json({ success: true, data: formatProduct(product) });
