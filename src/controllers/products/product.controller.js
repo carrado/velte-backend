@@ -60,6 +60,11 @@ function formatProduct(doc) {
     color_class: p.colorClass,
     created_at: p.createdAt,
     updated_at: p.updatedAt,
+    // Set from the super admin panel — the vendor's own dashboard still
+    // shows the listing (greyed out) so they can see why, unlike the
+    // buyer-facing surfaces which exclude it outright.
+    is_suspended: p.isSuspended ?? false,
+    suspension_reason: p.suspensionReason ?? null,
   };
 
   if (!usesFoodShape(p.sectorValue, p.kind)) {

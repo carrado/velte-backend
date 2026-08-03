@@ -201,6 +201,18 @@ export const login = async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
+    // 🔹 Reject blocked accounts (set from the super admin panel). 423 Locked,
+    // not 403 — the existing 403 branch here means "unverified email" and the
+    // frontend's Next.js BFF layer only forwards {status, message} through
+    // generic error plumbing, so status is the only reliable signal it can
+    // branch on to show the blocked-account modal instead of the verify flow.
+    if (user.isBlocked) {
+      return res.status(423).json({
+        blocked: true,
+        message: user.blockReason || "Your account has been blocked. Please contact support.",
+      });
+    }
+
     // 🔹 Check if user is verified
     if (!user.accountVerified) {
       // Generate new OTP

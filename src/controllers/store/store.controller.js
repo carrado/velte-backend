@@ -428,7 +428,7 @@ export async function getPublicStore(req, res, next) {
 
     const [user, products] = await Promise.all([
       User.findById(store.vendorId).select("avatar area"),
-      Product.find({ vendorId: store.vendorId })
+      Product.find({ vendorId: store.vendorId, isSuspended: { $ne: true } })
         .sort({ isFeatured: -1, createdAt: -1 })
         .limit(12)
         .select(
