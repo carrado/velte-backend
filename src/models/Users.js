@@ -81,6 +81,20 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  // Admin-side account block (super admin panel) — checked at login. Distinct
+  // from the broken, unpersisted `activeStatus` self-deactivation flow in
+  // deleteAccount (that field isn't in this schema, so it silently no-ops).
+  isBlocked: {
+    type: Boolean,
+    default: false
+  },
+  // The message the super admin typed when blocking — shown to the user in
+  // the block modal (login rejection and mid-session force-logout both
+  // surface this same string).
+  blockReason: {
+    type: String,
+    default: null
+  },
   kycStatus: {
     type: String,
     required: false,

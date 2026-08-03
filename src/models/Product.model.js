@@ -105,6 +105,12 @@ const productSchema = new mongoose.Schema(
     externalId: { type: String, default: null },
     syncedAt: { type: Date, default: null },
 
+    // Set from the super admin panel. The vendor's own dashboard still shows
+    // the listing (greyed out, with suspensionReason) — only buyer-facing
+    // surfaces (public store page, AI/WhatsApp search) must exclude it.
+    isSuspended: { type: Boolean, default: false },
+    suspensionReason: { type: String, default: null },
+
     // ── Velte Connect retrieval ─────────────────────────────────────────────
     // Voyage `voyage-4` embedding of name+attributes+category, populated by the
     // AI search layer (Bucket D3) on create/update. Atlas Vector Search index is
