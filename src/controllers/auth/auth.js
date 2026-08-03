@@ -9,6 +9,7 @@ import {
 import { getOrCreateStore } from "../store/store.controller.js";
 import { embedAndSaveStore } from "../../services/embedding.service.js";
 import { sectorLabel, isKnownSector } from "../../utils/sectorLabels.js";
+import { geocodeVendorAddressGoogle } from "../../services/geocode.service.js";
 
 const MAX_SECTORS = 5;
 
@@ -64,6 +65,16 @@ export const register = async (req, res) => {
         return res.status(400).json({ message: "location must be { lat, lng } within valid range" });
       }
       geo = { type: "Point", coordinates: [lng, lat] };
+    } else if (address || state) {
+      // No coords from the browser (vendor typed their address instead of
+      // tapping "Use my current location") — without this, geo is simply
+      // never set, and staffly-ai-backend's rankCandidates silently drops
+      // any vendor with no geo.coordinates from EVERY location-scoped search
+      // tier (local/nearby/state), leaving them reachable only by a
+      // nationwide fallback search. Best-effort: a vendor who fails to
+      // geocode here still registers exactly as before this fix existed.
+      const coords = await geocodeVendorAddressGoogle(address, state);
+      if (coords) geo = { type: "Point", coordinates: [coords.lng, coords.lat] };
     }
 
     // 🔹 Check if user already exists

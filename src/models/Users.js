@@ -127,6 +127,7 @@ const userSchema = new mongoose.Schema({
   addressChangedAt:   { type: Date, default: null },
   trustScore:         { type: Number, default: 0, min: 0, max: 100 },
   paystackSubaccount: { type: String, default: null },
+  hiddenFromSearch:   { type: Boolean, default: false },
 
   // ── Referrals ──────────────────────────────────────────────────────────────
   // Every vendor gets one at signup (see auth.js register) so they always have
