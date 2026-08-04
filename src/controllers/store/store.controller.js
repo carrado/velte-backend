@@ -217,10 +217,16 @@ export async function updateMyStore(req, res, next) {
     }
 
     if (whatsapp !== undefined) {
-      const digits = String(whatsapp).replace(/[^\d]/g, "");
+      let digits = String(whatsapp).replace(/[^\d]/g, "");
       if (digits && (digits.length < 7 || digits.length > 15)) {
         throw new AppError("WhatsApp number looks invalid.", 400);
       }
+      // wa.me deep links need the full international number (country code,
+      // no leading 0) — a vendor typing their number in local Nigerian
+      // format ("0801...") would otherwise save a value that silently
+      // breaks every "Chat on WhatsApp" link (see velte's buildWhatsappLink,
+      // which normalizes defensively at render time too).
+      if (digits.startsWith("0")) digits = `234${digits.slice(1)}`;
       store.whatsapp = digits || null;
     }
 
