@@ -482,3 +482,31 @@ export async function getPublicStore(req, res, next) {
     next(err);
   }
 }
+
+// ── GET /api/store/sitemap-handles ───────────────────────────────────────────
+// Public — no auth. Feeds velte's src/app/sitemap.ts so every storefront is
+// discoverable by search engines, not just the ones a crawler happens to
+// stumble onto via a link. Deliberately minimal (handle + updatedAt only,
+// same shape a sitemap <url> entry needs) — this is not a general "list
+// stores" API. Excludes vendors hidden from search or blocked, same filter
+// discovery already applies elsewhere (see retrieval.service.js's
+// hiddenFromSearch check) — a page search engines shouldn't be surfacing
+// buyers to anyway shouldn't be in the sitemap either.
+export async function listStoreHandlesForSitemap(req, res, next) {
+  try {
+    const hiddenVendorIds = await User.find({
+      $or: [{ hiddenFromSearch: true }, { isBlocked: true }],
+    }).distinct("_id");
+
+    const stores = await Store.find({ vendorId: { $nin: hiddenVendorIds } })
+      .select("handle updatedAt")
+      .lean();
+
+    res.json({
+      success: true,
+      data: stores.map((s) => ({ handle: s.handle, updatedAt: s.updatedAt })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
