@@ -6,6 +6,7 @@ import {
   connectCatalog,
   getPublicStore,
   getStoreByVendorId,
+  listStoreHandlesForSitemap,
 } from "../controllers/store/store.controller.js";
 
 const router = express.Router();
@@ -15,6 +16,9 @@ router.get("/by-handle/:handle", getPublicStore);
 
 // Public — lets /api/search attach a matched product's own vendor storefront.
 router.get("/by-vendor/:vendorId", getStoreByVendorId);
+
+// Public — feeds velte's dynamic sitemap.xml.
+router.get("/sitemap-handles", listStoreHandlesForSitemap);
 
 // Vendor-owned store management.
 router.get("/me", verifyAuth, getMyStore);
