@@ -677,7 +677,11 @@ export async function getTransactions(req, res, next) {
 // staffly-ai-backend's retrieval.service.js wallet-eligibility filter, so
 // this path is a last-resort race (balance dropped between that filter
 // running and the buyer actually clicking), not the primary gate.
-export async function debitWalletForLead(vendorId, amountKobo, { leadId, description } = {}) {
+export async function debitWalletForLead(
+  vendorId,
+  amountKobo,
+  { leadId, description, source } = {},
+) {
   const wallet = await Wallet.findOneAndUpdate(
     { vendorId, balanceKobo: { $gte: amountKobo } },
     { $inc: { balanceKobo: -amountKobo } },
@@ -695,6 +699,7 @@ export async function debitWalletForLead(vendorId, amountKobo, { leadId, descrip
     status: "success",
     channel: "lead",
     description: description ?? "Lead charge",
+    source: source ?? null,
   });
 
   // Auto-recharge is fully wired here so it works the moment leads start

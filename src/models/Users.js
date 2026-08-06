@@ -156,6 +156,22 @@ const userSchema = new mongoose.Schema({
 
 userSchema.index({ geo: '2dsphere' });
 
+// Two accounts can't share a phone number — a `unique: true` shorthand on
+// the field itself would break the moment a SECOND user registered with no
+// phone at all (Mongoose writes an explicit `null`, and a plain unique
+// index treats every null as a duplicate of every other null; `sparse`
+// alone doesn't fix this either, since sparse only skips a field that's
+// truly MISSING, not one explicitly set to null). A partial index sidesteps
+// both: only documents where phone is an actual string are ever compared,
+// so any number of null-phone accounts coexist fine, and only genuine
+// duplicate real numbers get rejected. Also enforced at the application
+// layer with a friendly error before this ever fires — see auth.js
+// register() and updateProfile.js — this is the DB-level backstop.
+userSchema.index(
+  { phone: 1 },
+  { unique: true, partialFilterExpression: { phone: { $type: "string" } } },
+);
+
 // Serialise the document with a string `id` (mirrors the shape login returns) so
 // every consumer of a user — /auth/me included — gets `id`, not just `_id`. The
 // frontend's `User.id` (and push-subscribe) depend on it. `_id` is kept for any

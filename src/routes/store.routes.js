@@ -6,6 +6,9 @@ import {
   connectCatalog,
   getPublicStore,
   getStoreByVendorId,
+  getMarketplacePreview,
+  getVendorsPreview,
+  getProductImage,
   listStoreHandlesForSitemap,
 } from "../controllers/store/store.controller.js";
 
@@ -16,6 +19,15 @@ router.get("/by-handle/:handle", getPublicStore);
 
 // Public — lets /api/search attach a matched product's own vendor storefront.
 router.get("/by-vendor/:vendorId", getStoreByVendorId);
+
+// Public — feeds the "/" homepage's marketplace preview grid.
+router.get("/marketplace-preview", getMarketplacePreview);
+
+// Public — feeds the "/" homepage's Vendors section.
+router.get("/vendors-preview", getVendorsPreview);
+
+// Public — backs the /s/p/:id short-link redirector (velte frontend).
+router.get("/products/:id/image", getProductImage);
 
 // Public — feeds velte's dynamic sitemap.xml.
 router.get("/sitemap-handles", listStoreHandlesForSitemap);

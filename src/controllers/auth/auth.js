@@ -106,6 +106,23 @@ export const register = async (req, res) => {
       }
     }
 
+    // A phone number identifies a real person the same way an email does —
+    // two accounts sharing one lets either side impersonate/contact-hijack
+    // the other's buyers. Checked here (not before the existingUser block
+    // above) on purpose: a vendor re-submitting their own pending/
+    // unverified signup already returns early above with the SAME phone
+    // they entered before — checking any earlier would wrongly reject
+    // their own resend as "taken." Also a backstop below the app layer,
+    // not instead of one — see Users.js's partial unique index.
+    if (phone) {
+      const phoneTaken = await User.findOne({ phone });
+      if (phoneTaken) {
+        return res.status(409).json({
+          message: "An account with this phone number already exists.",
+        });
+      }
+    }
+
     // 🔹 Create a new user
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 

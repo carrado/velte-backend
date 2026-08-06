@@ -34,6 +34,16 @@ const walletTransactionSchema = new mongoose.Schema(
     // 'card' | 'dedicated_nuban' | 'lead'
     channel: { type: String, default: null },
     description: { type: String, default: null },
+
+    // Which buyer-facing surface produced this lead — 'browse' (homepage
+    // marketplace grid or the public /store/[handle] page, both a direct
+    // "chat about this listing" click with no AI involved) or 'search'
+    // (/search, the AI-matched result cards). null for anything pre-dating
+    // this field, or a debit type that isn't a lead at all. Exists so the
+    // "swap fully to AI once the catalog is big enough" call (see
+    // CLAUDE.md's Velte Connect build order) can be a real decision made
+    // from which path is actually converting, not a guess.
+    source: { type: String, enum: ["browse", "search"], default: null },
   },
   { timestamps: true },
 );
