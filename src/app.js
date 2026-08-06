@@ -21,6 +21,7 @@ import searchRoutes from "./routes/search.routes.js";
 import notificationsRoutes from "./routes/notifications.routes.js";
 import pushRoutes from "./routes/push.routes.js";
 import referralsRoutes from "./routes/referrals.routes.js";
+import shortlinksRoutes from "./routes/shortlinks.routes.js";
 import { startKeepAlive } from "./initializers/keepAlive.js";
 import { startWalletLowBalanceCron } from "./initializers/walletLowBalanceCron.js";
 import { startUnverifiedUsersCleanupCron } from "./initializers/unverifiedUsersCleanupCron.js";
@@ -112,6 +113,7 @@ app.use("/api/search", searchRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/push", pushRoutes);
 app.use("/api/referrals", referralsRoutes);
+app.use("/api/shortlinks", shortlinksRoutes);
 
 // Health check route
 app.get("/health", (req, res) => {
