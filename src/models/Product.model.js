@@ -111,6 +111,14 @@ const productSchema = new mongoose.Schema(
     isSuspended: { type: Boolean, default: false },
     suspensionReason: { type: String, default: null },
 
+    // When this product was last selected for the "/" homepage's
+    // marketplace preview grid — see getMarketplacePreview. null/missing
+    // sorts first in ascending order (same as never having been shown),
+    // so a plain `.sort({ lastFeaturedAt: 1 })` always surfaces whoever's
+    // waited longest, guaranteeing every product rotates through instead
+    // of trusting pure randomness not to strand one indefinitely.
+    lastFeaturedAt: { type: Date, default: null, index: true },
+
     // ── Velte Connect retrieval ─────────────────────────────────────────────
     // Voyage `voyage-4` embedding of name+attributes+category, populated by the
     // AI search layer (Bucket D3) on create/update. Atlas Vector Search index is

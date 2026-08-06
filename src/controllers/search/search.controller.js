@@ -47,12 +47,18 @@ async function isWithinCooldown(vendorId, buyerId) {
 // unbilled (see debitWalletForLead's `debited: false` — today that's a no-op,
 // eligibility policy for a drained wallet is a matching-layer decision, not
 // this endpoint's).
+const LEAD_SOURCES = ["browse", "search"];
+
 export async function chargeLead(req, res, next) {
   try {
-    const { vendorId, productId, buyerId } = req.body ?? {};
+    const { vendorId, productId, buyerId, source } = req.body ?? {};
     if (typeof vendorId !== "string" || !vendorId.trim()) {
       throw new AppError("vendorId is required.", 400);
     }
+    // An unrecognized/missing source is never worth rejecting the whole
+    // request over — the buyer's chat has already opened by the time this
+    // fires (see this endpoint's own doc comment) — just don't tag it.
+    const leadSource = LEAD_SOURCES.includes(source) ? source : null;
 
     // Same buyer, same vendor, within 15 minutes of their last charged
     // click — skip billing entirely rather than charge again for what's
@@ -88,6 +94,7 @@ export async function chargeLead(req, res, next) {
     const result = await debitWalletForLead(vendorId, LEAD_COST_KOBO, {
       leadId,
       description,
+      source: leadSource,
     });
 
     // Best-effort, same as the wallet-low-balance and referral notifiers —

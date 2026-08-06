@@ -15,7 +15,30 @@ export const updateProfile = async (req, res) => {
 
     if (avatar !== undefined) user.avatar = avatar;
     if (name !== undefined) user.name = name.trim();
-    if (phone !== undefined) user.phone = phone;
+
+    // Two accounts can't share a phone number — same rule and shape as the
+    // email check below. `|| null` (not a bare empty string) matters here:
+    // Users.js's uniqueness index is partial on phone being an actual
+    // string, so a bare "" from a cleared form field would still collide
+    // with every OTHER vendor who also cleared theirs, unless it's
+    // normalized to null the same way registration already does.
+    if (phone !== undefined) {
+      const normalizedPhone = phone || null;
+      if (normalizedPhone !== user.phone) {
+        if (normalizedPhone) {
+          const taken = await User.findOne({
+            phone: normalizedPhone,
+            _id: { $ne: user._id },
+          });
+          if (taken) {
+            return res
+              .status(409)
+              .json({ message: "Phone number is already in use" });
+          }
+        }
+        user.phone = normalizedPhone;
+      }
+    }
 
     let newGeo;
     if (location !== undefined) {

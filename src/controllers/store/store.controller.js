@@ -483,6 +483,206 @@ export async function getPublicStore(req, res, next) {
   }
 }
 
+// Fisher-Yates, in place. Used only to vary DISPLAY order after a fair
+// selection — never to decide WHICH items get picked (that's always
+// strictly oldest-lastFeaturedAt-first, see the two callers below), so a
+// reload still looks fresh without weakening the rotation guarantee.
+function shuffleInPlace(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+}
+
+// ── GET /api/store/marketplace-preview ───────────────────────────────────────
+// Public — no auth. Powers the "/" homepage's marketplace preview: a flat
+// product/service grid (Instagram-shop style, vendor shown as a small
+// byline) — deliberately browse-first, not AI search. Decided 2026-08-05:
+// at 14 vendors / ~17 listings, AI chat (/search) alone wasn't converting —
+// an open-text box over a thin catalog misses more often than it hits. This
+// gives buyers something real to look at and act on immediately; "See more"
+// on the page hands off to /search for AI-assisted discovery once they've
+// scrolled past what's shown here. Revisit (drop this, lean fully on
+// /search) once the catalog is big enough that browsing stops being viable.
+//
+// Fair rotation (2026-08-06), not $sample: pure random sampling has no
+// memory, so nothing stops the same handful of products going unshown for
+// an unlucky streak — worse the bigger the catalog gets relative to
+// MARKETPLACE_PREVIEW_LIMIT. Sorting by lastFeaturedAt ascending (null/
+// missing sorts first, i.e. "never shown" always wins) always surfaces
+// whoever's waited longest, then marks them just-shown — a real guarantee
+// every product cycles through within ceil(catalogSize / LIMIT) requests,
+// not a probabilistic hope. Display order is still shuffled afterward
+// (shuffleInPlace) so a reload doesn't look identically ordered.
+const MARKETPLACE_PREVIEW_LIMIT = 12;
+
+export async function getMarketplacePreview(req, res, next) {
+  try {
+    const hiddenVendorIds = await User.find({
+      $or: [{ hiddenFromSearch: true }, { isBlocked: true }],
+    }).distinct("_id");
+
+    const products = await Product.find({
+      isSuspended: { $ne: true },
+      vendorId: { $nin: hiddenVendorIds },
+    })
+      .sort({ lastFeaturedAt: 1, createdAt: 1 })
+      .limit(MARKETPLACE_PREVIEW_LIMIT)
+      .select(
+        "vendorId name kind quoteOnRequest price priceMax currency mainImageUrl",
+      )
+      .lean();
+
+    if (products.length > 0) {
+      await Product.updateMany(
+        { _id: { $in: products.map((p) => p._id) } },
+        { $set: { lastFeaturedAt: new Date() } },
+      );
+    }
+    shuffleInPlace(products);
+
+    const vendorIds = [...new Set(products.map((p) => String(p.vendorId)))];
+    const [stores, users] = await Promise.all([
+      Store.find({ vendorId: { $in: vendorIds } })
+        .select("vendorId name handle whatsapp")
+        .lean(),
+      // Avatar only — the card shows a profile photo + name + verified badge
+      // next to each listing, not a plain "by {store}" text byline.
+      User.find({ _id: { $in: vendorIds } })
+        .select("avatar")
+        .lean(),
+    ]);
+    const storeByVendorId = new Map(
+      stores.map((s) => [String(s.vendorId), s]),
+    );
+    const avatarByVendorId = new Map(
+      users.map((u) => [String(u._id), u.avatar ?? null]),
+    );
+
+    // A product whose vendor has no store yet (shouldn't happen in practice —
+    // getOrCreateStore runs on first dashboard visit — but the byline has
+    // nothing to attach to without one) is dropped rather than shown with a
+    // blank vendor name.
+    const items = products
+      .map((p) => {
+        const store = storeByVendorId.get(String(p.vendorId));
+        if (!store) return null;
+        return {
+          id: p._id,
+          name: p.name,
+          kind: p.kind ?? "product",
+          quoteOnRequest: p.quoteOnRequest ?? false,
+          price: p.price,
+          priceMax: p.priceMax ?? null,
+          currency: p.currency,
+          mainImageUrl: p.mainImageUrl,
+          vendorId: p.vendorId,
+          storeName: store.name,
+          storeHandle: store.handle,
+          storeAvatar: avatarByVendorId.get(String(p.vendorId)) ?? null,
+          whatsapp: store.whatsapp,
+        };
+      })
+      .filter(Boolean);
+
+    res.json({ success: true, data: items });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── GET /api/store/vendors-preview ───────────────────────────────────────────
+// Public — no auth. Powers the "/" homepage's Vendors section — a Twitter-
+// profile-style card per vendor (sliding cover of the store's own gallery
+// photos, avatar overlapping the bottom edge, name + verified badge). Sits
+// alongside getMarketplacePreview (which shows individual listings): this
+// one shows the vendors themselves, so a buyer scanning the homepage sees
+// who's actually behind the products, not just the products in isolation.
+//
+// Fair rotation, not $sample — same reasoning and mechanism as
+// getMarketplacePreview above (lastFeaturedAt-ascending selection,
+// shuffled display order): guarantees every vendor rotates through the
+// homepage instead of trusting pure randomness not to strand one.
+const VENDORS_PREVIEW_LIMIT = 12;
+
+export async function getVendorsPreview(req, res, next) {
+  try {
+    const hiddenVendorIds = await User.find({
+      $or: [{ hiddenFromSearch: true }, { isBlocked: true }],
+    }).distinct("_id");
+
+    const stores = await Store.find({ vendorId: { $nin: hiddenVendorIds } })
+      .sort({ lastFeaturedAt: 1, createdAt: 1 })
+      .limit(VENDORS_PREVIEW_LIMIT)
+      .select("vendorId name handle description sectors whatsapp gallery")
+      .lean();
+
+    if (stores.length > 0) {
+      await Store.updateMany(
+        { _id: { $in: stores.map((s) => s._id) } },
+        { $set: { lastFeaturedAt: new Date() } },
+      );
+    }
+    shuffleInPlace(stores);
+
+    const users = await User.find({
+      _id: { $in: stores.map((s) => s.vendorId) },
+    })
+      .select("avatar")
+      .lean();
+    const avatarByVendorId = new Map(
+      users.map((u) => [String(u._id), u.avatar ?? null]),
+    );
+
+    const items = stores.map((s) => ({
+      vendorId: s.vendorId,
+      name: s.name,
+      handle: s.handle,
+      description: s.description || null,
+      sectors: s.sectors || [],
+      whatsapp: s.whatsapp,
+      gallery: s.gallery || [],
+      avatar: avatarByVendorId.get(String(s.vendorId)) ?? null,
+    }));
+
+    res.json({ success: true, data: items });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── GET /api/store/products/:id/image ────────────────────────────────────────
+// Public — no auth. Backs velte's /s/p/:id short-link redirector — a
+// WhatsApp click-to-chat pre-filled message can only carry TEXT (wa.me has
+// no attachment param), so the workaround is a short, branded link in the
+// message text that redirects straight to the product's photo, instead of
+// pasting a long raw Cloudinary URL into the chat. Resolved server-side by
+// id (never a client-supplied URL) specifically so this can't become an
+// open redirect — the only possible destinations are Velte's own product
+// photos, same suspended/hidden filtering as everywhere else buyer-facing.
+export async function getProductImage(req, res, next) {
+  try {
+    const product = await Product.findOne({
+      _id: req.params.id,
+      isSuspended: { $ne: true },
+    }).select("mainImageUrl vendorId");
+    if (!product || !product.mainImageUrl) {
+      throw new AppError("Image not found.", 404);
+    }
+
+    const vendor = await User.findById(product.vendorId).select(
+      "hiddenFromSearch isBlocked",
+    );
+    if (!vendor || vendor.hiddenFromSearch || vendor.isBlocked) {
+      throw new AppError("Image not found.", 404);
+    }
+
+    res.json({ success: true, data: { mainImageUrl: product.mainImageUrl } });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ── GET /api/store/sitemap-handles ───────────────────────────────────────────
 // Public — no auth. Feeds velte's src/app/sitemap.ts so every storefront is
 // discoverable by search engines, not just the ones a crawler happens to

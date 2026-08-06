@@ -43,6 +43,13 @@ const storeSchema = new mongoose.Schema(
     // Showcase photos (Cloudinary URLs).
     gallery: { type: [String], default: [] },
 
+    // When this vendor was last selected for the "/" homepage's Vendors
+    // section — see getVendorsPreview. Same fairness-rotation convention
+    // as Product.lastFeaturedAt: null/missing sorts first ascending, so
+    // whoever's waited longest always surfaces next, guaranteeing every
+    // vendor rotates through instead of trusting pure randomness.
+    lastFeaturedAt: { type: Date, default: null, index: true },
+
     // ── Connected catalog (spec §16.1) ──────────────────────────────────────
     // The vendor's own website, mirrored into Velte. One source per store.
     // `null` until they connect. The site stays the source of truth: we re-sync
