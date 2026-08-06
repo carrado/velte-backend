@@ -4,7 +4,8 @@ import User from "../../models/Users.js";
 import { AppError } from "../../middleware/errorHandler.js";
 import { embedAndSaveStore } from "../../services/embedding.service.js";
 import { sectorLabel, mergeBusinessTypeFromLabels } from "../../utils/sectorLabels.js";
-import { getOrCreateWallet } from "../wallet/wallet.controller.js";
+import Wallet from "../../models/Wallet.model.js";
+import { getOrCreateWallet, LEAD_COST_KOBO } from "../wallet/wallet.controller.js";
 
 const HANDLE_RE = /^[a-z0-9](?:[a-z0-9-]{1,28}[a-z0-9])?$/; // 2–30 chars, no edge hyphens
 const MAX_GALLERY = 6;
@@ -518,13 +519,26 @@ const MARKETPLACE_PREVIEW_LIMIT = 12;
 
 export async function getMarketplacePreview(req, res, next) {
   try {
-    const hiddenVendorIds = await User.find({
-      $or: [{ hiddenFromSearch: true }, { isBlocked: true }],
-    }).distinct("_id");
+    const [hiddenVendorIds, fundedVendorIds] = await Promise.all([
+      User.find({
+        $or: [{ hiddenFromSearch: true }, { isBlocked: true }],
+      }).distinct("_id"),
+      // Same wallet-eligibility rule AI search enforces (staffly-ai-backend's
+      // retrieval.service.js filterWalletEligible) — a browse-sourced "Chat"
+      // click bills the vendor's wallet exactly like a search-sourced one
+      // (see MarketplaceCard's reportLead), so a vendor who can't cover
+      // LEAD_COST_KOBO shouldn't surface here either. Decided 2026-08-06:
+      // this grid had no such filter, so a drained-wallet vendor could get
+      // free leads a buyer found by browsing instead of searching. `$in`,
+      // not `$nin` on an "underfunded" set — a vendor with NO wallet row at
+      // all must also be excluded, same "no wallet = 0 balance, ineligible"
+      // semantics as retrieval.service.js's own comment on this.
+      Wallet.find({ balanceKobo: { $gte: LEAD_COST_KOBO } }).distinct("vendorId"),
+    ]);
 
     const products = await Product.find({
       isSuspended: { $ne: true },
-      vendorId: { $nin: hiddenVendorIds },
+      vendorId: { $nin: hiddenVendorIds, $in: fundedVendorIds },
     })
       .sort({ lastFeaturedAt: 1, createdAt: 1 })
       .limit(MARKETPLACE_PREVIEW_LIMIT)
@@ -607,11 +621,18 @@ const VENDORS_PREVIEW_LIMIT = 12;
 
 export async function getVendorsPreview(req, res, next) {
   try {
-    const hiddenVendorIds = await User.find({
-      $or: [{ hiddenFromSearch: true }, { isBlocked: true }],
-    }).distinct("_id");
+    // Same wallet-eligibility reasoning as getMarketplacePreview above — see
+    // that function's own comment.
+    const [hiddenVendorIds, fundedVendorIds] = await Promise.all([
+      User.find({
+        $or: [{ hiddenFromSearch: true }, { isBlocked: true }],
+      }).distinct("_id"),
+      Wallet.find({ balanceKobo: { $gte: LEAD_COST_KOBO } }).distinct("vendorId"),
+    ]);
 
-    const stores = await Store.find({ vendorId: { $nin: hiddenVendorIds } })
+    const stores = await Store.find({
+      vendorId: { $nin: hiddenVendorIds, $in: fundedVendorIds },
+    })
       .sort({ lastFeaturedAt: 1, createdAt: 1 })
       .limit(VENDORS_PREVIEW_LIMIT)
       .select("vendorId name handle description sectors whatsapp gallery")
