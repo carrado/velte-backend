@@ -6,6 +6,7 @@ import { errRes } from "../../helpers/apiResponse.js";
 import { embedAndSaveProduct } from "../../services/embedding.service.js";
 import {
   SECTOR_CLASSIFICATION_BY_VALUE,
+  CATEGORY_OPTIONAL_SECTOR_VALUES,
   isKnownSector,
 } from "../../utils/sectorLabels.js";
 
@@ -26,6 +27,10 @@ const isFoodClassification = (classification) =>
   FOOD_CLASSIFICATIONS.includes(classification);
 const usesFoodShape = (sectorValue, kind) =>
   isFoodClassification(classificationOf(sectorValue)) && kind !== "service";
+// See CATEGORY_OPTIONAL_SECTOR_VALUES's doc comment — sectors where no
+// seeded retail Category ever fits, so category_id is skipped like services.
+const isCategoryOptional = (sectorValue) =>
+  CATEGORY_OPTIONAL_SECTOR_VALUES.has(sectorValue);
 
 // ── formatters ────────────────────────────────────────────────────────────────
 
@@ -145,11 +150,13 @@ function validateProductInput(body, vendorSectors) {
     }
   }
 
-  // Services and dishes carry no category — discovered by meaning, not a
-  // fixed bucket. Only retail products need one.
+  // Services, dishes, and category-optional sectors (e.g. real estate)
+  // carry no category — discovered by meaning, not a fixed bucket. Only
+  // retail products need one.
   if (
     kind !== "service" &&
     !usesFoodShape(body.sector_value, kind) &&
+    !isCategoryOptional(body.sector_value) &&
     !body.category_id
   ) {
     fields.category_id = "category_id is required";
@@ -350,9 +357,11 @@ export const createProduct = async (req, res) => {
       body.sector_value,
       isService ? "service" : "product",
     );
+    const categoryOptional = isCategoryOptional(body.sector_value);
     // Retail-shaped products validate against the seeded Category collection;
-    // services and dishes carry no category at all.
-    if (!foodShape && !isService) {
+    // services, dishes, and category-optional sectors carry no category at
+    // all.
+    if (!foodShape && !isService && !categoryOptional) {
       const cat = await Category.findById(body.category_id);
       if (!cat)
         return errRes(res, 400, "VALIDATION_ERROR", "Validation failed", {
@@ -372,7 +381,8 @@ export const createProduct = async (req, res) => {
       quoteOnRequest: isService ? (body.quote_on_request ?? false) : false,
       name: body.name.trim(),
       description: body.description ?? null,
-      categoryId: isService || foodShape ? null : body.category_id,
+      categoryId:
+        isService || foodShape || categoryOptional ? null : body.category_id,
       price: isService && body.quote_on_request ? 0 : body.price,
       priceMax: body.price_max ?? null,
       currency: body.currency ?? "NGN",
@@ -422,6 +432,7 @@ export const updateProduct = async (req, res) => {
     // update — an offering's identity, including which sector it belongs to,
     // is fixed at creation).
     const foodShape = usesFoodShape(product.sectorValue, product.kind);
+    const categoryOptional = isCategoryOptional(product.sectorValue);
     const body = req.body;
 
     // Partial validation — only validate provided fields
@@ -443,9 +454,10 @@ export const updateProduct = async (req, res) => {
         price_max: "price_max must be greater than price",
       });
     }
-    // Dishes carry no category at all — an incoming category_id for a
-    // food-shaped product is simply ignored below (never assigned).
-    if (body.category_id && !foodShape) {
+    // Dishes and category-optional sectors carry no category at all — an
+    // incoming category_id for either is simply ignored below (never
+    // assigned).
+    if (body.category_id && !foodShape && !categoryOptional) {
       const cat = await Category.findById(body.category_id);
       if (!cat)
         return errRes(res, 400, "VALIDATION_ERROR", "Validation failed", {
@@ -488,9 +500,11 @@ export const updateProduct = async (req, res) => {
 
     if (!foodShape) {
       // category_id lives here (not the generic `shared` map above) since
-      // dishes carry no category at all — an incoming category_id on a
-      // food-shaped update is silently ignored rather than assigned.
-      if (body.category_id !== undefined) product.categoryId = body.category_id;
+      // dishes and category-optional sectors carry no category at all — an
+      // incoming category_id for either is silently ignored rather than
+      // assigned.
+      if (body.category_id !== undefined && !categoryOptional)
+        product.categoryId = body.category_id;
       const retailMap = {
         manufacturing_date: "manufacturingDate",
         expiration_date: "expirationDate",

@@ -108,6 +108,15 @@ export const SECTOR_LABEL_BY_VALUE = {
   security_services: "Security Services",
 };
 
+// Mirrors the frontend's SectorListingConfig.categoryOptional (velte/src/lib
+// /sectors.ts) — sectors where no seeded retail Category ever fits a
+// listing, so product/both-kind offerings skip the required category_id the
+// same way services already do. Keep in sync by hand alongside the maps
+// above (same no-shared-source-of-truth caveat).
+export const CATEGORY_OPTIONAL_SECTOR_VALUES = new Set([
+  "real_estate_property_sales",
+]);
+
 /** Converts a sector slug to its display label; passes unknown values through as-is. */
 export function sectorLabel(value) {
   if (!value) return value;
@@ -178,7 +187,10 @@ export const SECTOR_CLASSIFICATION_BY_VALUE = {
   plumbing_services: "service",
   electrical_installation_services: "service",
   painting_decorating_services: "service",
-  real_estate_property_sales: "service",
+  // "both" (not "service") — mirrors frontend sectors.ts: a vendor needs to
+  // list the actual property/land itself for sale/rent as a product, not
+  // just offer to find/manage one as a service.
+  real_estate_property_sales: "both",
   property_management: "service",
 
   auto_parts_accessories: "both",
