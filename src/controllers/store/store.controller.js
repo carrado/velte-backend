@@ -439,7 +439,7 @@ export async function getPublicStore(req, res, next) {
         .sort({ isFeatured: -1, createdAt: -1 })
         .limit(12)
         .select(
-          "name price priceMax currency mainImageUrl videoUrl description kind quoteOnRequest attributes",
+          "name price priceMax currency mainImageUrl thumbnailUrls videoUrl description kind quoteOnRequest attributes",
         )
         .lean(),
     ]);
@@ -470,6 +470,7 @@ export async function getPublicStore(req, res, next) {
           priceMax: p.priceMax ?? null,
           currency: p.currency,
           mainImageUrl: p.mainImageUrl,
+          thumbnailUrls: p.thumbnailUrls || [],
           videoUrl: p.videoUrl ?? null,
           description: p.description,
           attributes: (p.attributes || []).map((a) => ({
@@ -543,7 +544,7 @@ export async function getMarketplacePreview(req, res, next) {
       .sort({ lastFeaturedAt: 1, createdAt: 1 })
       .limit(MARKETPLACE_PREVIEW_LIMIT)
       .select(
-        "vendorId name kind quoteOnRequest price priceMax currency mainImageUrl",
+        "vendorId name kind quoteOnRequest price priceMax currency mainImageUrl thumbnailUrls description attributes",
       )
       .lean();
 
@@ -590,6 +591,12 @@ export async function getMarketplacePreview(req, res, next) {
           priceMax: p.priceMax ?? null,
           currency: p.currency,
           mainImageUrl: p.mainImageUrl,
+          thumbnailUrls: p.thumbnailUrls || [],
+          description: p.description,
+          attributes: (p.attributes || []).map((a) => ({
+            name: a.name,
+            value: a.value,
+          })),
           vendorId: p.vendorId,
           storeName: store.name,
           storeHandle: store.handle,
