@@ -415,9 +415,18 @@ export async function getStoreByVendorId(req, res, next) {
     const store = await Store.findOne({ vendorId: req.params.vendorId });
     if (!store) throw new AppError("Store not found.", 404);
 
+    // Same User-avatar join getPublicStore already does below — the search
+    // flow's "Sold by" store card wants the vendor's own profile picture
+    // too, not just the store's gallery (already in serializeStore).
+    const user = await User.findById(store.vendorId).select("avatar");
+
     res.json({
       success: true,
-      data: { storeId: store._id, ...serializeStore(store) },
+      data: {
+        storeId: store._id,
+        ...serializeStore(store),
+        avatar: user?.avatar ?? null,
+      },
     });
   } catch (err) {
     next(err);
