@@ -1,5 +1,6 @@
 import Store from "../../models/Store.model.js";
 import Product from "../../models/Product.model.js";
+import Category from "../../models/Category.model.js";
 import User from "../../models/Users.js";
 import { AppError } from "../../middleware/errorHandler.js";
 import { embedAndSaveStore } from "../../services/embedding.service.js";
@@ -496,6 +497,29 @@ function shuffleInPlace(arr) {
   }
 }
 
+// Shared by every buyer-facing browse/preview surface below (marketplace
+// preview, vendors preview, full marketplace browse) — a vendor excluded
+// here never surfaces to a buyer through ANY of them. Two independent
+// reasons to exclude:
+//   • hidden/blocked — the vendor opted out of discovery, or was blocked.
+//   • underfunded wallet — same rule AI search enforces (staffly-ai-
+//     backend's retrieval.service.js filterWalletEligible): a browse-
+//     sourced "Chat" click bills the vendor's wallet exactly like a
+//     search-sourced one (see MarketplaceCard's reportLead), so a vendor
+//     who can't cover LEAD_COST_KOBO shouldn't surface here either. `$in`,
+//     not `$nin`, on the funded set — a vendor with NO wallet row at all
+//     must also be excluded, same "no wallet = 0 balance, ineligible"
+//     semantics as retrieval.service.js's own comment on this.
+async function getVendorEligibilityFilter() {
+  const [hiddenVendorIds, fundedVendorIds] = await Promise.all([
+    User.find({
+      $or: [{ hiddenFromSearch: true }, { isBlocked: true }],
+    }).distinct("_id"),
+    Wallet.find({ balanceKobo: { $gte: LEAD_COST_KOBO } }).distinct("vendorId"),
+  ]);
+  return { $nin: hiddenVendorIds, $in: fundedVendorIds };
+}
+
 // ── GET /api/store/marketplace-preview ───────────────────────────────────────
 // Public — no auth. Powers the "/" homepage's marketplace preview: a flat
 // product/service grid (Instagram-shop style, vendor shown as a small
@@ -520,26 +544,11 @@ const MARKETPLACE_PREVIEW_LIMIT = 12;
 
 export async function getMarketplacePreview(req, res, next) {
   try {
-    const [hiddenVendorIds, fundedVendorIds] = await Promise.all([
-      User.find({
-        $or: [{ hiddenFromSearch: true }, { isBlocked: true }],
-      }).distinct("_id"),
-      // Same wallet-eligibility rule AI search enforces (staffly-ai-backend's
-      // retrieval.service.js filterWalletEligible) — a browse-sourced "Chat"
-      // click bills the vendor's wallet exactly like a search-sourced one
-      // (see MarketplaceCard's reportLead), so a vendor who can't cover
-      // LEAD_COST_KOBO shouldn't surface here either. Decided 2026-08-06:
-      // this grid had no such filter, so a drained-wallet vendor could get
-      // free leads a buyer found by browsing instead of searching. `$in`,
-      // not `$nin` on an "underfunded" set — a vendor with NO wallet row at
-      // all must also be excluded, same "no wallet = 0 balance, ineligible"
-      // semantics as retrieval.service.js's own comment on this.
-      Wallet.find({ balanceKobo: { $gte: LEAD_COST_KOBO } }).distinct("vendorId"),
-    ]);
+    const vendorFilter = await getVendorEligibilityFilter();
 
     const products = await Product.find({
       isSuspended: { $ne: true },
-      vendorId: { $nin: hiddenVendorIds, $in: fundedVendorIds },
+      vendorId: vendorFilter,
     })
       .sort({ lastFeaturedAt: 1, createdAt: 1 })
       .limit(MARKETPLACE_PREVIEW_LIMIT)
@@ -628,17 +637,10 @@ const VENDORS_PREVIEW_LIMIT = 12;
 
 export async function getVendorsPreview(req, res, next) {
   try {
-    // Same wallet-eligibility reasoning as getMarketplacePreview above — see
-    // that function's own comment.
-    const [hiddenVendorIds, fundedVendorIds] = await Promise.all([
-      User.find({
-        $or: [{ hiddenFromSearch: true }, { isBlocked: true }],
-      }).distinct("_id"),
-      Wallet.find({ balanceKobo: { $gte: LEAD_COST_KOBO } }).distinct("vendorId"),
-    ]);
+    const vendorFilter = await getVendorEligibilityFilter();
 
     const stores = await Store.find({
-      vendorId: { $nin: hiddenVendorIds, $in: fundedVendorIds },
+      vendorId: vendorFilter,
     })
       .sort({ lastFeaturedAt: 1, createdAt: 1 })
       .limit(VENDORS_PREVIEW_LIMIT)
@@ -672,6 +674,139 @@ export async function getVendorsPreview(req, res, next) {
       gallery: s.gallery || [],
       avatar: avatarByVendorId.get(String(s.vendorId)) ?? null,
     }));
+
+    res.json({ success: true, data: items });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── GET /api/store/vendors ────────────────────────────────────────────────────
+// Public — no auth. The FULL vendor directory for the /marketplace browse
+// page — same relationship to getVendorsPreview that getMarketplaceBrowse
+// has to getMarketplacePreview: no cap, no lastFeaturedAt bookkeeping
+// (that's purely for making repeated teaser-sized SLICES rotate fairly),
+// shuffled per request instead.
+export async function getVendorsBrowse(req, res, next) {
+  try {
+    const vendorFilter = await getVendorEligibilityFilter();
+
+    const stores = await Store.find({ vendorId: vendorFilter })
+      .select("vendorId name handle description sectors whatsapp gallery")
+      .lean();
+
+    shuffleInPlace(stores);
+
+    const users = await User.find({
+      _id: { $in: stores.map((s) => s.vendorId) },
+    })
+      .select("avatar")
+      .lean();
+    const avatarByVendorId = new Map(
+      users.map((u) => [String(u._id), u.avatar ?? null]),
+    );
+
+    const items = stores.map((s) => ({
+      vendorId: s.vendorId,
+      name: s.name,
+      handle: s.handle,
+      description: s.description || null,
+      sectors: s.sectors || [],
+      whatsapp: s.whatsapp,
+      gallery: s.gallery || [],
+      avatar: avatarByVendorId.get(String(s.vendorId)) ?? null,
+    }));
+
+    res.json({ success: true, data: items });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── GET /api/store/categories ────────────────────────────────────────────────
+// Public — no auth. Mirrors listCategories (categories.routes.js is
+// vendor-authenticated, used by the Add-Offering wizard's own category
+// picker) but exposed here for buyer-facing surfaces — the marketplace
+// browse page's category rail shows every real category, including ones
+// with zero current listings, so the taxonomy itself communicates breadth.
+export async function getPublicCategories(req, res, next) {
+  try {
+    const categories = await Category.find().sort({ name: 1 }).lean();
+    res.json({
+      success: true,
+      data: categories.map((c) => ({ id: c._id, name: c.name, emoji: c.emoji })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── GET /api/store/marketplace ───────────────────────────────────────────────
+// Public — no auth. The FULL buyer-facing catalog (unlike
+// getMarketplacePreview's capped, rotating teaser) — every eligible
+// product/service, no limit. No lastFeaturedAt bookkeeping here either:
+// that mechanism exists purely to make repeated teaser-sized SLICES of the
+// catalog rotate fairly, which stops applying once nothing is being sliced.
+// Display order is still shuffled per request (shuffleInPlace) so a reload
+// doesn't look static.
+export async function getMarketplaceBrowse(req, res, next) {
+  try {
+    const vendorFilter = await getVendorEligibilityFilter();
+
+    const products = await Product.find({
+      isSuspended: { $ne: true },
+      vendorId: vendorFilter,
+    })
+      .select(
+        "vendorId name kind quoteOnRequest price priceMax currency mainImageUrl thumbnailUrls description attributes categoryId",
+      )
+      .lean();
+
+    shuffleInPlace(products);
+
+    const vendorIds = [...new Set(products.map((p) => String(p.vendorId)))];
+    const [stores, users] = await Promise.all([
+      Store.find({ vendorId: { $in: vendorIds } })
+        .select("vendorId name handle whatsapp")
+        .lean(),
+      User.find({ _id: { $in: vendorIds } })
+        .select("avatar")
+        .lean(),
+    ]);
+    const storeByVendorId = new Map(stores.map((s) => [String(s.vendorId), s]));
+    const avatarByVendorId = new Map(
+      users.map((u) => [String(u._id), u.avatar ?? null]),
+    );
+
+    // Same "no store yet = drop it" rule as getMarketplacePreview.
+    const items = products
+      .map((p) => {
+        const store = storeByVendorId.get(String(p.vendorId));
+        if (!store) return null;
+        return {
+          id: p._id,
+          name: p.name,
+          kind: p.kind ?? "product",
+          quoteOnRequest: p.quoteOnRequest ?? false,
+          price: p.price,
+          priceMax: p.priceMax ?? null,
+          currency: p.currency,
+          mainImageUrl: p.mainImageUrl,
+          thumbnailUrls: p.thumbnailUrls || [],
+          description: p.description,
+          attributes: (p.attributes || []).map((a) => ({
+            name: a.name,
+            value: a.value,
+          })),
+          categoryId: p.categoryId ?? null,
+          vendorId: p.vendorId,
+          storeName: store.name,
+          storeHandle: store.handle,
+          storeAvatar: avatarByVendorId.get(String(p.vendorId)) ?? null,
+          whatsapp: store.whatsapp,
+        };
+      })
+      .filter(Boolean);
 
     res.json({ success: true, data: items });
   } catch (err) {

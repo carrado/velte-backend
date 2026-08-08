@@ -8,6 +8,9 @@ import {
   getStoreByVendorId,
   getMarketplacePreview,
   getVendorsPreview,
+  getMarketplaceBrowse,
+  getVendorsBrowse,
+  getPublicCategories,
   getProductImage,
   listStoreHandlesForSitemap,
 } from "../controllers/store/store.controller.js";
@@ -25,6 +28,13 @@ router.get("/marketplace-preview", getMarketplacePreview);
 
 // Public — feeds the "/" homepage's Vendors section.
 router.get("/vendors-preview", getVendorsPreview);
+
+// Public — feeds the /marketplace browse page: the full catalog and the
+// full vendor directory, neither capped like their homepage teaser
+// counterparts above.
+router.get("/marketplace", getMarketplaceBrowse);
+router.get("/vendors", getVendorsBrowse);
+router.get("/categories", getPublicCategories);
 
 // Public — backs the /s/p/:id short-link redirector (velte frontend).
 router.get("/products/:id/image", getProductImage);

@@ -1,9 +1,22 @@
 import mongoose from "mongoose";
-import { SECTOR_CLASSIFICATION_BY_VALUE } from "../utils/sectorLabels.js";
+import {
+  SECTOR_CLASSIFICATION_BY_VALUE,
+  CATEGORY_OPTIONAL_SECTOR_VALUES,
+} from "../utils/sectorLabels.js";
 
 const FOOD_CLASSIFICATIONS = ["food", "food_both"];
 const isFoodSector = (sectorValue) =>
   FOOD_CLASSIFICATIONS.includes(SECTOR_CLASSIFICATION_BY_VALUE[sectorValue]);
+// Sectors where no seeded retail Category ever fits (e.g. real estate) —
+// mirrors product.controller.js's own isCategoryOptional. Both need to agree:
+// the controller's request-body validation lets these submit with no
+// category_id at all, but without this, Mongoose's own schema-level
+// `required` below would independently re-reject the save anyway (which is
+// exactly what was happening — real estate listings failed with a
+// "categoryId is required" error despite the controller correctly allowing
+// a null one through).
+const isCategoryOptionalSector = (sectorValue) =>
+  CATEGORY_OPTIONAL_SECTOR_VALUES.has(sectorValue);
 
 const attributeSchema = new mongoose.Schema(
   {
@@ -56,14 +69,19 @@ const productSchema = new mongoose.Schema(
     // ── shared fields ───────────────────────────────────────────────────────
     name: { type: String, required: true, trim: true, maxlength: 120 },
     description: { type: String, maxlength: 1000, default: null },
-    // Services and dishes carry no category — discovered by meaning
-    // (description + sector) rather than a fixed bucket. Only retail
-    // products need one.
+    // Services, dishes, and category-optional sectors (e.g. real estate)
+    // carry no category — discovered by meaning (description + sector)
+    // rather than a fixed bucket. Only retail products in a sector with a
+    // real seeded Category taxonomy need one.
     categoryId: {
       type: String,
       default: null,
       required: function () {
-        return this.kind !== "service" && !isFoodSector(this.sectorValue);
+        return (
+          this.kind !== "service" &&
+          !isFoodSector(this.sectorValue) &&
+          !isCategoryOptionalSector(this.sectorValue)
+        );
       },
     },
     // `price` is the single price, or the low end of a range. `priceMax` (when
