@@ -21,7 +21,7 @@ const router = express.Router();
 // Public — powers the /store/:handle page, no session required.
 router.get("/by-handle/:handle", getPublicStore);
 
-// Public — feeds the /store/:handle page's "Similar vendors you may like"
+// Public — feeds the /store/:handle page's "Other vendors you may like"
 // section.
 router.get("/by-handle/:handle/similar", getSimilarVendors);
 

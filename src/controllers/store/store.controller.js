@@ -736,7 +736,7 @@ export async function getVendorsBrowse(req, res, next) {
 }
 
 // ── GET /api/store/by-handle/:handle/similar ─────────────────────────────────
-// Public — no auth. Powers the /store/:handle page's "Similar vendors you may
+// Public — no auth. Powers the /store/:handle page's "Other vendors you may
 // like" section — other discoverable vendors sharing at least one of this
 // store's sectors, so a buyer browsing one storefront can hop to comparable
 // ones instead of dead-ending on it. Same VendorPreviewItem shape as
