@@ -378,10 +378,20 @@ export const verifyEmail = async (req, res) => {
 
     await user.save();
 
-    // Email verification is the anti-abuse gate for referral payouts (a bare
-    // signup with no real email behind it never converts) — a no-op if this
-    // user wasn't referred. Wrapped separately so a referral-crediting
-    // failure never blocks the verification response itself.
+    // Verified email is ONE of two gates for a referral payout now, not the
+    // whole thing — creditPendingReferral (referral.service.js) also
+    // requires the referee to have posted REFERRAL_CREDIT_MIN_PRODUCTS real
+    // listings before it actually credits anything (added 2026-08-10 after a
+    // real leakage: email verification alone let a drained-wallet vendor
+    // refer a fresh account and collect the bonus with zero real listings
+    // behind it). This call is almost always a no-op in practice — a
+    // brand-new account has 0 products at verification time — the real
+    // trigger is product.controller.js's createProduct, called again on
+    // every product this user ever posts. Kept here too (harmless,
+    // idempotent) in case verification is ever reordered to happen after
+    // some products already exist. Wrapped separately so a
+    // referral-crediting failure never blocks the verification response
+    // itself.
     try {
       await creditPendingReferral(user);
     } catch (err) {

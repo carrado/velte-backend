@@ -23,9 +23,13 @@ const referralSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
-  // "pending" until the referee verifies their email (see auth.js
-  // verifyEmail) — the deliberate anti-abuse gate: a bare signup with no real
-  // email behind it never converts to a payout. "credited" is terminal.
+  // "pending" until the referee both verifies their email AND has posted at
+  // least REFERRAL_CREDIT_MIN_PRODUCTS real listings (see referral.service.js's
+  // creditPendingReferral) — the deliberate anti-abuse gate. Was
+  // email-verification alone until a real leakage was found live (2026-08-10):
+  // a drained-wallet vendor could refer a fresh/friend account, verify its
+  // email, and collect the bonus without the referee ever listing a single
+  // product. "credited" is terminal.
   status: {
     type: String,
     enum: ['pending', 'credited'],

@@ -9,6 +9,7 @@ import {
   PRODUCT_BONUS_KOBO,
   PRODUCT_BONUS_MAX_COUNT,
 } from "../../controllers/wallet/wallet.controller.js";
+import { creditPendingReferral } from "../../services/referral.service.js";
 import {
   SECTOR_CLASSIFICATION_BY_VALUE,
   CATEGORY_OPTIONAL_SECTOR_VALUES,
@@ -341,7 +342,7 @@ export const getProduct = async (req, res) => {
 export const createProduct = async (req, res) => {
   try {
     const vendor = await User.findById(req.user.userId)
-      .select("sectors")
+      .select("sectors name company.name")
       .lean();
     if (!vendor) return errRes(res, 401, "UNAUTHORIZED", "Vendor not found");
 
@@ -445,6 +446,20 @@ export const createProduct = async (req, res) => {
       }
     } catch (err) {
       console.error("Product-post bonus credit failed:", err.message);
+    }
+
+    // Real trigger for the referral payout now (see referral.service.js's
+    // creditPendingReferral — email verification alone used to be the only
+    // gate, which was a real leakage: a drained-wallet vendor could refer a
+    // fresh account, verify its email, and collect ₦1,000 with zero real
+    // listings behind it). Checked on every product create, not just the
+    // 4th, since a vendor could add listings across sessions in any order;
+    // the function itself no-ops until both the pending-referral and
+    // product-count conditions are met, and is idempotent past that.
+    try {
+      await creditPendingReferral(vendor);
+    } catch (err) {
+      console.error("Referral credit check failed:", err.message);
     }
 
     return res

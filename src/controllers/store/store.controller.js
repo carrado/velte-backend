@@ -519,14 +519,17 @@ function shuffleInPlace(arr) {
 //     not `$nin`, on the funded set — a vendor with NO wallet row at all
 //     must also be excluded, same "no wallet = 0 balance, ineligible"
 //     semantics as retrieval.service.js's own comment on this.
-async function getVendorEligibilityFilter() {
+async function getVendorEligibilityFilter(extraExcludeIds = []) {
   const [hiddenVendorIds, fundedVendorIds] = await Promise.all([
     User.find({
       $or: [{ hiddenFromSearch: true }, { isBlocked: true }],
     }).distinct("_id"),
     Wallet.find({ balanceKobo: { $gte: LEAD_COST_KOBO } }).distinct("vendorId"),
   ]);
-  return { $nin: hiddenVendorIds, $in: fundedVendorIds };
+  return {
+    $nin: [...hiddenVendorIds, ...extraExcludeIds],
+    $in: fundedVendorIds,
+  };
 }
 
 // ── GET /api/store/marketplace-preview ───────────────────────────────────────
@@ -727,6 +730,77 @@ export async function getVendorsBrowse(req, res, next) {
     }));
 
     res.json({ success: true, data: items });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── GET /api/store/by-handle/:handle/similar ─────────────────────────────────
+// Public — no auth. Powers the /store/:handle page's "Other vendors you may
+// like" section — other discoverable vendors sharing at least one of this
+// store's sectors, so a buyer browsing one storefront can hop to comparable
+// ones instead of dead-ending on it. Same VendorPreviewItem shape as
+// getVendorsPreview/getVendorsBrowse (the frontend reuses VendorCard as-is).
+const SIMILAR_VENDORS_LIMIT = 6;
+
+function serializeVendorPreview(store, avatarByVendorId) {
+  return {
+    vendorId: store.vendorId,
+    name: store.name,
+    handle: store.handle,
+    description: store.description || null,
+    sectors: store.sectors || [],
+    whatsapp: store.whatsapp,
+    gallery: store.gallery || [],
+    avatar: avatarByVendorId.get(String(store.vendorId)) ?? null,
+  };
+}
+
+export async function getSimilarVendors(req, res, next) {
+  try {
+    const handle = String(req.params.handle).toLowerCase();
+    const store = await Store.findOne({ handle }).select("vendorId sectors");
+    if (!store) throw new AppError("Store not found.", 404);
+
+    let matches = [];
+    if (store.sectors.length > 0) {
+      const vendorFilter = await getVendorEligibilityFilter([store.vendorId]);
+      matches = await Store.find({
+        vendorId: vendorFilter,
+        sectors: { $in: store.sectors },
+      })
+        .select("vendorId name handle description sectors whatsapp gallery")
+        .lean();
+      shuffleInPlace(matches);
+      matches = matches.slice(0, SIMILAR_VENDORS_LIMIT);
+    }
+
+    // Pad with other eligible vendors (no shared sector) when overlap alone
+    // doesn't fill the section — still excludes the store itself and anyone
+    // already picked above, so the section never repeats a vendor.
+    if (matches.length < SIMILAR_VENDORS_LIMIT) {
+      const excludeIds = [store.vendorId, ...matches.map((s) => s.vendorId)];
+      const fillerFilter = await getVendorEligibilityFilter(excludeIds);
+      const filler = await Store.find({ vendorId: fillerFilter })
+        .select("vendorId name handle description sectors whatsapp gallery")
+        .limit(SIMILAR_VENDORS_LIMIT - matches.length)
+        .lean();
+      matches = [...matches, ...filler];
+    }
+
+    const users = await User.find({
+      _id: { $in: matches.map((s) => s.vendorId) },
+    })
+      .select("avatar")
+      .lean();
+    const avatarByVendorId = new Map(
+      users.map((u) => [String(u._id), u.avatar ?? null]),
+    );
+
+    res.json({
+      success: true,
+      data: matches.map((s) => serializeVendorPreview(s, avatarByVendorId)),
+    });
   } catch (err) {
     next(err);
   }
