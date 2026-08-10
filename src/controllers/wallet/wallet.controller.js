@@ -49,13 +49,15 @@ function clearAutoRechargeFailureIfRecovered(wallet) {
 // for one — removes the cold-start "prepay with zero track record" barrier.
 const STARTER_CREDIT_KOBO = 200_000; // ₦2,000
 
-// ₦400 per WhatsApp click-through. This is the source of truth — this
-// endpoint (chargeLead) charges exactly this amount when a lead actually
-// lands. The standalone staffly-ai-backend service's search-time wallet-
-// eligibility filter reads the SAME value from its own LEAD_COST_KOBO env
-// var (see its README) since it can't import this constant across repos —
-// keep both equal by hand.
-export const LEAD_COST_KOBO = 40_000;
+// ₦500 per WhatsApp click-through (raised from ₦400). This is the source of
+// truth — this endpoint (chargeLead) charges exactly this amount when a
+// lead actually lands. The standalone staffly-ai-backend service's
+// search-time wallet-eligibility filter reads the SAME value from its own
+// LEAD_COST_KOBO env var (see its README) since it can't import this
+// constant across repos — keep both equal by hand. Also manually mirrored in
+// velte-super-admin (nudge.controller.js, lowWalletMessage.js) and the
+// velte frontend (services/wallet.ts) — see those files' own header notes.
+export const LEAD_COST_KOBO = 50_000;
 
 // Floor for top-ups and auto-recharge amounts — keeps card fees proportionate
 // and matches the frontend's client-side minimum.
