@@ -1,10 +1,10 @@
 import Wallet from "../models/Wallet.model.js";
 import { notifyUser } from "../services/pushNotification.service.js";
 
-// ₦1,000 — still higher than a single LEAD_COST_KOBO (₦400) so a vendor
-// gets warned with room to top up before search-eligibility (which gates on
-// a single lead's cost) actually cuts them off. "For now" per the user —
-// expect this to move.
+// ₦1,000 — still higher than a single LEAD_COST_KOBO (₦500, raised from
+// ₦400) so a vendor gets warned with room to top up before search-eligibility
+// (which gates on a single lead's cost) actually cuts them off. "For now"
+// per the user — expect this to move.
 export const LOW_BALANCE_KOBO = 100_000;
 
 // How often a vendor still under threshold gets reminded if they never

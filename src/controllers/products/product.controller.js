@@ -5,6 +5,11 @@ import User from "../../models/Users.js";
 import { errRes } from "../../helpers/apiResponse.js";
 import { embedAndSaveProduct } from "../../services/embedding.service.js";
 import {
+  creditWalletForProductPost,
+  PRODUCT_BONUS_KOBO,
+  PRODUCT_BONUS_MAX_COUNT,
+} from "../../controllers/wallet/wallet.controller.js";
+import {
   SECTOR_CLASSIFICATION_BY_VALUE,
   CATEGORY_OPTIONAL_SECTOR_VALUES,
   isKnownSector,
@@ -411,9 +416,40 @@ export const createProduct = async (req, res) => {
     // Fire-and-forget: embedding is a search-side concern, must never block
     // or fail product creation.
     embedAndSaveProduct(product);
+
+    // Catalog-building bonus — ₦500, capped at this vendor's first 4
+    // products ever (see creditWalletForProductPost). Awaited so the wallet
+    // reflects the credit by the time this response returns, but caught so
+    // a wallet hiccup can never turn into a failed/duplicated product
+    // creation — the listing must always win over the bonus.
+    let bonus = null;
+    try {
+      const bonusResult = await creditWalletForProductPost(
+        req.user.userId,
+        product._id,
+        { productName: product.name },
+      );
+      // Told to the frontend so it can surface an instant "+bonus" toast
+      // instead of relying solely on the (async, easy-to-miss) wallet
+      // notification — see wallet.controller.js's notifyUser call in
+      // creditWalletForProductPost for that separate channel. Only a real,
+      // backend-confirmed grant is ever reported here — never guessed
+      // client-side, since only this call actually knows whether the cap
+      // was already hit or the wallet write raced and lost.
+      if (bonusResult.credited) {
+        bonus = {
+          amount_kobo: PRODUCT_BONUS_KOBO,
+          granted_count: bonusResult.wallet.productBonusGrantedCount,
+          max_count: PRODUCT_BONUS_MAX_COUNT,
+        };
+      }
+    } catch (err) {
+      console.error("Product-post bonus credit failed:", err.message);
+    }
+
     return res
       .status(201)
-      .json({ success: true, data: formatProduct(product) });
+      .json({ success: true, data: formatProduct(product), bonus });
   } catch (err) {
     console.error("Create product error:", err);
     return errRes(res, 500, "INTERNAL_ERROR", "Failed to create product");
