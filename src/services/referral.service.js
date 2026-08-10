@@ -1,10 +1,24 @@
 import User from '../models/Users.js';
 import Referral from '../models/Referral.model.js';
+import Product from '../models/Product.model.js';
 import { creditWalletForReferral } from '../controllers/wallet/wallet.controller.js';
 import { notifyUser } from './pushNotification.service.js';
 import { generateUniqueReferralCode } from '../utils/referralCode.js';
 
 export const REFERRAL_BONUS_KOBO = 100_000; // ₦1,000 — "for now", per the wallet-threshold precedent
+
+// Real leakage found live (2026-08-10, 25 vendors on the platform): email
+// verification alone was the only gate, so a vendor with a drained wallet
+// could refer a fresh (or friend's) account, verify its email, and collect
+// ₦1,000 without the referee ever listing a single product — pure
+// self-dealing, no real catalog growth behind it. Require the referee to
+// have actually posted a real number of listings too. A LIVE count (not a
+// monotonic counter like the product-listing bonus deliberately uses) is
+// fine here specifically because this credit is a one-time idempotent event
+// (Referral.status flips pending -> credited exactly once, guarded below) —
+// there's no repeatable delete-and-recreate farming loop to worry about the
+// way there is for a per-product reward.
+export const REFERRAL_CREDIT_MIN_PRODUCTS = 4;
 
 /**
  * Called once, at signup, before the new user is saved. Always assigns a
@@ -51,12 +65,18 @@ export async function recordPendingReferral(newUser, referralInfo) {
 }
 
 /**
- * Called after a referee's email verification succeeds (the anti-abuse
- * gate — a bare signup with no real email behind it never pays out). Finds
- * their pending Referral (if any), credits the referrer's wallet, marks it
- * credited, and notifies the referrer. A no-op for a vendor who wasn't
- * referred, or whose referral was already credited (idempotent by the
- * `status: 'pending'` filter — calling this twice is safe).
+ * Called both right after a referee's email verification succeeds AND after
+ * every product they create (see auth.js's verifyEmail and
+ * product.controller.js's createProduct) — either call is a cheap no-op
+ * until both real gates are satisfied: a verified email (enforced upstream —
+ * an unverified account can't even log in to post a product, see auth.js's
+ * login check) AND at least REFERRAL_CREDIT_MIN_PRODUCTS real listings
+ * (checked here). Finds the referee's pending Referral (if any), and only
+ * once the product-count gate also passes: credits the referrer's wallet,
+ * marks it credited, and notifies the referrer. A no-op for a vendor who
+ * wasn't referred, whose referral was already credited, or who hasn't
+ * posted enough listings yet — idempotent by the `status: 'pending'` filter,
+ * safe to call as often as either trigger point fires.
  */
 export async function creditPendingReferral(refereeUser) {
   const referral = await Referral.findOne({
@@ -64,6 +84,9 @@ export async function creditPendingReferral(refereeUser) {
     status: 'pending',
   });
   if (!referral) return;
+
+  const productCount = await Product.countDocuments({ vendorId: refereeUser._id });
+  if (productCount < REFERRAL_CREDIT_MIN_PRODUCTS) return;
 
   const refereeName = refereeUser.company?.name || refereeUser.name;
 
