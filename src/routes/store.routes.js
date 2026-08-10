@@ -10,6 +10,7 @@ import {
   getVendorsPreview,
   getMarketplaceBrowse,
   getVendorsBrowse,
+  getSimilarVendors,
   getPublicCategories,
   getProductImage,
   listStoreHandlesForSitemap,
@@ -19,6 +20,10 @@ const router = express.Router();
 
 // Public — powers the /store/:handle page, no session required.
 router.get("/by-handle/:handle", getPublicStore);
+
+// Public — feeds the /store/:handle page's "Similar vendors you may like"
+// section.
+router.get("/by-handle/:handle/similar", getSimilarVendors);
 
 // Public — lets /api/search attach a matched product's own vendor storefront.
 router.get("/by-vendor/:vendorId", getStoreByVendorId);
