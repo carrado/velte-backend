@@ -769,7 +769,11 @@ export async function creditWalletForReferral(vendorId, amountKobo, { referralId
 // of products a vendor creates back-to-back, only the ones that still see
 // the counter under the cap AT THE MOMENT OF THE UPDATE get credited — the
 // 5th (and beyond) is a clean no-op, not an error.
-export async function creditWalletForProductPost(vendorId, productId) {
+//
+// `productName` is optional purely for the notification copy below — the
+// credit/cap logic itself never needs it, so a caller that doesn't have a
+// clean name handy still gets a correct (just slightly generic) credit.
+export async function creditWalletForProductPost(vendorId, productId, { productName } = {}) {
   const claimed = await Wallet.findOneAndUpdate(
     { vendorId, productBonusGrantedCount: { $lt: PRODUCT_BONUS_MAX_COUNT } },
     { $inc: { balanceKobo: PRODUCT_BONUS_KOBO, productBonusGrantedCount: 1 } },
@@ -806,6 +810,28 @@ export async function creditWalletForProductPost(vendorId, productId) {
   clearLowBalanceFlagIfRecovered(claimed);
   clearAutoRechargeFailureIfRecovered(claimed);
   if (claimed.isModified()) await claimed.save();
+
+  // Without this, a vendor's only way to notice the credit is stumbling on
+  // it in the wallet ledger — same reasoning as creditWalletForReferral's
+  // own notifyUser call just above. "wallet" is already a HIGH_URGENCY_TYPES
+  // entry (pushNotification.service.js), and the in-app bell write inside
+  // notifyUser happens unconditionally even when push itself is unset up or
+  // silently dropped by the device (see the Transsion/XOS battery-killing
+  // note elsewhere in this codebase) — so this is the guaranteed channel,
+  // push is the bonus.
+  try {
+    await notifyUser(vendorId, {
+      type: "wallet",
+      title: "Product bonus credited",
+      body: `You earned N${(PRODUCT_BONUS_KOBO / 100).toLocaleString("en-NG")} for listing "${
+        productName ?? "your new product"
+      }" — added to your Velte wallet. (${claimed.productBonusGrantedCount}/${PRODUCT_BONUS_MAX_COUNT} bonuses used)`,
+      url: `/${vendorId}/wallet`,
+      tag: "product-bonus-credited",
+    });
+  } catch (err) {
+    console.error(`[product-bonus] notify failed for ${vendorId}:`, err.message);
+  }
 
   return { credited: true, wallet: claimed };
 }

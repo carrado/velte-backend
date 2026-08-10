@@ -419,7 +419,9 @@ export const createProduct = async (req, res) => {
     // a wallet hiccup can never turn into a failed/duplicated product
     // creation — the listing must always win over the bonus.
     try {
-      await creditWalletForProductPost(req.user.userId, product._id);
+      await creditWalletForProductPost(req.user.userId, product._id, {
+        productName: product.name,
+      });
     } catch (err) {
       console.error("Product-post bonus credit failed:", err.message);
     }
