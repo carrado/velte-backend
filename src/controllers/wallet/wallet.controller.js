@@ -62,6 +62,14 @@ export const LEAD_COST_KOBO = 40_000;
 const MIN_AMOUNT_NAIRA = 1000;
 const MIN_AMOUNT_KOBO = MIN_AMOUNT_NAIRA * 100;
 
+// ₦500 per product listing, capped at a vendor's first PRODUCT_BONUS_MAX_COUNT
+// products ever — an early catalog-building incentive (empty-catalog vendors
+// don't show up in search at all, so this pays them to get past that), not
+// an ongoing per-listing subsidy. "For now", same precedent as
+// STARTER_CREDIT_KOBO/REFERRAL_BONUS_KOBO above/in referral.service.js.
+export const PRODUCT_BONUS_KOBO = 50_000; // ₦500
+export const PRODUCT_BONUS_MAX_COUNT = 4;
+
 // Wallet creation (incl. the starter-credit grant) is sole-owned here — the
 // standalone staffly-ai-backend search service only ever READS a wallet, it
 // never creates one (see its README). So this must run proactively before a
@@ -749,6 +757,57 @@ export async function creditWalletForReferral(vendorId, amountKobo, { referralId
   }
 
   return { credited: true, wallet };
+}
+
+// ── Product-post bonus hook (not an HTTP endpoint) ──────────────────────────
+// Called from product.controller.js's createProduct, right after a listing
+// is created. Unlike creditWalletForReferral (which credits based on an
+// event that only ever happens once per referral), this one needs its own
+// atomic cap check — claimed via a single findOneAndUpdate gated on
+// `productBonusGrantedCount < PRODUCT_BONUS_MAX_COUNT`, the same "only one
+// concurrent caller can win" pattern as starterCreditGranted. Of any number
+// of products a vendor creates back-to-back, only the ones that still see
+// the counter under the cap AT THE MOMENT OF THE UPDATE get credited — the
+// 5th (and beyond) is a clean no-op, not an error.
+export async function creditWalletForProductPost(vendorId, productId) {
+  const claimed = await Wallet.findOneAndUpdate(
+    { vendorId, productBonusGrantedCount: { $lt: PRODUCT_BONUS_MAX_COUNT } },
+    { $inc: { balanceKobo: PRODUCT_BONUS_KOBO, productBonusGrantedCount: 1 } },
+    { new: true },
+  );
+  if (!claimed) return { credited: false, reason: "bonus_cap_reached" };
+
+  try {
+    await WalletTransaction.create({
+      walletId: claimed._id,
+      vendorId,
+      type: "topup",
+      amountKobo: PRODUCT_BONUS_KOBO,
+      balanceAfterKobo: claimed.balanceKobo,
+      reference: `product_bonus_${productId}`,
+      status: "success",
+      channel: "product_bonus",
+      description: "Product listing bonus",
+    });
+  } catch (err) {
+    // Duplicate reference — this exact product already granted a bonus
+    // (e.g. a retried request). Back out this call's own credit AND its
+    // counter bump atomically; the winner's ledger row already stands.
+    if (err.code === 11000) {
+      await Wallet.updateOne(
+        { _id: claimed._id },
+        { $inc: { balanceKobo: -PRODUCT_BONUS_KOBO, productBonusGrantedCount: -1 } },
+      );
+      return { credited: false, reason: "already_credited" };
+    }
+    throw err;
+  }
+
+  clearLowBalanceFlagIfRecovered(claimed);
+  clearAutoRechargeFailureIfRecovered(claimed);
+  if (claimed.isModified()) await claimed.save();
+
+  return { credited: true, wallet: claimed };
 }
 
 // Failure/retry/notify policy for a failing auto-recharge (user-directed

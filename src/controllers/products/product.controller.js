@@ -4,6 +4,7 @@ import Category from "../../models/Category.model.js";
 import User from "../../models/Users.js";
 import { errRes } from "../../helpers/apiResponse.js";
 import { embedAndSaveProduct } from "../../services/embedding.service.js";
+import { creditWalletForProductPost } from "../../controllers/wallet/wallet.controller.js";
 import {
   SECTOR_CLASSIFICATION_BY_VALUE,
   CATEGORY_OPTIONAL_SECTOR_VALUES,
@@ -411,6 +412,18 @@ export const createProduct = async (req, res) => {
     // Fire-and-forget: embedding is a search-side concern, must never block
     // or fail product creation.
     embedAndSaveProduct(product);
+
+    // Catalog-building bonus — ₦500, capped at this vendor's first 4
+    // products ever (see creditWalletForProductPost). Awaited so the wallet
+    // reflects the credit by the time this response returns, but caught so
+    // a wallet hiccup can never turn into a failed/duplicated product
+    // creation — the listing must always win over the bonus.
+    try {
+      await creditWalletForProductPost(req.user.userId, product._id);
+    } catch (err) {
+      console.error("Product-post bonus credit failed:", err.message);
+    }
+
     return res
       .status(201)
       .json({ success: true, data: formatProduct(product) });

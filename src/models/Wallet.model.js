@@ -21,6 +21,15 @@ const walletSchema = new mongoose.Schema(
     // firing together on first page load) can't both win the grant.
     starterCreditGranted: { type: Boolean, default: false },
 
+    // Monotonic counter for the product-listing bonus (see
+    // creditWalletForProductPost in wallet.controller.js) — caps at
+    // PRODUCT_BONUS_MAX_COUNT and, deliberately, never decrements when a
+    // product is later deleted. A plain live `Product.countDocuments` would
+    // let a vendor delete-and-repost their way to unlimited bonuses; this
+    // counter only ever goes up, so the cap is really "first N products this
+    // vendor ever posted," not "N products currently listed."
+    productBonusGrantedCount: { type: Number, default: 0, min: 0 },
+
     // Paystack customer — required before a DVA can be issued, and useful for
     // charge_authorization calls too.
     paystackCustomerCode: { type: String, default: null },
