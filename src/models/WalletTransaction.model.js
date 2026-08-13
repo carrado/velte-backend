@@ -37,13 +37,29 @@ const walletTransactionSchema = new mongoose.Schema(
 
     // Which buyer-facing surface produced this lead — 'browse' (homepage
     // marketplace grid or the public /store/[handle] page, both a direct
-    // "chat about this listing" click with no AI involved) or 'search'
-    // (/search, the AI-matched result cards). null for anything pre-dating
-    // this field, or a debit type that isn't a lead at all. Exists so the
-    // "swap fully to AI once the catalog is big enough" call (see
-    // CLAUDE.md's Velte Connect build order) can be a real decision made
-    // from which path is actually converting, not a guess.
-    source: { type: String, enum: ["browse", "search"], default: null },
+    // "chat about this listing" click with no AI involved), 'search'
+    // (/search, the AI-matched result cards), or 'buyer_request' (a buyer
+    // read vendor responses on their posted Buyer Request and chose one to
+    // chat — see docs/velte_buyer_requests_mvp_spec.md §27/§28). null for
+    // anything pre-dating this field, or a debit type that isn't a lead at
+    // all. Exists so the "swap fully to AI once the catalog is big enough"
+    // call (see CLAUDE.md's Velte Connect build order) can be a real
+    // decision made from which path is actually converting, not a guess.
+    source: {
+      type: String,
+      enum: ["browse", "search", "buyer_request"],
+      default: null,
+    },
+
+    // Only set when source === "buyer_request" — links this lead back to
+    // the BuyerRequest it came from, so revenue attributable to the feature
+    // is queryable (spec §28) without joining through LeadCooldown's
+    // opaque, non-persisted buyerId.
+    requestId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "BuyerRequest",
+      default: null,
+    },
   },
   { timestamps: true },
 );

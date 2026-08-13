@@ -9,6 +9,13 @@ import rateLimit from "express-rate-limit";
 import mongoSanitize from "express-mongo-sanitize";
 import hpp from "hpp";
 import authRoutes from "./routes/auth.js";
+import buyerAuthRoutes from "./routes/buyerAuth.routes.js";
+import buyerRequestsRoutes from "./routes/buyerRequests.routes.js";
+import vendorBuyerRequestsRoutes from "./routes/vendorBuyerRequests.routes.js";
+import buyerSavedRoutes from "./routes/buyerSaved.routes.js";
+import vendorFollowersRoutes from "./routes/vendorFollowers.routes.js";
+import buyerNotificationsRoutes from "./routes/buyerNotifications.routes.js";
+import buyerPushRoutes from "./routes/buyerPush.routes.js";
 import subscriptionRoutes from "./routes/subscription.routes.js";
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
 import usersRoutes from "./routes/users.routes.js";
@@ -26,6 +33,7 @@ import { startKeepAlive } from "./initializers/keepAlive.js";
 import { startWalletLowBalanceCron } from "./initializers/walletLowBalanceCron.js";
 import { startUnverifiedUsersCleanupCron } from "./initializers/unverifiedUsersCleanupCron.js";
 import { startAutoRechargeRetryCron } from "./initializers/autoRechargeRetryCron.js";
+import { startBuyerRequestExpiryCron } from "./initializers/buyerRequestExpiryCron.js";
 
 const app = express();
 
@@ -102,6 +110,13 @@ mongoose
 
 // Routes
 app.use("/api/auth", authRoutes);
+app.use("/api/buyer-auth", buyerAuthRoutes);
+app.use("/api/buyer-requests", buyerRequestsRoutes);
+app.use("/api/vendor/buyer-requests", vendorBuyerRequestsRoutes);
+app.use("/api/buyer-saved", buyerSavedRoutes);
+app.use("/api/vendor/followers", vendorFollowersRoutes);
+app.use("/api/buyer-notifications", buyerNotificationsRoutes);
+app.use("/api/buyer-push", buyerPushRoutes);
 app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/products", productsRoutes);
@@ -151,4 +166,17 @@ app.listen(PORT, () => {
   // whose leads dry up mid-episode still gets retried and eventually
   // notified again, not just the ones lucky enough to get a new lead.
   startAutoRechargeRetryCron();
+
+  // "vendor responded" used to be a 3h-batched SMS sweep here
+  // (docs/velte_buyer_requests_mvp_spec.md §30-34) — retired, no longer
+  // wired in. Buyers now get an in-app notification immediately instead
+  // (see vendorBuyerRequests.controller.js's respondToRequest); no SMS, no
+  // batching needed. initializers/buyerRequestNotificationsCron.js and
+  // jobs/buyerRequestNotifications.job.js are left on disk, unreferenced,
+  // same "orphaned, not deleted" precedent as this repo's other retired
+  // features (e.g. Connected Catalogs).
+
+  // Hourly sweep — flips active Buyer Requests past their expiresAt to
+  // "expired" (spec §11/§36).
+  startBuyerRequestExpiryCron();
 });

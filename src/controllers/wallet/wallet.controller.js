@@ -690,7 +690,7 @@ export async function getTransactions(req, res, next) {
 export async function debitWalletForLead(
   vendorId,
   amountKobo,
-  { leadId, description, source } = {},
+  { leadId, description, source, requestId } = {},
 ) {
   const wallet = await Wallet.findOneAndUpdate(
     { vendorId, balanceKobo: { $gte: amountKobo } },
@@ -710,6 +710,7 @@ export async function debitWalletForLead(
     channel: "lead",
     description: description ?? "Lead charge",
     source: source ?? null,
+    requestId: requestId ?? null,
   });
 
   // Auto-recharge is fully wired here so it works the moment leads start

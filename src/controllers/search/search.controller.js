@@ -47,11 +47,11 @@ async function isWithinCooldown(vendorId, buyerId) {
 // unbilled (see debitWalletForLead's `debited: false` — today that's a no-op,
 // eligibility policy for a drained wallet is a matching-layer decision, not
 // this endpoint's).
-const LEAD_SOURCES = ["browse", "search"];
+const LEAD_SOURCES = ["browse", "search", "buyer_request"];
 
 export async function chargeLead(req, res, next) {
   try {
-    const { vendorId, productId, buyerId, source } = req.body ?? {};
+    const { vendorId, productId, buyerId, source, requestId } = req.body ?? {};
     if (typeof vendorId !== "string" || !vendorId.trim()) {
       throw new AppError("vendorId is required.", 400);
     }
@@ -59,6 +59,15 @@ export async function chargeLead(req, res, next) {
     // request over — the buyer's chat has already opened by the time this
     // fires (see this endpoint's own doc comment) — just don't tag it.
     const leadSource = LEAD_SOURCES.includes(source) ? source : null;
+
+    // NOTE on buyerId semantics for a "buyer_request"-sourced lead: for
+    // "browse"/"search" this has always been an anonymous, per-browser
+    // string used only for the cooldown dedup below (see LeadCooldown's own
+    // doc comment) — never a real account. For "buyer_request" it's the
+    // authenticated Buyer's real _id (the frontend has one, since posting a
+    // request required verifying). It still works here mechanically — this
+    // field is a bare String in LeadCooldown — but it's worth knowing the
+    // meaning shifts per source rather than assuming it's always opaque.
 
     // Same buyer, same vendor, within 15 minutes of their last charged
     // click — skip billing entirely rather than charge again for what's
@@ -95,6 +104,7 @@ export async function chargeLead(req, res, next) {
       leadId,
       description,
       source: leadSource,
+      requestId: leadSource === "buyer_request" && typeof requestId === "string" ? requestId : null,
     });
 
     // Best-effort, same as the wallet-low-balance and referral notifiers —

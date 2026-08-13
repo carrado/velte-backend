@@ -12,6 +12,7 @@ const TYPE_MAP = {
   'referral': 'referral',
   'system': 'system',
   'new-message': 'system',
+  'buyer-follow': 'system',
 };
 
 function toClientShape(n) {
