@@ -63,16 +63,39 @@ export async function requestOtp(req, res, next) {
 
 const USERNAME_RE = /^[a-z0-9_]{3,20}$/;
 
-// POST /api/buyer-auth/verify-otp — { phone, otp, username, name, location? }
+// Auto-generates a placeholder username from the buyer's own phone number
+// (e.g. "buyer_012345") — 2026-08-13 registration-friction fix: username
+// used to be a REQUIRED field on first verification (two buyers can't share
+// one, so *some* value has to exist), which meant "post a request" and
+// "save an item" both forced a buyer through a username-picking form before
+// either could complete. Now it's generated silently so verifyOtp never
+// blocks on it; the buyer can still pick a real one later via PATCH /me
+// (Profile page), same "defer it, don't gate on it" treatment as `name`.
+async function generateUsername(phone) {
+  const digits = String(phone).replace(/\D/g, "").slice(-6) || "0000";
+  const base = `buyer_${digits}`;
+  if (!(await Buyer.exists({ username: base }))) return base;
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${base}_${i}`;
+    // eslint-disable-next-line no-await-in-loop -- small, bounded collision
+    // retry (mirrors store.controller.js's own getOrCreateStore handle loop)
+    if (!(await Buyer.exists({ username: candidate }))) return candidate;
+  }
+  // Astronomically unlikely (1000 collisions on the same 6 digits) — fall
+  // back to something guaranteed-unique rather than loop forever.
+  return `buyer_${digits}_${Date.now().toString(36)}`;
+}
+
+// POST /api/buyer-auth/verify-otp — { phone, otp, name?, location? }
 // Verifies the code, marks the buyer verified, issues the session cookie.
-// `location` stays optional per spec §3/§63.3's "do not ask for unnecessary
-// onboarding information" — but `username` and `name` are the buyer's real
-// identity (two buyers can't share a username) and are required the first
-// time a buyer verifies; a buyer who already has them can leave either out
-// on later verifications and keep the existing values.
+// Only `phone` + `otp` are ever required — per the 2026-08-13 lightweight-
+// registration rework, `name` and `location` stay fully optional (the
+// frontend offers a skippable "what should we call you?" step after this
+// succeeds, never blocking it), and `username` is no longer buyer-supplied
+// here at all — see generateUsername() above.
 export async function verifyOtp(req, res, next) {
   try {
-    const { phone, otp, username, name, location } = req.body;
+    const { phone, otp, name, location } = req.body;
     if (!phone || !otp) {
       return next(new AppError("Phone and code are required", 400));
     }
@@ -91,23 +114,8 @@ export async function verifyOtp(req, res, next) {
       return next(new AppError("Code has expired. Request a new one.", 400));
     }
 
-    if (!buyer.name && (typeof name !== "string" || !name.trim())) {
-      return next(new AppError("Please tell us your name.", 400));
-    }
-    if (!buyer.username && !username) {
-      return next(new AppError("Please choose a username.", 400));
-    }
-    if (username) {
-      const normalized = String(username).trim().toLowerCase();
-      if (!USERNAME_RE.test(normalized)) {
-        return next(
-          new AppError(
-            "Username must be 3-20 characters — letters, numbers and underscores only.",
-            400,
-          ),
-        );
-      }
-      buyer.username = normalized;
+    if (!buyer.username) {
+      buyer.username = await generateUsername(buyer.phone);
     }
 
     buyer.phoneVerified = true;
@@ -155,6 +163,60 @@ export async function me(req, res, next) {
   try {
     const buyer = await Buyer.findById(req.buyer.buyerId);
     if (!buyer) return next(new AppError("Buyer not found", 404));
+    res.status(200).json({ success: true, data: { buyer } });
+  } catch (err) {
+    next(err instanceof AppError ? err : new AppError(err.message, 500));
+  }
+}
+
+// PATCH /api/buyer-auth/me — { name?, username?, location? }
+// 2026-08-13 — the progressive-profile counterpart to verifyOtp no longer
+// collecting name/username upfront: a verified buyer can fill either in
+// later (the post-verify "what should we call you?" step, or the Profile
+// page's own edit-in-place rows) without it ever having blocked their
+// original request/save. Mirrors auth.js's vendor `PUT /profile` shape.
+export async function updateMe(req, res, next) {
+  try {
+    const { name, username, location } = req.body;
+    const buyer = await Buyer.findById(req.buyer.buyerId);
+    if (!buyer) return next(new AppError("Buyer not found", 404));
+
+    if (typeof name === "string") {
+      const trimmed = name.trim();
+      if (!trimmed) return next(new AppError("Name can't be empty.", 400));
+      buyer.name = trimmed;
+    }
+    if (typeof username === "string") {
+      const normalized = username.trim().toLowerCase();
+      if (!USERNAME_RE.test(normalized)) {
+        return next(
+          new AppError(
+            "Username must be 3-20 characters — letters, numbers and underscores only.",
+            400,
+          ),
+        );
+      }
+      buyer.username = normalized;
+    }
+    if (
+      location &&
+      typeof location.lat === "number" &&
+      typeof location.lng === "number"
+    ) {
+      buyer.location = { type: "Point", coordinates: [location.lng, location.lat] };
+    }
+
+    try {
+      await buyer.save();
+    } catch (err) {
+      if (err.code === 11000 && err.keyPattern?.username) {
+        return next(
+          new AppError("That username is already taken. Try another.", 409),
+        );
+      }
+      throw err;
+    }
+
     res.status(200).json({ success: true, data: { buyer } });
   } catch (err) {
     next(err instanceof AppError ? err : new AppError(err.message, 500));

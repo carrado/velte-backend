@@ -7,12 +7,13 @@ import mongoose from "mongoose";
 // into one schema, and this keeps buyer_auth_token-scoped queries from ever
 // needing to filter by actor type.
 //
-// In-app ONLY, on purpose — no SMS (buyers used to get SMS for request
-// responses via the now-retired buyerRequestNotifications cron; explicit
-// product direction was to stop that), and no push (buyers have no
-// PushSubscription/VAPID registration at all — that's vendor-only
-// infrastructure, see pushNotification.service.js). A row in this
-// collection IS the entire notification.
+// A row in this collection IS the in-app notification — but as of
+// 2026-08-14 it's no longer the ONLY channel: buyerNotification.service.js's
+// notifyBuyer also sends push (BuyerPushSubscription) always, and real SMS
+// (via sendchamp.service.js) for the narrow set of urgent types in that
+// file's own SMS_TYPES (currently just "request-response"). This schema
+// doesn't track which channels actually fired for a given row — it's the
+// durable in-app record regardless of what else went out alongside it.
 const buyerNotificationSchema = new mongoose.Schema(
   {
     buyerId: {

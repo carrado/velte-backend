@@ -4,6 +4,7 @@ import {
   requestOtp,
   verifyOtp,
   me,
+  updateMe,
   logout,
 } from "../controllers/buyerAuth/buyerAuth.controller.js";
 import { verifyBuyerAuth } from "../middleware/buyerAuth.js";
@@ -39,6 +40,7 @@ const otpVerifyLimiter = rateLimit({
 router.post("/request-otp", otpRequestLimiter, requestOtp);
 router.post("/verify-otp", otpVerifyLimiter, verifyOtp);
 router.get("/me", verifyBuyerAuth, me);
+router.patch("/me", verifyBuyerAuth, updateMe);
 router.post("/logout", logout);
 
 export default router;
