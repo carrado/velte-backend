@@ -1,5 +1,9 @@
 import jwt from "jsonwebtoken";
 import User from "../../models/Users.js";
+// Cross-model uniqueness + the unified login's buyer fallback — see
+// register()'s and login()'s own comments below. Buyer.model.js's own
+// comment has the mirror check on the buyer-signup side.
+import Buyer from "../../models/Buyer.model.js";
 import { sendVerificationEmail } from "../../helpers/emailSender.js";
 import {
   prepareReferralForSignup,
@@ -106,6 +110,18 @@ export const register = async (req, res) => {
       }
     }
 
+    // 2026-08-15 — a buyer and a vendor can never share an email either
+    // (login unification: the same identifier has to resolve to exactly one
+    // account). Checked here, after the existingUser branch above has
+    // already handled/returned on a vendor-side collision, so this only
+    // ever fires for a genuine cross-account clash.
+    const emailOwnedByBuyer = await Buyer.exists({ email });
+    if (emailOwnedByBuyer) {
+      return res.status(409).json({
+        message: "An account with this email already exists.",
+      });
+    }
+
     // A phone number identifies a real person the same way an email does —
     // two accounts sharing one lets either side impersonate/contact-hijack
     // the other's buyers. Checked here (not before the existingUser block
@@ -113,10 +129,14 @@ export const register = async (req, res) => {
     // unverified signup already returns early above with the SAME phone
     // they entered before — checking any earlier would wrongly reject
     // their own resend as "taken." Also a backstop below the app layer,
-    // not instead of one — see Users.js's partial unique index.
+    // not instead of one — see Users.js's partial unique index. Now also
+    // checks the Buyer collection (same reasoning as the email check above).
     if (phone) {
-      const phoneTaken = await User.findOne({ phone });
-      if (phoneTaken) {
+      const [phoneTaken, phoneOwnedByBuyer] = await Promise.all([
+        User.findOne({ phone }),
+        Buyer.exists({ phone }),
+      ]);
+      if (phoneTaken || phoneOwnedByBuyer) {
         return res.status(409).json({
           message: "An account with this phone number already exists.",
         });
@@ -207,14 +227,85 @@ export const register = async (req, res) => {
 
 
 
-// Login controller
+// Session cookie shared by both branches of login() below — same options
+// buyer_auth_token uses (buyerAuth.controller.js's cookieOptions), kept
+// separate on purpose: this signs auth_token specifically, that one signs
+// buyer_auth_token, and neither should accidentally drift from the other.
+function authCookieOptions() {
+  const isProd =
+    process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? "none" : "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  };
+}
+
+// Login controller — 2026-08-15, UNIFIED: one login screen, one endpoint,
+// for both vendors and buyers. `identifier` is an email OR a username (a
+// buyer's is auto-generated and effectively never used this way in
+// practice, but nothing stops it). Vendor is tried first; only if NO vendor
+// matches the identifier does this fall back to the Buyer collection —
+// never on a matched-vendor-wrong-password, both to avoid a cross-account
+// timing/enumeration side channel and because email/phone uniqueness
+// across the two collections (enforced at signup, see register() and
+// Buyer.model.js) means a real identifier can only ever belong to one
+// side anyway. `email` is still accepted as an alias for `identifier` —
+// nothing currently sends it, but there's no reason to hard-break an old
+// client that might.
 export const login = async (req, res) => {
   try {
-    const { email, password, rememberMe } = req.body;
+    const { identifier, email, password } = req.body;
+    const idRaw = (identifier ?? email ?? "").trim();
+    if (!idRaw || !password) {
+      return res
+        .status(400)
+        .json({ message: "Email/username and password are required" });
+    }
+    const idLower = idRaw.toLowerCase();
 
-    // 🔹 Find user by email
-    const user = await User.findOne({ email });
-    if (!user || !(await user.comparePassword(password))) {
+    // 🔹 Vendor branch
+    const user = await User.findOne({
+      $or: [{ email: idLower }, { username: idRaw }],
+    });
+    if (user) return loginAsVendor(user, password, res);
+
+    // 🔹 Buyer branch — only reached when no vendor matched at all.
+    const buyer = await Buyer.findOne({
+      $or: [{ email: idLower }, { username: idLower }],
+    }).select("+password");
+    if (buyer && buyer.password && (await buyer.comparePassword(password))) {
+      const token = jwt.sign(
+        { buyerId: buyer._id, type: "buyer" },
+        process.env.JWT_SECRET,
+        { expiresIn: "7d" },
+      );
+      res.cookie("buyer_auth_token", token, authCookieOptions());
+      return res.status(200).json({
+        success: true,
+        accountType: "buyer",
+        buyer,
+        message: "Login successful",
+      });
+    }
+
+    return res.status(401).json({ message: "Invalid credentials" });
+  } catch (error) {
+    console.error("Login error:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// The pre-existing vendor login body, unchanged in substance — just
+// extracted so login() above can call it from the vendor branch while still
+// falling through to the buyer branch when `user` doesn't exist at all
+// (can't `return` a 401 for a bad password here and expect the caller to
+// keep going, so a wrong VENDOR password still short-circuits inside here,
+// exactly as before).
+async function loginAsVendor(user, password, res) {
+  try {
+    if (!(await user.comparePassword(password))) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
@@ -249,6 +340,10 @@ export const login = async (req, res) => {
 
         return res.status(403).json({
           success: false,
+          // The identifier the vendor typed may have been their USERNAME,
+          // not their email — the frontend's /auth/verify redirect needs
+          // the real email regardless of which one was entered.
+          email: user.email,
           message:
             "Your account is not verified. A new verification code has been sent to your email.",
         });
@@ -267,22 +362,12 @@ export const login = async (req, res) => {
     });
 
     // 🔹 Set token in HttpOnly cookie
-    res.cookie("auth_token", token, {
-      httpOnly: true,
-      secure:
-        process.env.NODE_ENV === "production" ||
-        process.env.NODE_ENV === "staging",
-      sameSite:
-        process.env.NODE_ENV === "production" ||
-        process.env.NODE_ENV === "staging"
-          ? "none"
-          : "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    });
+    res.cookie("auth_token", token, authCookieOptions());
 
     // 🔹 Success response
     res.status(200).json({
       success: true,
+      accountType: "vendor",
       user: {
         id: user._id,
         name: user.name,
@@ -304,7 +389,7 @@ export const login = async (req, res) => {
     console.error("Login error:", error);
     res.status(500).json({ message: "Internal server error" });
   }
-};
+}
 
 
 
