@@ -8,10 +8,22 @@ import { sendSms } from "../../services/sendchamp.service.js";
 import { notifyUser } from "../../services/pushNotification.service.js";
 
 // ── POST /api/buyer-requests ────────────────────────────────────────────────
-// Auth-gated (verifyBuyerAuth). Creates the request regardless of whether
-// matching finds anything — spec §14, "do not reject the request" — and
-// regardless of whether the confirmation SMS succeeds — spec §29/§53,
-// request creation must still succeed on an SMS failure.
+// Auth-gated (verifyBuyerAuth). Regardless of whether the confirmation SMS
+// succeeds, a request that DOES have matched vendors must still be created —
+// spec §29/§53, request creation must still succeed on an SMS failure.
+//
+// 2026-08-16: reverses spec §14's original "do not reject the request" rule
+// for the ZERO-match case specifically. That rule was written when "reach
+// out to businesses" was assumed to always reach someone; in practice, this
+// tool only ever fires after searchProducts AND searchStores already came up
+// empty against the same vendor corpus this matching call also searches —
+// so a zero match here is common, not an edge case. Persisting a request no
+// vendor will ever see turned "I've reached out to businesses for you" into
+// a false promise. Now: no match, no request — the caller (createBuyerRequestTool)
+// falls back to surfacing Google Places instead of a hollow confirmation.
+// Retroactive matching (a new/edited vendor matching later) remains the
+// documented V2 follow-up, unaffected by this — it would need reviving
+// unmatched requests, not just skipping their creation.
 export async function createRequest(req, res, next) {
   try {
     const { description, imageUrl, location } = req.body ?? {};
@@ -48,6 +60,10 @@ export async function createRequest(req, res, next) {
       imageUrl: typeof imageUrl === "string" ? imageUrl : undefined,
     });
 
+    if (matchedVendorIds.length === 0) {
+      return res.status(200).json({ success: true, data: { created: false } });
+    }
+
     const request = await BuyerRequest.create({
       buyerId: buyer._id,
       description: description.trim(),
@@ -69,28 +85,34 @@ export async function createRequest(req, res, next) {
       console.error(`[buyerRequests] confirmation SMS failed for request ${request._id}:`, err.message);
     });
 
-    if (matchedVendorIds.length) {
-      const preview =
-        description.trim().length > 80
-          ? `${description.trim().slice(0, 80)}…`
-          : description.trim();
-      for (const vendorId of matchedVendorIds) {
-        notifyUser(vendorId, {
-          type: "buyer-request",
-          title: "New Buyer Request",
-          body: `Someone near you is looking for: ${preview}`,
-          url: `/${vendorId}/buyer-requests/${request._id}`,
-          tag: "buyer-request",
-        }).catch((err) => {
-          console.error(
-            `[buyerRequests] vendor notify failed for ${vendorId}, request ${request._id}:`,
-            err.message,
-          );
-        });
-      }
+    const preview =
+      description.trim().length > 80
+        ? `${description.trim().slice(0, 80)}…`
+        : description.trim();
+    for (const vendorId of matchedVendorIds) {
+      notifyUser(vendorId, {
+        type: "buyer-request",
+        title: "New Buyer Request",
+        body: `Someone near you is looking for: ${preview}`,
+        url: `/${vendorId}/buyer-requests/${request._id}`,
+        tag: "buyer-request",
+      }).catch((err) => {
+        console.error(
+          `[buyerRequests] vendor notify failed for ${vendorId}, request ${request._id}:`,
+          err.message,
+        );
+      });
     }
 
-    res.status(201).json({ success: true, data: { request } });
+    // Mongoose's default JSON serialization drops the `id` virtual and keeps
+    // only `_id` (verified against the installed mongoose version — this
+    // isn't a lean-vs-hydrated thing) — every caller of this endpoint reads
+    // `request.id` (the "View request" link, the AI tool's requestId), so
+    // without this explicit map it comes back undefined downstream.
+    res.status(201).json({
+      success: true,
+      data: { created: true, request: { ...request.toObject(), id: String(request._id) } },
+    });
   } catch (err) {
     next(err instanceof AppError ? err : new AppError(err.message, 500));
   }
@@ -137,7 +159,14 @@ export async function getRequest(req, res, next) {
   try {
     const request = await loadOwnRequestOr404(req, next);
     if (!request) return;
-    res.status(200).json({ success: true, data: { request } });
+    // See createRequest's own comment — a hydrated Document's default JSON
+    // form only has `_id`, not `id`; this page reads `request.id` for the
+    // WhatsApp lead-billing click, so without this it silently sends
+    // `undefined` as the source id.
+    res.status(200).json({
+      success: true,
+      data: { request: { ...request.toObject(), id: String(request._id) } },
+    });
   } catch (err) {
     next(err instanceof AppError ? err : new AppError(err.message, 500));
   }
@@ -156,7 +185,10 @@ export async function cancelRequest(req, res, next) {
     request.status = "cancelled";
     await request.save();
 
-    res.status(200).json({ success: true, data: { request } });
+    res.status(200).json({
+      success: true,
+      data: { request: { ...request.toObject(), id: String(request._id) } },
+    });
   } catch (err) {
     next(err instanceof AppError ? err : new AppError(err.message, 500));
   }
