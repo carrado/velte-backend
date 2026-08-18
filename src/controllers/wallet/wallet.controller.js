@@ -59,6 +59,15 @@ const STARTER_CREDIT_KOBO = 200_000; // ₦2,000
 // velte frontend (services/wallet.ts) — see those files' own header notes.
 export const LEAD_COST_KOBO = 50_000;
 
+// ₦1,000 per Buyer Request lead — deliberately higher than a plain
+// searchLEAD_COST_KOBO click-through: accepting a Buyer Request hands the
+// vendor a warm, already-described need AND the buyer's WhatsApp number
+// directly (see vendorBuyerRequests.controller.js's decideOnRequest), not
+// just a WhatsApp click. Charged once, at Accept time, server-side — never
+// through the buyer-facing chargeLead endpoint (buyers have no click to
+// fire it from anymore; there's no buyer UI at all post-request-creation).
+export const BUYER_REQUEST_LEAD_COST_KOBO = 100_000;
+
 // Floor for top-ups and auto-recharge amounts — keeps card fees proportionate
 // and matches the frontend's client-side minimum.
 const MIN_AMOUNT_NAIRA = 1000;

@@ -2,11 +2,8 @@ import Product from "../../models/Product.model.js";
 import ModifierOption from "../../models/ModifierOption.model.js";
 import Category from "../../models/Category.model.js";
 import User from "../../models/Users.js";
-import Store from "../../models/Store.model.js";
-import BuyerSavedItem from "../../models/BuyerSavedItem.model.js";
 import { errRes } from "../../helpers/apiResponse.js";
 import { embedAndSaveProduct } from "../../services/embedding.service.js";
-import { notifyBuyers } from "../../services/buyerNotification.service.js";
 import {
   creditWalletForProductPost,
   PRODUCT_BONUS_KOBO,
@@ -19,65 +16,10 @@ import {
   isKnownSector,
 } from "../../utils/sectorLabels.js";
 
-// ── buyer-facing notification triggers ──────────────────────────────────────
-// Both best-effort — a failure here must never fail the product write that
-// triggered it. In-app only, per product direction (no SMS/push for buyers).
-
-async function notifyFollowersOfNewListing(vendorId, product) {
-  try {
-    const follows = await BuyerSavedItem.find({ kind: "vendor", targetId: vendorId })
-      .select("buyerId")
-      .lean();
-    if (!follows.length) return;
-
-    const store = await Store.findOne({ vendorId }).select("name handle").lean();
-    const isService = product.kind === "service";
-    await notifyBuyers(
-      follows.map((f) => f.buyerId),
-      {
-        type: "followed-new-listing",
-        title: `${store?.name ?? "A vendor you follow"} added something new`,
-        body: `New ${isService ? "service" : "product"}: ${product.name}`,
-        url: store?.handle ? `/store/${store.handle}` : "/buyer/discover",
-        metadata: { vendorId: String(vendorId), productId: String(product._id) },
-      },
-    );
-  } catch (err) {
-    console.error(
-      `[products] followed-new-listing notify failed for vendor ${vendorId}:`,
-      err.message,
-    );
-  }
-}
-
-async function notifySaversOfPriceChange(product, oldPrice, oldPriceMax) {
-  if (product.price === oldPrice && (product.priceMax ?? null) === (oldPriceMax ?? null)) {
-    return;
-  }
-  try {
-    const saves = await BuyerSavedItem.find({ kind: "product", targetId: product._id })
-      .select("buyerId")
-      .lean();
-    if (!saves.length) return;
-
-    const direction = product.price < oldPrice ? "dropped" : product.price > oldPrice ? "went up" : "changed";
-    await notifyBuyers(
-      saves.map((s) => s.buyerId),
-      {
-        type: "saved-price-change",
-        title: "Price change on a saved item",
-        body: `${product.name}'s price ${direction} — take a look.`,
-        url: "/buyer/saved",
-        metadata: { productId: String(product._id) },
-      },
-    );
-  } catch (err) {
-    console.error(
-      `[products] saved-price-change notify failed for product ${product._id}:`,
-      err.message,
-    );
-  }
-}
+// The old "notify buyers who follow this vendor / saved this product"
+// triggers (notifyFollowersOfNewListing, notifySaversOfPriceChange) are gone
+// (2026-08-18) along with BuyerSavedItem/following itself — buyers have no
+// account to follow or save anything with anymore.
 
 // ── sector shape helpers ──────────────────────────────────────────────────────
 // Product logic branches on *shape*, not a frozen account-wide businessType —
@@ -480,9 +422,6 @@ export const createProduct = async (req, res) => {
     // Fire-and-forget: embedding is a search-side concern, must never block
     // or fail product creation.
     embedAndSaveProduct(product);
-    // Fire-and-forget, same reasoning — a buyer's in-app alert is never
-    // worth blocking or failing the listing itself over.
-    notifyFollowersOfNewListing(req.user.userId, product);
 
     // Catalog-building bonus — ₦500, capped at this vendor's first 4
     // products ever (see creditWalletForProductPost). Awaited so the wallet
@@ -545,11 +484,6 @@ export const updateProduct = async (req, res) => {
     });
     if (!product) return errRes(res, 404, "NOT_FOUND", "Product not found");
 
-    // Captured before any mutation below — compared against the saved
-    // values afterward to decide whether to notify buyers who saved this
-    // product (see notifySaversOfPriceChange).
-    const oldPrice = product.price;
-    const oldPriceMax = product.priceMax;
 
     // Shape is fixed by the stored listing (kind/sectorValue never change on
     // update — an offering's identity, including which sector it belongs to,
@@ -662,9 +596,6 @@ export const updateProduct = async (req, res) => {
     // Semantic fields (name/description/category/attributes) may have
     // changed — re-embed. Fire-and-forget, same as create.
     embedAndSaveProduct(product);
-    // Fire-and-forget, same reasoning — no-ops internally if price/priceMax
-    // didn't actually change.
-    notifySaversOfPriceChange(product, oldPrice, oldPriceMax);
 
     return res.json({ success: true, data: formatProduct(product) });
   } catch (err) {
@@ -755,7 +686,6 @@ export const changePrice = async (req, res) => {
       });
     }
 
-    const oldPrice = product.price;
     product.price = price;
     // Setting a real price on a quote-per-job service converts it off quote
     // mode — otherwise buyers would keep seeing "Ask for price" with a price
@@ -769,9 +699,6 @@ export const changePrice = async (req, res) => {
     // required" blocking a price-only change on a legacy product).
     await product.save({ validateModifiedOnly: true });
     await product.populate("modifiers.options");
-    // Fire-and-forget — no-ops internally if the price didn't actually move
-    // (parseFloat could equal the existing price).
-    notifySaversOfPriceChange(product, oldPrice, product.priceMax);
 
     return res.json({ success: true, data: formatProduct(product) });
   } catch (err) {

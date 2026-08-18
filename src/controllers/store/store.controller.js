@@ -2,54 +2,16 @@ import Store from "../../models/Store.model.js";
 import Product from "../../models/Product.model.js";
 import Category from "../../models/Category.model.js";
 import User from "../../models/Users.js";
-import BuyerSavedItem from "../../models/BuyerSavedItem.model.js";
-import BuyerNotification from "../../models/BuyerNotification.model.js";
 import { AppError } from "../../middleware/errorHandler.js";
 import { embedAndSaveStore } from "../../services/embedding.service.js";
-import { notifyBuyers } from "../../services/buyerNotification.service.js";
 import { sectorLabel, mergeBusinessTypeFromLabels } from "../../utils/sectorLabels.js";
 import Wallet from "../../models/Wallet.model.js";
 import { getOrCreateWallet, LEAD_COST_KOBO } from "../wallet/wallet.controller.js";
 
-// Debounce window for "followed vendor updated their store" — a vendor
-// mid-edit can hit Save several times in one sitting (tweak the
-// description, save, tweak again); without this every one of those would
-// re-notify the same followers. One notification per vendor per window,
-// checked by looking at the most recent followed-store-update row for this
-// vendor across ANY buyer rather than a dedicated per-vendor field.
-const STORE_UPDATE_NOTIFY_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
-
-async function notifyFollowersOfStoreUpdate(vendorId, store) {
-  try {
-    const recentlyNotified = await BuyerNotification.exists({
-      type: "followed-store-update",
-      "metadata.vendorId": String(vendorId),
-      createdAt: { $gte: new Date(Date.now() - STORE_UPDATE_NOTIFY_COOLDOWN_MS) },
-    });
-    if (recentlyNotified) return;
-
-    const follows = await BuyerSavedItem.find({ kind: "vendor", targetId: vendorId })
-      .select("buyerId")
-      .lean();
-    if (!follows.length) return;
-
-    await notifyBuyers(
-      follows.map((f) => f.buyerId),
-      {
-        type: "followed-store-update",
-        title: `${store.name} updated their store`,
-        body: "A vendor you follow made changes to their storefront.",
-        url: `/store/${store.handle}`,
-        metadata: { vendorId: String(vendorId) },
-      },
-    );
-  } catch (err) {
-    console.error(
-      `[store] followed-store-update notify failed for vendor ${vendorId}:`,
-      err.message,
-    );
-  }
-}
+// The old "notify buyers who follow this vendor" trigger
+// (notifyFollowersOfStoreUpdate) is gone (2026-08-18) along with
+// BuyerSavedItem/following itself — buyers have no account to follow a
+// vendor with anymore.
 
 const HANDLE_RE = /^[a-z0-9](?:[a-z0-9-]{1,28}[a-z0-9])?$/; // 2–30 chars, no edge hyphens
 const MAX_GALLERY = 6;
@@ -292,10 +254,6 @@ export async function updateMyStore(req, res, next) {
     // Description/sectors/name may have changed — re-embed. Fire-and-forget:
     // never block the store update on a third-party AI call.
     embedAndSaveStore(store);
-    // Fire-and-forget, same reasoning — no-ops internally (see its own
-    // cooldown check) if this vendor's followers were already notified
-    // recently.
-    notifyFollowersOfStoreUpdate(req.user.userId, store);
     res.json({
       success: true,
       data: {
@@ -546,10 +504,6 @@ export async function getPublicStore(req, res, next) {
 // selection — never to decide WHICH items get picked (that's always
 // strictly oldest-lastFeaturedAt-first, see the two callers below), so a
 // reload still looks fresh without weakening the rotation guarantee.
-// Exported — buyerSaved.controller.js reuses this (and
-// getVendorEligibilityFilter below) to keep a buyer's Saved list in the
-// same shape/eligibility rules as every other browse surface, rather than
-// re-deriving its own copy that could drift.
 export function shuffleInPlace(arr) {
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));

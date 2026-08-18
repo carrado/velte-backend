@@ -12,11 +12,6 @@ import authRoutes from "./routes/auth.js";
 import buyerAuthRoutes from "./routes/buyerAuth.routes.js";
 import buyerRequestsRoutes from "./routes/buyerRequests.routes.js";
 import vendorBuyerRequestsRoutes from "./routes/vendorBuyerRequests.routes.js";
-import buyerSavedRoutes from "./routes/buyerSaved.routes.js";
-import buyerConversationsRoutes from "./routes/buyerConversations.routes.js";
-import vendorFollowersRoutes from "./routes/vendorFollowers.routes.js";
-import buyerNotificationsRoutes from "./routes/buyerNotifications.routes.js";
-import buyerPushRoutes from "./routes/buyerPush.routes.js";
 import subscriptionRoutes from "./routes/subscription.routes.js";
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
 import usersRoutes from "./routes/users.routes.js";
@@ -114,11 +109,6 @@ app.use("/api/auth", authRoutes);
 app.use("/api/buyer-auth", buyerAuthRoutes);
 app.use("/api/buyer-requests", buyerRequestsRoutes);
 app.use("/api/vendor/buyer-requests", vendorBuyerRequestsRoutes);
-app.use("/api/buyer-saved", buyerSavedRoutes);
-app.use("/api/buyer-conversations", buyerConversationsRoutes);
-app.use("/api/vendor/followers", vendorFollowersRoutes);
-app.use("/api/buyer-notifications", buyerNotificationsRoutes);
-app.use("/api/buyer-push", buyerPushRoutes);
 app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/products", productsRoutes);
@@ -169,14 +159,14 @@ app.listen(PORT, () => {
   // notified again, not just the ones lucky enough to get a new lead.
   startAutoRechargeRetryCron();
 
-  // "vendor responded" used to be a 3h-batched SMS sweep here
-  // (docs/velte_buyer_requests_mvp_spec.md §30-34) — retired, no longer
-  // wired in. Buyers now get an in-app notification immediately instead
-  // (see vendorBuyerRequests.controller.js's respondToRequest); no SMS, no
-  // batching needed. initializers/buyerRequestNotificationsCron.js and
-  // jobs/buyerRequestNotifications.job.js are left on disk, unreferenced,
-  // same "orphaned, not deleted" precedent as this repo's other retired
-  // features (e.g. Connected Catalogs).
+  // The old "vendor responded" 3h-batched buyer SMS sweep
+  // (docs/velte_buyer_requests_mvp_spec.md §30-34,
+  // jobs/buyerRequestNotifications.job.js) is gone for good (2026-08-18) —
+  // buyers have no account/inbox to notify into anymore. A vendor who wants
+  // to reach a buyer now does so directly on WhatsApp, immediately, after
+  // Accepting a request (see vendorBuyerRequests.controller.js's
+  // decideOnRequest) — there's no async "someone responded" gap left to
+  // batch-notify about.
 
   // Hourly sweep — flips active Buyer Requests past their expiresAt to
   // "expired" (spec §11/§36).

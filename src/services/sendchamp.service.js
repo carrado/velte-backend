@@ -4,8 +4,8 @@ const SENDCHAMP_URL = "https://api.sendchamp.com/api/v1/sms/send";
 
 // Ported from C:\velte-super-admin\backend\src\services\sendchamp.service.js
 // (same shape, same env vars) — used for buyer-facing SMS only: phone-OTP
-// delivery (buyerAuth.controller.js) and the request-response transactional
-// notice (buyerNotification.service.js's SMS_TYPES). The existing vendor SMS
+// delivery (buyerAuth.controller.js) and the request-confirmation SMS
+// (buyerRequests.controller.js's createRequest). The existing vendor SMS
 // path (helpers/smsSender.js, changePassword.js's secondary-factor OTP)
 // stays on Termii unchanged; this is a second, separate provider
 // integration, not a replacement.

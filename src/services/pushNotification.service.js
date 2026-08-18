@@ -44,11 +44,6 @@ try {
   );
 }
 
-// Exported so buyerPushNotification.service.js can reuse this module's
-// already-configured `webpush` singleton (setVapidDetails is one global
-// process-wide config, not per-module — calling it a second time would
-// just redundantly reconfigure the same state, and re-running the guard
-// above would double the startup error log if VAPID isn't set).
 export function isPushEnabled() {
   return pushEnabled;
 }

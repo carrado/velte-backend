@@ -4,7 +4,6 @@ import {
   requestOtp,
   verifyOtp,
   me,
-  updateMe,
   logout,
 } from "../controllers/buyerAuth/buyerAuth.controller.js";
 import { verifyBuyerAuth } from "../middleware/buyerAuth.js";
@@ -37,13 +36,12 @@ const otpVerifyLimiter = rateLimit({
   },
 });
 
-// No POST /login here — buyer login is handled by the unified
-// POST /auth/login (auth.js), which checks vendor first and falls back to
-// this Buyer collection. See buyerAuth.controller.js's own comment.
+// No login route here — buyers never log in, this is a one-time
+// phone-verification step, not an account (2026-08-18, see
+// buyerAuth.controller.js's own comment).
 router.post("/request-otp", otpRequestLimiter, requestOtp);
 router.post("/verify-otp", otpVerifyLimiter, verifyOtp);
 router.get("/me", verifyBuyerAuth, me);
-router.patch("/me", verifyBuyerAuth, updateMe);
 router.post("/logout", logout);
 
 export default router;

@@ -110,18 +110,6 @@ export const register = async (req, res) => {
       }
     }
 
-    // 2026-08-15 — a buyer and a vendor can never share an email either
-    // (login unification: the same identifier has to resolve to exactly one
-    // account). Checked here, after the existingUser branch above has
-    // already handled/returned on a vendor-side collision, so this only
-    // ever fires for a genuine cross-account clash.
-    const emailOwnedByBuyer = await Buyer.exists({ email });
-    if (emailOwnedByBuyer) {
-      return res.status(409).json({
-        message: "An account with this email already exists.",
-      });
-    }
-
     // A phone number identifies a real person the same way an email does —
     // two accounts sharing one lets either side impersonate/contact-hijack
     // the other's buyers. Checked here (not before the existingUser block
@@ -242,17 +230,13 @@ function authCookieOptions() {
   };
 }
 
-// Login controller — 2026-08-15, UNIFIED: one login screen, one endpoint,
-// for both vendors and buyers. `identifier` is an email OR a username (a
-// buyer's is auto-generated and effectively never used this way in
-// practice, but nothing stops it). Vendor is tried first; only if NO vendor
-// matches the identifier does this fall back to the Buyer collection —
-// never on a matched-vendor-wrong-password, both to avoid a cross-account
-// timing/enumeration side channel and because email/phone uniqueness
-// across the two collections (enforced at signup, see register() and
-// Buyer.model.js) means a real identifier can only ever belong to one
-// side anyway. `email` is still accepted as an alias for `identifier` —
-// nothing currently sends it, but there's no reason to hard-break an old
+// Login controller — vendor-only. Buyers never log in at all (2026-08-18,
+// "nothing buyers again on the system") — a buyer's only touchpoint with
+// identity is the one-time phone+OTP check in buyerAuth.controller.js,
+// never a password. This used to also fall back to a Buyer-collection
+// branch when unified buyer login existed; that's gone along with it.
+// `identifier` is an email or a username; `email` is still accepted as an
+// alias — nothing currently sends it, but no reason to hard-break an old
 // client that might.
 export const login = async (req, res) => {
   try {
@@ -265,30 +249,10 @@ export const login = async (req, res) => {
     }
     const idLower = idRaw.toLowerCase();
 
-    // 🔹 Vendor branch
     const user = await User.findOne({
       $or: [{ email: idLower }, { username: idRaw }],
     });
     if (user) return loginAsVendor(user, password, res);
-
-    // 🔹 Buyer branch — only reached when no vendor matched at all.
-    const buyer = await Buyer.findOne({
-      $or: [{ email: idLower }, { username: idLower }],
-    }).select("+password");
-    if (buyer && buyer.password && (await buyer.comparePassword(password))) {
-      const token = jwt.sign(
-        { buyerId: buyer._id, type: "buyer" },
-        process.env.JWT_SECRET,
-        { expiresIn: "7d" },
-      );
-      res.cookie("buyer_auth_token", token, authCookieOptions());
-      return res.status(200).json({
-        success: true,
-        accountType: "buyer",
-        buyer,
-        message: "Login successful",
-      });
-    }
 
     return res.status(401).json({ message: "Invalid credentials" });
   } catch (error) {

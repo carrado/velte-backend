@@ -4,15 +4,14 @@ import { verifyAuth } from "../middleware/auth.js";
 import {
   listMatchedRequests,
   getRequestDetail,
-  respondToRequest,
+  decideOnRequest,
 } from "../controllers/buyerRequests/vendorBuyerRequests.controller.js";
 
 const router = express.Router();
 
 router.use(verifyAuth);
 
-// Spec §52 — "vendor response throttling."
-const respondLimiter = rateLimit({
+const decisionLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 60,
   standardHeaders: true,
@@ -25,6 +24,6 @@ const respondLimiter = rateLimit({
 
 router.get("/", listMatchedRequests);
 router.get("/:id", getRequestDetail);
-router.post("/:id/respond", respondLimiter, respondToRequest);
+router.post("/:id/decision", decisionLimiter, decideOnRequest);
 
 export default router;
