@@ -93,6 +93,18 @@ const walletSchema = new mongoose.Schema(
     // back above the threshold, so a NEW dip later starts a fresh episode
     // (immediate notification, not waiting out the old reminder cadence).
     lowBalanceLastNotifiedAt: { type: Date, default: null },
+
+    // Same reminder-episode pattern as lowBalanceLastNotifiedAt just above,
+    // but its own separate field/threshold: per explicit request, this
+    // gates an SMS (not the in-app push) sent when the balance can cover
+    // AT MOST one more lead — a narrower, more urgent trigger than the
+    // general low-balance push, and on its OWN channel specifically
+    // because many vendors never install the PWA at all and would
+    // otherwise never see the push. Kept separate from
+    // lowBalanceLastNotifiedAt so the two channels' cadences can be tuned
+    // independently (SMS costs money per send, unlike push) even though
+    // today's specific numbers happen to trigger at the same balance.
+    lowWalletSmsLastSentAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

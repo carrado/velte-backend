@@ -1,10 +1,7 @@
 import BuyerRequest from "../../models/BuyerRequest.model.js";
 import BuyerRequestResponse from "../../models/BuyerRequestResponse.model.js";
 import { AppError } from "../../middleware/errorHandler.js";
-import {
-  debitWalletForLead,
-  BUYER_REQUEST_LEAD_COST_KOBO,
-} from "../wallet/wallet.controller.js";
+import { debitWalletForLead } from "../wallet/wallet.controller.js";
 
 // Strips the buyer's WhatsApp number off a lean/plain BuyerRequest object
 // unless this vendor has actually accepted it — the number is the entire
@@ -108,9 +105,11 @@ export async function getRequestDetail(req, res, next) {
 // a binary Accept/Decline:
 //   - "declined" costs the vendor nothing, records that they passed, and
 //     reveals no contact info.
-//   - "accepted" charges BUYER_REQUEST_LEAD_COST_KOBO immediately and hands
-//     back the buyer's WhatsApp number right there — the vendor messages
-//     them directly from that point on, outside Velte.
+//   - "accepted" charges the vendor's own current tiered lead rate
+//     immediately (see leadCostForBalance/LEAD_TIERS in
+//     utils/leadPricing.js — the same rate every lead type charges) and
+//     hands back the buyer's WhatsApp number right there — the vendor
+//     messages them directly from that point on, outside Velte.
 // The response doc is created FIRST and must win the model's unique
 // (requestId, vendorId) index before any wallet debit is attempted — that's
 // what makes a concurrent double-Accept safe: only one request can ever
@@ -149,16 +148,12 @@ export async function decideOnRequest(req, res, next) {
         request.description.length > 80
           ? `${request.description.slice(0, 80)}…`
           : request.description;
-      const result = await debitWalletForLead(
-        req.user.userId,
-        BUYER_REQUEST_LEAD_COST_KOBO,
-        {
-          leadId: `buyer_request_${request._id}_${req.user.userId}`,
-          description: `Buyer request lead — ${preview}`,
-          source: "buyer_request",
-          requestId: String(request._id),
-        },
-      );
+      const result = await debitWalletForLead(req.user.userId, {
+        leadId: `buyer_request_${request._id}_${req.user.userId}`,
+        description: `Buyer request lead — ${preview}`,
+        source: "buyer_request",
+        requestId: String(request._id),
+      });
       if (!result.debited) {
         // Compensating delete — leaves no row behind, so the vendor can
         // simply retry Accept once they've topped up, without hitting the

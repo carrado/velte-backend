@@ -12,6 +12,7 @@ import {
 } from "../../services/paystack.service.js";
 import { LOW_BALANCE_KOBO } from "../../jobs/walletLowBalance.job.js";
 import { notifyUser } from "../../services/pushNotification.service.js";
+import { leadCostForBalance, MIN_LEAD_COST_KOBO } from "../../utils/leadPricing.js";
 
 // Every direct balance credit must clear this immediately, not wait for the
 // cron's point-in-time sample — a wallet that dips below the threshold,
@@ -49,24 +50,18 @@ function clearAutoRechargeFailureIfRecovered(wallet) {
 // for one — removes the cold-start "prepay with zero track record" barrier.
 const STARTER_CREDIT_KOBO = 200_000; // ₦2,000
 
-// ₦500 per WhatsApp click-through (raised from ₦400). This is the source of
-// truth — this endpoint (chargeLead) charges exactly this amount when a
-// lead actually lands. The standalone staffly-ai-backend service's
-// search-time wallet-eligibility filter reads the SAME value from its own
-// LEAD_COST_KOBO env var (see its README) since it can't import this
-// constant across repos — keep both equal by hand. Also manually mirrored in
-// velte-super-admin (nudge.controller.js, lowWalletMessage.js) and the
-// velte frontend (services/wallet.ts) — see those files' own header notes.
-export const LEAD_COST_KOBO = 50_000;
-
-// ₦1,000 per Buyer Request lead — deliberately higher than a plain
-// searchLEAD_COST_KOBO click-through: accepting a Buyer Request hands the
-// vendor a warm, already-described need AND the buyer's WhatsApp number
-// directly (see vendorBuyerRequests.controller.js's decideOnRequest), not
-// just a WhatsApp click. Charged once, at Accept time, server-side — never
-// through the buyer-facing chargeLead endpoint (buyers have no click to
-// fire it from anymore; there's no buyer UI at all post-request-creation).
-export const BUYER_REQUEST_LEAD_COST_KOBO = 100_000;
+// Tiered per-lead pricing now lives in utils/leadPricing.js (LEAD_TIERS/
+// leadCostForBalance) — re-exported here since every other file in this
+// repo, plus this whole module's own header notes elsewhere, already
+// imports "LEAD_COST_KOBO"-shaped things from THIS file, not from
+// utils/leadPricing.js directly. MIN_LEAD_COST_KOBO is the one number that
+// stayed a flat constant on purpose — see its own doc comment in
+// leadPricing.js for why a single floor is all search-time
+// wallet-eligibility filtering (store.controller.js just below, plus the
+// standalone staffly-ai-backend service's own LEAD_COST_KOBO env var and
+// velte-super-admin's nudge.controller.js/lowWalletMessage.js mirrors —
+// none of which can run the full tier table server-side) actually needs.
+export { leadCostForBalance, MIN_LEAD_COST_KOBO };
 
 // Floor for top-ups and auto-recharge amounts — keeps card fees proportionate
 // and matches the frontend's client-side minimum.
@@ -689,18 +684,33 @@ export async function getTransactions(req, res, next) {
 }
 
 // ── Lead-billing hook (not an HTTP endpoint) ────────────────────────────────
-// Called from search.controller.js's chargeLead (POST /api/search/lead),
-// fired the instant a buyer clicks "Chat on WhatsApp" on a search result
-// card. `debited: false` (insufficient balance) is a no-op today — a drained
+// Called from search.controller.js's chargeLead (POST /api/search/lead) and
+// vendorBuyerRequests.controller.js's decideOnRequest, fired the instant a
+// buyer clicks "Chat on WhatsApp" (or a vendor accepts a Buyer Request).
+// `debited: false` (insufficient balance) is a no-op today — a drained
 // wallet already keeps a vendor out of search results entirely via
 // staffly-ai-backend's retrieval.service.js wallet-eligibility filter, so
 // this path is a last-resort race (balance dropped between that filter
 // running and the buyer actually clicking), not the primary gate.
+//
+// No longer takes an `amountKobo` param — the rate is now tiered (see
+// leadCostForBalance/LEAD_TIERS in utils/leadPricing.js), determined by
+// the wallet's OWN current balance, not a flat number the caller decides.
+// Read fresh right here, immediately before the atomic debit below, not
+// cached from earlier in the request — a vendor's balance changing in
+// between (another lead landing for them in the same instant) is a
+// genuine, if narrow, race window, but the SAME tolerance this function's
+// own top comment already accepts for the "insufficient balance" case
+// applies here too: wallet debiting was never the primary gate, just the
+// actual charge once eligibility already passed elsewhere.
 export async function debitWalletForLead(
   vendorId,
-  amountKobo,
   { leadId, description, source, requestId } = {},
 ) {
+  const current = await Wallet.findOne({ vendorId }).select("balanceKobo");
+  if (!current) return { debited: false, reason: "insufficient_balance" };
+  const amountKobo = leadCostForBalance(current.balanceKobo);
+
   const wallet = await Wallet.findOneAndUpdate(
     { vendorId, balanceKobo: { $gte: amountKobo } },
     { $inc: { balanceKobo: -amountKobo } },
@@ -727,7 +737,7 @@ export async function debitWalletForLead(
   // only logs on failure (e.g. card declined).
   await maybeAutoRecharge(wallet);
 
-  return { debited: true, wallet };
+  return { debited: true, wallet, amountKobo };
 }
 
 // ── Referral-bonus hook (not an HTTP endpoint) ──────────────────────────────

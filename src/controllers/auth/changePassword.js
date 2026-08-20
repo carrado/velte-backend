@@ -1,6 +1,6 @@
 import User from "../../models/Users.js";
 import { sendPasswordChangeEmail } from "../../helpers/emailSender.js";
-import { sendSms } from "../../helpers/smsSender.js";
+import { sendSms } from "../../services/sendchamp.service.js";
 
 // Step 1 — validate credentials, send OTP to email + SMS
 export const requestPasswordChange = async (req, res) => {

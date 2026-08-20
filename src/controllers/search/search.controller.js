@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { AppError } from "../../middleware/errorHandler.js";
 import Product from "../../models/Product.model.js";
 import LeadCooldown from "../../models/LeadCooldown.model.js";
-import { debitWalletForLead, LEAD_COST_KOBO } from "../wallet/wallet.controller.js";
+import { debitWalletForLead } from "../wallet/wallet.controller.js";
 import { notifyUser } from "../../services/pushNotification.service.js";
 
 // searchProducts/searchStores/logSearch (the buyer-facing search hot path)
@@ -100,7 +100,7 @@ export async function chargeLead(req, res, next) {
       }
     }
 
-    const result = await debitWalletForLead(vendorId, LEAD_COST_KOBO, {
+    const result = await debitWalletForLead(vendorId, {
       leadId,
       description,
       source: leadSource,

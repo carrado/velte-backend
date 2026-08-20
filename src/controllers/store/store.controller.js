@@ -6,7 +6,7 @@ import { AppError } from "../../middleware/errorHandler.js";
 import { embedAndSaveStore } from "../../services/embedding.service.js";
 import { sectorLabel, mergeBusinessTypeFromLabels } from "../../utils/sectorLabels.js";
 import Wallet from "../../models/Wallet.model.js";
-import { getOrCreateWallet, LEAD_COST_KOBO } from "../wallet/wallet.controller.js";
+import { getOrCreateWallet, MIN_LEAD_COST_KOBO } from "../wallet/wallet.controller.js";
 
 // The old "notify buyers who follow this vendor" trigger
 // (notifyFollowersOfStoreUpdate) is gone (2026-08-18) along with
@@ -520,16 +520,22 @@ export function shuffleInPlace(arr) {
 //     backend's retrieval.service.js filterWalletEligible): a browse-
 //     sourced "Chat" click bills the vendor's wallet exactly like a
 //     search-sourced one (see MarketplaceCard's reportLead), so a vendor
-//     who can't cover LEAD_COST_KOBO shouldn't surface here either. `$in`,
-//     not `$nin`, on the funded set — a vendor with NO wallet row at all
-//     must also be excluded, same "no wallet = 0 balance, ineligible"
-//     semantics as retrieval.service.js's own comment on this.
+//     who can't cover MIN_LEAD_COST_KOBO — the highest tier's own rate,
+//     the only floor that actually matters for "can they afford even ONE
+//     more lead" (see that constant's own doc comment in
+//     utils/leadPricing.js for why one flat floor covers every tier) —
+//     shouldn't surface here either. `$in`, not `$nin`, on the funded
+//     set — a vendor with NO wallet row at all must also be excluded,
+//     same "no wallet = 0 balance, ineligible" semantics as
+//     retrieval.service.js's own comment on this.
 export async function getVendorEligibilityFilter(extraExcludeIds = []) {
   const [hiddenVendorIds, fundedVendorIds] = await Promise.all([
     User.find({
       $or: [{ hiddenFromSearch: true }, { isBlocked: true }],
     }).distinct("_id"),
-    Wallet.find({ balanceKobo: { $gte: LEAD_COST_KOBO } }).distinct("vendorId"),
+    Wallet.find({ balanceKobo: { $gte: MIN_LEAD_COST_KOBO } }).distinct(
+      "vendorId",
+    ),
   ]);
   return {
     $nin: [...hiddenVendorIds, ...extraExcludeIds],
