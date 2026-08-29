@@ -10,6 +10,7 @@
 import { AppError } from "../../middleware/errorHandler.js";
 import { validateWebhookSignature } from "../../services/paystack.service.js";
 import { creditWalletFromCharge } from "../wallet/wallet.controller.js";
+import { activateFromCharge } from "../buyerBilling/buyerBilling.controller.js";
 
 // ── POST /subscription/webhook ────────────────────────────────────────────────
 
@@ -45,6 +46,14 @@ async function processWebhookEvent(event) {
 
   switch (eventType) {
     case "charge.success": {
+      // Buyer plan purchases are checked FIRST and return: they carry
+      // their own metadata type and must never fall through to the
+      // wallet handler, which would log them as unattributable and
+      // silently drop a payment a buyer already made.
+      if (data.metadata?.type === "buyer_plan") {
+        await activateFromCharge(data);
+        break;
+      }
       // Wallet top-ups are the only charge.success source left in this app —
       // card top-up (our metadata) or a DVA bank-transfer credit (no metadata,
       // identified by customer_code instead). creditWalletFromCharge branches

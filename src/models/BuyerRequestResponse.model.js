@@ -15,10 +15,19 @@ const buyerRequestResponseSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // Copied from the request, and NULL whenever that request was made by
+    // someone with no account (2026-08-27) — which is now the common case,
+    // since verifying a phone stopped creating a Buyer. Was `required: true`,
+    // which would have thrown at the worst possible moment: a vendor
+    // ACCEPTING an anonymous buyer's request, the exact step that releases
+    // the WhatsApp number and makes the whole flow pay off.
+    //
+    // Nothing here needs it — the vendor reads the buyer's name and number
+    // off the request's own snapshot, never through this ref.
     buyerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Buyer",
-      required: true,
+      default: null,
     },
     vendorId: {
       type: mongoose.Schema.Types.ObjectId,

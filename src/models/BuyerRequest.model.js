@@ -7,10 +7,16 @@ export const BUYER_REQUEST_EXPIRY_HOURS = 48;
 
 const buyerRequestSchema = new mongoose.Schema(
   {
+    // NULL for a request made by someone with no account (2026-08-27).
+    // Verifying a phone stopped creating a Buyer — `buyer_auth_token` now
+    // means "signed in with Google" and nothing else — so most requests
+    // legitimately have no buyer behind them. The request stands on its own
+    // snapshot instead, which is where a buyer's details already lived.
+    // Still set, and still indexed, when a signed-in buyer makes one.
     buyerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Buyer",
-      required: true,
+      default: null,
       index: true,
     },
     // Snapshotted straight onto the request at creation time (2026-08-18),

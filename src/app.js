@@ -11,6 +11,9 @@ import hpp from "hpp";
 import authRoutes from "./routes/auth.js";
 import buyerAuthRoutes from "./routes/buyerAuth.routes.js";
 import buyerRequestsRoutes from "./routes/buyerRequests.routes.js";
+import usageRoutes from "./routes/usage.routes.js";
+import buyerBillingRoutes from "./routes/buyerBilling.routes.js";
+import priceWatchRoutes from "./routes/priceWatch.routes.js";
 import vendorBuyerRequestsRoutes from "./routes/vendorBuyerRequests.routes.js";
 import subscriptionRoutes from "./routes/subscription.routes.js";
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
@@ -30,6 +33,7 @@ import { startWalletLowBalanceCron } from "./initializers/walletLowBalanceCron.j
 import { startUnverifiedUsersCleanupCron } from "./initializers/unverifiedUsersCleanupCron.js";
 import { startAutoRechargeRetryCron } from "./initializers/autoRechargeRetryCron.js";
 import { startBuyerRequestExpiryCron } from "./initializers/buyerRequestExpiryCron.js";
+import { startPriceWatchCron } from "./jobs/priceWatch.job.js";
 
 const app = express();
 
@@ -108,6 +112,9 @@ mongoose
 app.use("/api/auth", authRoutes);
 app.use("/api/buyer-auth", buyerAuthRoutes);
 app.use("/api/buyer-requests", buyerRequestsRoutes);
+app.use("/api/usage", usageRoutes);
+app.use("/api/buyer-billing", buyerBillingRoutes);
+app.use("/api/price-watch", priceWatchRoutes);
 app.use("/api/vendor/buyer-requests", vendorBuyerRequestsRoutes);
 app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/users", usersRoutes);
@@ -171,4 +178,5 @@ app.listen(PORT, () => {
   // Hourly sweep — flips active Buyer Requests past their expiresAt to
   // "expired" (spec §11/§36).
   startBuyerRequestExpiryCron();
+  startPriceWatchCron();
 });

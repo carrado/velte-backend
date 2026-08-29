@@ -1,11 +1,15 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
-import { verifyBuyerAuth } from "../middleware/buyerAuth.js";
+import { requireBuyerOrVerifiedPhone } from "../middleware/buyerAuth.js";
 import { createRequest } from "../controllers/buyerRequests/buyerRequests.controller.js";
 
 const router = express.Router();
 
-router.use(verifyBuyerAuth);
+// Not verifyBuyerAuth: verifying a phone no longer creates a Buyer or a
+// session (2026-08-27), so a session alone would shut anonymous buyers out
+// of the reach-out flow — the one thing they most need. This accepts either
+// a signed-in session or a phoneToken proving one number.
+router.use(requireBuyerOrVerifiedPhone);
 
 // Named constant, not a magic number — same pattern as wallet.routes.js's
 // initLimiter.

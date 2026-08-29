@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { AppError } from "../../middleware/errorHandler.js";
 import Product from "../../models/Product.model.js";
+import Store from "../../models/Store.model.js";
 import LeadCooldown from "../../models/LeadCooldown.model.js";
 import { debitWalletForLead } from "../wallet/wallet.controller.js";
 import { notifyUser } from "../../services/pushNotification.service.js";
@@ -39,11 +40,21 @@ async function isWithinCooldown(vendorId, buyerId) {
 }
 
 // ── POST /api/search/lead ──────────────────────────────────────────────────────
-// Public — fired the instant a buyer clicks "Chat on WhatsApp" on a vendor or
-// product card (frontend uses navigator.sendBeacon so it survives the
-// immediate tab switch to WhatsApp). Debits the vendor's wallet for the lead;
-// never blocks or fails the buyer's chat, which has already opened client-side
-// by the time this resolves. Insufficient balance just means this lead goes
+// Public — "a buyer is about to chat this vendor": debits the vendor's wallet
+// for the lead AND returns the number to send them to.
+//
+// 2026-08-27: it used to be fired-and-forgotten from the browser via
+// sendBeacon, AFTER the chat had already opened client-side from a wa.me link
+// the page had built itself. Two problems with that, both fixed by returning
+// the number here: the vendor's number had to be in the page to build that
+// link (readable from a hover, or from "copy link address"), and the beacon
+// was silently dropped by ad-blockers — its own comment below admits a real
+// lead then went unbilled with zero visibility. Now the frontend's /api/chat
+// route calls this server-side and redirects, so billing happens on the
+// journey itself rather than on a beacon that may never leave.
+//
+// Still never fails the buyer's chat: an insufficient balance, a failed
+// notification or a missing store all still return a usable response. Insufficient balance just means this lead goes
 // unbilled (see debitWalletForLead's `debited: false` — today that's a no-op,
 // eligibility policy for a drained wallet is a matching-layer decision, not
 // this endpoint's).
@@ -74,8 +85,20 @@ export async function chargeLead(req, res, next) {
     // very likely still the same visit (see LeadCooldown's own doc
     // comment). A different buyer, or the same buyer past the window,
     // charges exactly as normal.
+    // Resolved up front because BOTH exits below need it (2026-08-27): this
+    // endpoint now also tells the caller WHERE to send the buyer, so the
+    // vendor's number never has to reach the browser to build a wa.me link.
+    // See the frontend's /api/chat route — it calls this, then redirects.
+    //
+    // A cooled-down click still gets the number: the buyer is chatting
+    // either way, and the cooldown decides whether to BILL, not whether to
+    // connect them. Withholding it there would break the second click in a
+    // 15-minute window for no reason.
+    const store = await Store.findOne({ vendorId }).select("whatsapp").lean();
+    const whatsapp = store?.whatsapp ?? null;
+
     if (await isWithinCooldown(vendorId, buyerId)) {
-      return res.json({ success: true, data: { billed: false } });
+      return res.json({ success: true, data: { billed: false, whatsapp } });
     }
 
     const leadId = `lead_${vendorId}_${Date.now()}_${crypto
@@ -124,7 +147,7 @@ export async function chargeLead(req, res, next) {
       console.error(`[chargeLead] notify failed for ${vendorId}:`, err.message);
     });
 
-    res.json({ success: true, data: { billed: result.debited } });
+    res.json({ success: true, data: { billed: result.debited, whatsapp } });
   } catch (err) {
     next(err);
   }

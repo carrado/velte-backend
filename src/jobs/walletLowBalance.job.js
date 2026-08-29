@@ -22,7 +22,15 @@ export const LOW_BALANCE_KOBO = 200_000;
 // by both the push and SMS channels below for simplicity; nothing stops
 // these from diverging later if SMS's real per-send cost argues for a
 // longer interval than push's.
-const REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+//
+// null = repeats OFF (2026-08-27, "for now" per explicit request): a vendor
+// hears about a low balance exactly ONCE per episode and not again until
+// the balance climbs back above the threshold and dips a second time — the
+// recovery passes at the bottom clear the timestamps, and that clearing is
+// what starts a fresh episode. Both channels honour it; put a duration back
+// here (it was 24 * 60 * 60 * 1000) and the old cadence returns with no
+// other edit, since every read below already handles either mode.
+const REMINDER_INTERVAL_MS = null;
 
 // A cheap Mongo-side prefilter for the SMS check below, NOT the
 // authoritative test — leadsRemaining/canOnlyAffordUpToOneLead (real tier
@@ -51,21 +59,29 @@ function canOnlyAffordUpToOneLead(balanceKobo) {
  * warned even if nothing happens to charge their wallet for a while (an
  * on-debit trigger only ever fires when a NEW lead lands, which says
  * nothing about balances that are already low and just sitting there).
- * Reminds every REMINDER_INTERVAL_MS while still low, not just once per
- * episode — a vendor who misses/dismisses the first push otherwise never
- * hears about it again until they happen to check their wallet themselves.
+ * Notifies once per low episode while REMINDER_INTERVAL_MS is null (the
+ * current setting — see the constant); with an interval set it re-reminds
+ * on that cadence for as long as the balance stays low.
  *
  * Two independent channels, one sweep: the existing in-app push (unchanged
  * threshold/behavior), plus an SMS — per explicit request, this does NOT
  * replace the push, it's additive, specifically because many vendors never
  * install the PWA and would otherwise never see a push notification at
  * all. The SMS fires on its own, narrower trigger (canOnlyAffordUpToOneLead)
- * and its own reminder timestamp (lowWalletSmsLastSentAt), so the two can
+ * and its own episode timestamp (lowWalletSmsLastSentAt), so the two can
  * genuinely diverge — a vendor could get the push (balance < ₦2,000) well
  * before ever qualifying for the SMS (covers ≤ 1 lead).
  */
 export async function checkLowWalletBalances() {
-  const reminderCutoff = new Date(Date.now() - REMINDER_INTERVAL_MS);
+  const reminderCutoff =
+    REMINDER_INTERVAL_MS === null
+      ? null
+      : new Date(Date.now() - REMINDER_INTERVAL_MS);
+
+  // Never notified this episode -> always due. Already notified -> due only
+  // if repeats are switched on AND the interval has elapsed.
+  const dueForNotice = (lastSentAt) =>
+    !lastSentAt || (reminderCutoff !== null && lastSentAt <= reminderCutoff);
   const queryCeiling = Math.max(LOW_BALANCE_KOBO, SMS_QUERY_CEILING_KOBO);
 
   // One query covers both channels' candidates — anything below either
@@ -92,8 +108,7 @@ export async function checkLowWalletBalances() {
 
     const needsPush =
       wallet.balanceKobo < LOW_BALANCE_KOBO &&
-      (!wallet.lowBalanceLastNotifiedAt ||
-        wallet.lowBalanceLastNotifiedAt <= reminderCutoff);
+      dueForNotice(wallet.lowBalanceLastNotifiedAt);
     if (needsPush) {
       try {
         await notifyUser(vendorId, {
@@ -116,8 +131,7 @@ export async function checkLowWalletBalances() {
 
     const needsSms =
       canOnlyAffordUpToOneLead(wallet.balanceKobo) &&
-      (!wallet.lowWalletSmsLastSentAt ||
-        wallet.lowWalletSmsLastSentAt <= reminderCutoff);
+      dueForNotice(wallet.lowWalletSmsLastSentAt);
     if (needsSms) {
       if (vendor?.phone) {
         try {
