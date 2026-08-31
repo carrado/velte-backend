@@ -57,9 +57,9 @@ const firebaseSignInLimiter = rateLimit({
 
 // 2026-08-18's "buyers never log in" note no longer holds: buyers have real
 // accounts as of 2026-08-26 so their conversation history can be listed and
-// reopened (see Buyer.model.js). Phone+OTP stays exactly as it was — it is
-// still the path that proves a number for Buyer Requests, and now also a
-// second way into the same account.
+// reopened (see Buyer.model.js). Google is the ONLY way in — phone+OTP has
+// never issued a session, and as of 2026-08-29 it cannot even be reached
+// without one.
 // attachBuyerIfPresent so signing in with Google can LINK to a session the
 // buyer already has, instead of silently starting a second account — see
 // the controller's resolution order.
@@ -69,17 +69,17 @@ router.post(
   attachBuyerIfPresent,
   firebaseSignIn,
 );
-// attachBuyerIfPresent, not verifyBuyerAuth: both endpoints must keep
-// working for a buyer with no account (verifying a phone is how one is
-// created), while behaving differently for a signed-in buyer ATTACHING a
-// number to an account they already have — see the controller's own split.
-router.post(
-  "/request-otp",
-  otpRequestLimiter,
-  attachBuyerIfPresent,
-  requestOtp,
-);
-router.post("/verify-otp", otpVerifyLimiter, attachBuyerIfPresent, verifyOtp);
+// verifyBuyerAuth, not attachBuyerIfPresent (2026-08-29, per explicit product
+// direction). Proving a phone is no longer something a stranger can do: you
+// sign up with Google FIRST, and only then attach a number. The anonymous
+// half of both handlers is gone with it, because the `phoneToken` it minted
+// was only ever accepted by POST /buyer-requests, which now requires a real
+// account too.
+//
+// This also removes the last way to spend an SMS without an account —
+// previously anyone could burn one code per number, rate-limited but free.
+router.post("/request-otp", otpRequestLimiter, verifyBuyerAuth, requestOtp);
+router.post("/verify-otp", otpVerifyLimiter, verifyBuyerAuth, verifyOtp);
 router.get("/me", verifyBuyerAuth, me);
 router.post("/logout", logout);
 

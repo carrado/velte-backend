@@ -1,13 +1,17 @@
 import crypto from "node:crypto";
 
-import Buyer from "../../models/Buyer.model.js";
 import { AppError } from "../../middleware/errorHandler.js";
 import { initializeTransaction } from "../../services/paystack.service.js";
+import {
+  modelForActorType,
+  resolveEntitlement,
+} from "../../helpers/actorPlan.js";
 import {
   BUYER_PLANS,
   CYCLES,
   effectivePlanId,
   expiryFrom,
+  planRank,
   priceKoboFor,
 } from "../../config/buyerPlans.js";
 
@@ -26,6 +30,17 @@ import {
 // Charge, below), because that is the only signal that money actually
 // moved. A buyer closing the Paystack page, or a callback URL that lies,
 // must never produce a plan.
+//
+// Bought by EITHER kind of account (2026-08-29). A vendor sells stock and
+// also buys it, so they are the best-qualified Velte Business prospect in
+// the product; until this change they were refused outright and told to open
+// a second buyer account to buy the thing we were selling them. The plan is
+// stored on whichever document the actor lives in — the fields are identical
+// on both (see helpers/actorPlan.js).
+//
+// Always a CARD charge, never the vendor wallet. Wallet money is Velte's
+// revenue from leads, and lead price is tiered on wallet balance, so paying
+// from it would silently raise the vendor's own cost per lead.
 
 // Back to the chat rather than to /payment/callback: that page exists for
 // the vendor wallet's popup flow and knows nothing about buyer plans, and a
@@ -71,18 +86,29 @@ export async function listPlans(_req, res, next) {
 // differs whenever a paid plan has lapsed.
 export async function getMyPlan(req, res, next) {
   try {
-    const buyer = await Buyer.findById(req.buyer.buyerId)
+    if (!req.actor) throw new AppError("Not authenticated.", 401);
+    const account = await modelForActorType(req.actor.type)
+      .findById(req.actor.id)
       .select("plan planExpiresAt planCycle")
       .lean();
-    if (!buyer) throw new AppError("Account not found.", 404);
+    if (!account) throw new AppError("Account not found.", 404);
+
+    // `plan` is the ENTITLEMENT — what they can use, which may come from a
+    // linked vendor/buyer account on the same verified email. `storedPlan`
+    // and the dates below are this document's own, so a caller can still
+    // tell "bought here" from "inherited from my other half", and a renewal
+    // prompt reads the right expiry.
+    const entitlement = await resolveEntitlement(req.actor);
 
     return res.json({
       success: true,
       data: {
-        plan: effectivePlanId(buyer),
-        storedPlan: buyer.plan ?? "free",
-        planExpiresAt: buyer.planExpiresAt ?? null,
-        planCycle: buyer.planCycle ?? null,
+        plan: entitlement?.planId ?? effectivePlanId(account),
+        planSource: entitlement?.source ?? "own",
+        storedPlan: account.plan ?? "free",
+        planExpiresAt: account.planExpiresAt ?? null,
+        planCycle: account.planCycle ?? null,
+        ownerType: req.actor.type,
       },
     });
   } catch (err) {
@@ -111,16 +137,40 @@ export async function initCheckout(req, res, next) {
     const amountKobo = priceKoboFor(planId, cycle);
     if (!amountKobo) throw new AppError("That plan isn't purchasable.", 400);
 
-    const buyer = await Buyer.findById(req.buyer.buyerId)
+    // Don't sell someone what their OTHER half already has (2026-08-29).
+    //
+    // A buyer linked to a vendor on Velte Business is already entitled to
+    // Business everywhere; letting them buy Plus here would take money for a
+    // downgrade they'd never see the effect of. Scoped to `source === "linked"`
+    // on purpose: re-buying your OWN tier is an ordinary renewal, which
+    // expiryFrom explicitly supports by extending from the current expiry.
+    const entitlement = await resolveEntitlement(req.actor);
+    if (
+      entitlement?.source === "linked" &&
+      planRank(entitlement.planId) >= planRank(planId)
+    ) {
+      throw new AppError(
+        `Your ${
+          req.actor.type === "buyer" ? "vendor" : "buyer"
+        } account on this email already includes ${
+          BUYER_PLANS[entitlement.planId]?.name ?? entitlement.planId
+        }, and it applies here too — there's nothing to buy.`,
+        409,
+      );
+    }
+
+    if (!req.actor) throw new AppError("Not authenticated.", 401);
+    const account = await modelForActorType(req.actor.type)
+      .findById(req.actor.id)
       .select("email plan planExpiresAt")
       .lean();
-    if (!buyer) throw new AppError("Account not found.", 404);
+    if (!account) throw new AppError("Account not found.", 404);
 
-    // Paystack requires an email to open a transaction. A Google buyer
-    // always has one; a phone-only buyer may not, and the honest answer is
-    // to say so rather than to invent a placeholder address that then
-    // receives their receipt.
-    if (!buyer.email) {
+    // Paystack requires an email to open a transaction. A vendor always has
+    // one (it is their login) and so does a Google buyer; a phone-only buyer
+    // may not, and the honest answer is to say so rather than to invent a
+    // placeholder address that then receives their receipt.
+    if (!account.email) {
       throw new AppError(
         "Add an email to your account before upgrading — Paystack needs one to send your receipt.",
         400,
@@ -133,7 +183,7 @@ export async function initCheckout(req, res, next) {
     const reference = `vplan_${crypto.randomBytes(12).toString("hex")}`;
 
     const result = await initializeTransaction({
-      email: buyer.email,
+      email: account.email,
       // initializeTransaction takes NAIRA and converts — see its own comment.
       amount: amountKobo / 100,
       reference,
@@ -142,7 +192,15 @@ export async function initCheckout(req, res, next) {
         // The discriminator the webhook branches on. Must stay distinct
         // from "wallet_topup", which is the vendor wallet's own type.
         type: "buyer_plan",
-        buyerId: String(req.buyer.buyerId),
+        // Who the plan is for, and which collection they live in. `buyerId`
+        // is still written for buyers so a transaction opened by the
+        // PREVIOUS build and paid after this one deploys still activates —
+        // activateFromCharge reads it as a fallback.
+        ownerId: String(req.actor.id),
+        ownerType: req.actor.type,
+        ...(req.actor.type === "buyer"
+          ? { buyerId: String(req.actor.id) }
+          : {}),
         planId,
         cycle,
         // Recorded so a mismatch between what we meant to charge and what
@@ -178,10 +236,17 @@ export async function initCheckout(req, res, next) {
  */
 export async function activateFromCharge(data) {
   const meta = data?.metadata ?? {};
-  const { buyerId, planId, cycle } = meta;
+  const { planId, cycle } = meta;
   const reference = data?.reference;
 
-  if (!buyerId || !BUYER_PLANS[planId] || !CYCLES[cycle] || !reference) {
+  // `ownerId`/`ownerType` since 2026-08-29; `buyerId` is the pre-vendor
+  // shape, still honoured so a transaction opened before that deploy and
+  // paid after it still grants the plan it was paid for. Defaulting the type
+  // to "buyer" is what makes the old shape resolve correctly.
+  const ownerId = meta.ownerId ?? meta.buyerId;
+  const ownerType = meta.ownerType === "vendor" ? "vendor" : "buyer";
+
+  if (!ownerId || !BUYER_PLANS[planId] || !CYCLES[cycle] || !reference) {
     console.error(
       "[buyer-billing] charge.success with unusable metadata — ignored:",
       JSON.stringify(meta),
@@ -200,19 +265,22 @@ export async function activateFromCharge(data) {
     return;
   }
 
-  const buyer = await Buyer.findById(buyerId)
+  const Model = modelForActorType(ownerType);
+  const account = await Model.findById(ownerId)
     .select("plan planExpiresAt lastPlanReference")
     .lean();
-  if (!buyer) {
-    console.error(`[buyer-billing] no buyer ${buyerId} for ref ${reference}`);
+  if (!account) {
+    console.error(
+      `[buyer-billing] no ${ownerType} ${ownerId} for ref ${reference}`,
+    );
     return;
   }
-  if (buyer.lastPlanReference === reference) return; // already applied
+  if (account.lastPlanReference === reference) return; // already applied
 
-  const expiresAt = expiryFrom(cycle, buyer.planExpiresAt);
+  const expiresAt = expiryFrom(cycle, account.planExpiresAt);
 
-  const updated = await Buyer.updateOne(
-    { _id: buyerId, lastPlanReference: { $ne: reference } },
+  const updated = await Model.updateOne(
+    { _id: ownerId, lastPlanReference: { $ne: reference } },
     {
       $set: {
         plan: planId,
@@ -225,7 +293,7 @@ export async function activateFromCharge(data) {
 
   if (updated.modifiedCount) {
     console.log(
-      `[buyer-billing] ${buyerId} → ${planId} (${cycle}) until ${expiresAt.toISOString()} [ref ${reference}]`,
+      `[buyer-billing] ${ownerType} ${ownerId} → ${planId} (${cycle}) until ${expiresAt.toISOString()} [ref ${reference}]`,
     );
   }
 }

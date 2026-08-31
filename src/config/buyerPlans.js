@@ -27,13 +27,15 @@ export const BUYER_PLANS = {
     monthlyKobo: 350_000, // ₦3,500
     yearlyKobo: 3_500_000, // ₦35,000
   },
-  business: {
-    id: "business",
-    name: "Velte Business",
-    monthlyKobo: 750_000, // ₦7,500
-    yearlyKobo: 7_500_000, // ₦75,000 (10x monthly = two months free)
-  },
 };
+
+// Velte Business was withdrawn on 2026-08-31 — it had no feature Plus didn't,
+// only larger quotas, and a tier that can't be justified makes the ones
+// beside it look padded too. Removed from here FIRST, because this file is
+// what checkout can actually sell: leaving the row would keep it purchasable
+// long after it stopped being offered. The frontend maps the retired id to
+// Plus on read (see its plans.ts RETIRED_PLANS) so anyone already holding it
+// is never silently dropped to Free.
 
 // "free" is not sellable — it's what a buyer already has, and what an
 // expired paid plan falls back to.
@@ -70,6 +72,21 @@ export function expiryFrom(cycle, currentExpiry) {
       ? new Date(currentExpiry).getTime()
       : now;
   return new Date(base + spec.days * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * How much plan a tier id represents, for comparing two of them.
+ *
+ * The monthly price IS the ranking — a tier that costs more is more plan,
+ * and deriving it from the price table means adding a tier never needs a
+ * hand-maintained order that can silently fall out of step with it.
+ *
+ * Everything unpurchasable ranks 0: "free", the "vendor" sentinel, an
+ * unknown or retired id. That is deliberate — 0 means "nothing was bought",
+ * which is exactly what the comparison needs to know.
+ */
+export function planRank(planId) {
+  return BUYER_PLANS[planId]?.monthlyKobo ?? 0;
 }
 
 /**

@@ -1,8 +1,6 @@
 import PriceWatch from "../../models/PriceWatch.model.js";
-import Buyer from "../../models/Buyer.model.js";
 import { findWatchOwner } from "../../helpers/watchOwner.js";
 import { AppError } from "../../middleware/errorHandler.js";
-import { effectivePlanId } from "../../config/buyerPlans.js";
 import { notifyPriceDrop } from "../../helpers/priceDropAlert.js";
 
 // Price watches (2026-08-29). See PriceWatch.model.js for the shape and why
@@ -11,10 +9,11 @@ import { notifyPriceDrop } from "../../helpers/priceDropAlert.js";
 // Owned by EITHER kind of account: buyers watch what they want to buy,
 // vendors watch competitors. See PriceWatch.model.js.
 //
-// The watch LIMIT arrives from the caller's plan table, same pattern and
-// same reasoning as usage.controller.js: the numbers live in the frontend's
-// plans.ts, the account's tier is resolved HERE, and this file picks the row.
-// The caller decides what a tier is worth, never which tier applies.
+// Watches are paid for in CREDITS by the caller (the frontend's
+// api/price-watch route) BEFORE this runs, and refunded there if creating one
+// fails. Since 2026-08-31 there is no tier check and no cap on how many an
+// account may hold — there are no tiers, and a watch is a page fetch on a
+// timer, so rationing it by count never reflected a real cost.
 
 // How stale a watch has to be before it is re-checked. 24 hours, per
 // explicit request: these listings don't reprice faster than daily, every
@@ -28,7 +27,7 @@ const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 // ── POST /api/price-watch ────────────────────────────────────────────────
 //
 // Body: { kind, productId?, url?, label, imageUrl?, merchant?, priceKobo,
-//         targetPriceKobo?, limits: { free: 0, plus: 20, business: 100 } }
+//         targetPriceKobo? }
 export async function createWatch(req, res, next) {
   try {
     const {
@@ -40,7 +39,6 @@ export async function createWatch(req, res, next) {
       merchant,
       priceKobo,
       targetPriceKobo,
-      limits,
     } = req.body ?? {};
 
     if (kind !== "velte" && kind !== "external") {
@@ -64,59 +62,18 @@ export async function createWatch(req, res, next) {
         400,
       );
     }
-    if (!limits || typeof limits !== "object") {
-      throw new AppError("limits must be an object of plan → quota.", 400);
-    }
-
     if (!req.actor) throw new AppError("Not authenticated.", 401);
     const { id: ownerId, type: ownerType } = req.actor;
 
-    // A vendor has no buyer plan to be on — they get the caller's `vendor`
-    // row, which exists because watching competitors is a vendor retention
-    // feature in its own right, not because they bought a buyer plan.
-    let plan;
-    if (ownerType === "vendor") {
-      plan = Number.isInteger(limits.vendor) ? "vendor" : "free";
-    } else {
-      const buyer = await Buyer.findById(ownerId)
-        .select("plan planExpiresAt")
-        .lean();
-      if (!buyer) throw new AppError("Account not found.", 404);
-      plan = effectivePlanId(buyer);
-    }
-
-    const limit = Number.isInteger(limits[plan]) ? limits[plan] : limits.free;
-    if (!Number.isInteger(limit)) {
-      throw new AppError("limits must include a 'free' fallback.", 400);
-    }
-
-    // Zero means the feature isn't on this tier at all — a different
-    // message from "you've used them all", and the frontend words it so.
-    if (limit === 0) {
-      return res.status(402).json({
-        success: false,
-        // A vendor is never told to buy a buyer subscription — same rule as
-        // the search quota's own wording.
-        message:
-          ownerType === "vendor"
-            ? "Price watches aren't available on your account yet."
-            : "Price watches are a Velte Plus feature.",
-        code: "plan_required",
-      });
-    }
-
-    const active = await PriceWatch.countDocuments({
-      ownerId,
-      ownerType,
-      status: "active",
-    });
-    if (active >= limit) {
-      return res.status(402).json({
-        success: false,
-        message: `You're watching ${limit} items already. Remove one to add another.`,
-        code: "limit_reached",
-      });
-    }
+    // No tier check and no concurrency cap since 2026-08-31: there are no
+    // plans any more, and a watch simply costs credits (charged by the BFF
+    // before it calls this — see the frontend's api/price-watch route). How
+    // many an account runs is however many they chose to pay for.
+    //
+    // Rationing watches by COUNT was always a slightly odd shape anyway: a
+    // watch is a page fetch on a timer with no model behind it, so the number
+    // someone held never reflected a real cost. What it reflected was the
+    // tier, and the tiers are gone.
 
     // Upsert rather than insert: re-watching something already watched
     // should be a no-op that returns the existing watch, not a duplicate-key

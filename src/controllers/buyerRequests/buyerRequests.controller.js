@@ -1,5 +1,8 @@
 import BuyerRequest from "../../models/BuyerRequest.model.js";
+import BuyerRequestResponse from "../../models/BuyerRequestResponse.model.js";
 import Buyer from "../../models/Buyer.model.js";
+import User from "../../models/Users.js";
+import Store from "../../models/Store.model.js";
 import { AppError } from "../../middleware/errorHandler.js";
 import { matchBuyerRequestToVendors } from "../../services/matchingClient.service.js";
 import { sendSms } from "../../services/sendchamp.service.js";
@@ -18,7 +21,8 @@ import { notifyUser } from "../../services/pushNotification.service.js";
 // (createBuyerRequestTool) falls back to surfacing Google Places instead.
 export async function createRequest(req, res, next) {
   try {
-    const { description, imageUrl, location, name, matchQuery } = req.body ?? {};
+    const { description, imageUrl, location, name, matchQuery } =
+      req.body ?? {};
     if (typeof description !== "string" || !description.trim()) {
       return next(new AppError("A description is required.", 400));
     }
@@ -26,25 +30,29 @@ export async function createRequest(req, res, next) {
       return next(new AppError("A name is required.", 400));
     }
 
-    // Two ways to get here since 2026-08-27 (see
-    // requireBuyerOrVerifiedPhone): a signed-in buyer, or someone with no
-    // account who just proved a phone number for this one request. The
-    // middleware guarantees at least one, so this can't come out empty.
-    //
-    // The phone is taken from the SESSION buyer when there is one, and only
-    // otherwise from the proof — a signed-in buyer's own verified number is
-    // the more authoritative of the two, and it's the one the "use this
-    // number?" confirmation put in front of them.
-    let buyer = null;
-    if (req.buyer?.buyerId) {
-      buyer = await Buyer.findById(req.buyer.buyerId);
-      if (!buyer) return next(new AppError("Buyer not found.", 404));
-    }
-    const buyerPhone = buyer?.phone || req.verifiedPhone || null;
+    // One way to get here since 2026-08-29: a signed-in buyer, guaranteed by
+    // verifyBuyerAuth on the route. The `phoneToken` path — someone with no
+    // account who had just proved a number for this one request — is gone.
+    const buyer = await Buyer.findById(req.buyer.buyerId);
+    if (!buyer) return next(new AppError("Buyer not found.", 404));
+
+    // Their own PROVEN number, and nothing else. `phoneVerified` is checked
+    // rather than trusting `phone` to be non-null: a vendor replies over
+    // WhatsApp, so an unproven number is a request nobody can answer and a
+    // buyer who never learns why nothing came back.
+    const buyerPhone = buyer.phoneVerified ? buyer.phone : null;
     if (!buyerPhone) {
-      // Belt to the middleware's braces: a signed-in buyer with no verified
-      // number yet would otherwise create a request no vendor can reply to.
-      return next(new AppError("A verified phone number is required.", 400));
+      // Returned directly rather than through AppError, which carries only
+      // (message, statusCode) — the same shape and reason as
+      // priceWatch.controller.js's `plan_required`. The CODE is the point:
+      // this is the ordinary next step in the flow (signed in, number not
+      // proven yet), and the frontend opens its phone capture on it instead
+      // of showing an error.
+      return res.status(403).json({
+        success: false,
+        message: "Verify your phone number to send this request.",
+        code: "phone_required",
+      });
     }
 
     // Only ever the location explicitly granted for THIS request — buyers
@@ -133,7 +141,10 @@ export async function createRequest(req, res, next) {
       buyer.phone,
       "Velte: Your request has been received. We'll notify you when vendors respond.",
     ).catch((err) => {
-      console.error(`[buyerRequests] confirmation SMS failed for request ${request._id}:`, err.message);
+      console.error(
+        `[buyerRequests] confirmation SMS failed for request ${request._id}:`,
+        err.message,
+      );
     });
 
     const preview =
@@ -160,8 +171,131 @@ export async function createRequest(req, res, next) {
     // map it comes back undefined downstream.
     res.status(201).json({
       success: true,
-      data: { created: true, request: { ...request.toObject(), id: String(request._id) } },
+      data: {
+        created: true,
+        request: { ...request.toObject(), id: String(request._id) },
+      },
     });
+  } catch (err) {
+    next(err instanceof AppError ? err : new AppError(err.message, 500));
+  }
+}
+
+
+// ── GET /api/buyer-requests/mine ────────────────────────────────────────────
+// The buyer's own view of what they've sent out (2026-08-30). Reverses the
+// 2026-08-18 note on buyerRequests.routes.js that there is no buyer inbox to
+// read one from: that was true while buyers had no accounts, and posting a
+// request has required one since 2026-08-29.
+//
+// The ONE thing this has to answer is "did anything come of it" — so the
+// vendors who ACCEPTED are resolved and returned with each request, not just
+// counted. Accepted, specifically, never merely "responded": a decline costs
+// the vendor nothing and releases no contact detail, so counting it would
+// inflate the only number on this page the buyer actually acts on.
+// `responseCount` on the request itself is the raw decision tally (both
+// kinds) and is deliberately NOT surfaced as-is for that reason.
+//
+// Contact detail flows the other way here than everywhere else in this file:
+// the vendor already paid for this lead (decideOnRequest debits the wallet
+// before this vendor can ever appear in `responders`), so handing the buyer
+// the store they can walk into isn't a leak — it's the thing they were
+// promised. Only the public store identity goes out: handle, name, avatar,
+// area. Never a phone; the vendor has the buyer's number and reaches out
+// over WhatsApp, and the store page carries its own contact button.
+export async function listMyRequests(req, res, next) {
+  try {
+    const requests = await BuyerRequest.find({ buyerId: req.buyer.buyerId })
+      .sort({ createdAt: -1 })
+      // A cap, not pagination — a buyer with more than 50 requests behind
+      // them is not a case that exists yet, and an unbounded find is the
+      // kind of thing that only becomes a problem in production.
+      .limit(50)
+      // buyerPhone is the buyer's OWN number here, so there is nothing to
+      // gate — but it has no business in a page payload either.
+      .select("-buyerPhone")
+      .lean();
+
+    if (requests.length === 0) {
+      return res.status(200).json({ success: true, data: { requests: [] } });
+    }
+
+    const accepted = await BuyerRequestResponse.find({
+      requestId: { $in: requests.map((r) => r._id) },
+      decision: "accepted",
+    })
+      .select("requestId vendorId createdAt")
+      .sort({ createdAt: 1 })
+      .lean();
+
+    const vendorIds = [...new Set(accepted.map((r) => String(r.vendorId)))];
+    // Two lookups rather than a populate: the display name lives on User and
+    // the public URL lives on Store, and a vendor can legitimately have no
+    // Store row yet (it's created lazily on first dashboard visit) — which
+    // must show the vendor without a link, not drop them from the list.
+    const [vendors, stores] = await Promise.all([
+      User.find({ _id: { $in: vendorIds } })
+        .select("name company.name avatar area state")
+        .lean(),
+      Store.find({ vendorId: { $in: vendorIds } })
+        .select("vendorId handle name")
+        .lean(),
+    ]);
+
+    const vendorById = new Map(vendors.map((v) => [String(v._id), v]));
+    const storeByVendorId = new Map(stores.map((s) => [String(s.vendorId), s]));
+
+    const respondersByRequestId = new Map();
+    for (const response of accepted) {
+      const vendorId = String(response.vendorId);
+      const vendor = vendorById.get(vendorId);
+      // A deleted vendor account leaves its response row behind. Skipping it
+      // keeps the count honest — a card saying "1 business accepted" with
+      // nothing to show under it is worse than saying none did.
+      if (!vendor) continue;
+      const store = storeByVendorId.get(vendorId);
+      const key = String(response.requestId);
+      const list = respondersByRequestId.get(key) ?? [];
+      list.push({
+        vendorId,
+        name: store?.name || vendor.company?.name || vendor.name,
+        avatar: vendor.avatar ?? null,
+        storeHandle: store?.handle ?? null,
+        area: vendor.area ?? null,
+        state: vendor.state ?? null,
+        respondedAt: response.createdAt,
+      });
+      respondersByRequestId.set(key, list);
+    }
+
+    // Derived, not read straight off the document: expiry is swept by a cron
+    // (jobs/buyerRequestExpiry.job.js), so between sweeps a request can sit
+    // at status "active" with an expiresAt already in the past — which the
+    // buyer would read as "still out there, 0 replies" for as long as the
+    // gap lasts. The stored status stays authoritative for everything else;
+    // this only ever ages "active" forward.
+    const now = Date.now();
+    const payload = requests.map((r) => {
+      const responders = respondersByRequestId.get(String(r._id)) ?? [];
+      return {
+        ...r,
+        id: String(r._id), // .lean() drops the `id` virtual
+        status:
+          r.status === "active" && new Date(r.expiresAt).getTime() <= now
+            ? "expired"
+            : r.status,
+        matchedVendorCount: r.matchedVendorIds?.length ?? 0,
+        acceptedCount: responders.length,
+        responders,
+      };
+    });
+
+    // matchedVendorIds is a list of who was contacted on the buyer's behalf —
+    // a buyer has no use for the ids themselves, and it's the vendor network
+    // laid bare. The count above is what the page shows.
+    for (const r of payload) delete r.matchedVendorIds;
+
+    res.status(200).json({ success: true, data: { requests: payload } });
   } catch (err) {
     next(err instanceof AppError ? err : new AppError(err.message, 500));
   }

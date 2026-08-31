@@ -1,6 +1,14 @@
 import jwt from "jsonwebtoken";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import Buyer from "../../models/Buyer.model.js";
+import { grantCredits } from "../credits/credits.controller.js";
+import {
+  REFERRAL_CREDITS,
+  REFERRAL_MAX_PER_BUYER,
+  SIGNUP_CREDITS,
+} from "../../config/credits.js";
+import crypto from "crypto";
+import User from "../../models/Users.js";
 import { AppError } from "../../middleware/errorHandler.js";
 
 // Buyer sign-in via Firebase Auth (2026-08-26). Buyers have real accounts so
@@ -63,16 +71,30 @@ function cookieOptions() {
 
 // POST /api/buyer-auth/firebase — { idToken }
 // Issues the same buyer session cookie verify-otp does.
+/** A short, unambiguous share code. Base32-ish alphabet with no 0/O/1/I, so a
+ *  code read aloud or typed off a screenshot survives the trip. Collisions are
+ *  caught by the unique index, and at 8 characters from a 32-symbol alphabet
+ *  they are not a practical concern. */
+function newReferralCode() {
+  const ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const bytes = crypto.randomBytes(8);
+  let out = "";
+  for (const byte of bytes) out += ALPHABET[byte % ALPHABET.length];
+  return out;
+}
+
 export async function firebaseSignIn(req, res, next) {
   try {
-    const { idToken } = req.body ?? {};
+    const { idToken, referralCode } = req.body ?? {};
     if (!idToken || typeof idToken !== "string") {
       return next(new AppError("A sign-in token is required", 400));
     }
 
     const projectId = process.env.FIREBASE_PROJECT_ID;
     if (!projectId) {
-      return next(new AppError("Sign-in is not configured on this server", 500));
+      return next(
+        new AppError("Sign-in is not configured on this server", 500),
+      );
     }
 
     let payload;
@@ -161,11 +183,27 @@ export async function firebaseSignIn(req, res, next) {
       await buyer.save();
     } else {
       try {
+        // Who sent them, resolved BEFORE the insert so the link is recorded
+        // atomically with the account rather than patched on afterwards —
+        // a second write here could fail and leave a referred buyer with no
+        // referrer and a referrer with no bonus.
+        //
+        // A code that matches nobody is ignored in silence: a mistyped or
+        // stale link should still let someone sign up, and telling them
+        // their referral code was invalid at that moment helps no one.
+        const referrer = referralCode
+          ? await Buyer.findOne({ referralCode: String(referralCode).trim() })
+              .select("_id referralGrants")
+              .lean()
+          : null;
+
         buyer = await Buyer.create({
           firebaseUid,
           email,
           name,
           avatar,
+          referralCode: newReferralCode(),
+          referredByBuyerId: referrer?._id ?? null,
           lastLoginAt: new Date(),
           // phone stays null — a number is asked for at the point a Buyer
           // Request actually needs one, not at sign-in (see
@@ -183,6 +221,125 @@ export async function firebaseSignIn(req, res, next) {
           (await Buyer.findOne({ firebaseUid })) ||
           (email ? await Buyer.findOne({ email }) : null);
         if (!buyer) throw err;
+      }
+    }
+
+    // ── The signup credit grant (2026-08-31) ───────────────────────────
+    //
+    // Every buyer account starts with SIGNUP_CREDITS, once and only once.
+    // Idempotent on the code rather than on "did we just create the row",
+    // because the creation path above is deliberately race-tolerant: a
+    // double-tapped sign-in button can reach here twice for the same buyer,
+    // and the second must not grant a second batch.
+    //
+    // Keyed off the BUYER, so it is granted on the first sign-in of an
+    // account that predates this — which is intended. An existing buyer who
+    // has never had credits should get their fifteen, not be punished for
+    // having signed up early.
+    //
+    // Never fatal: a buyer who signs in successfully must be signed in even
+    // if the ledger is unreachable. They can be granted on their next visit.
+    try {
+      await grantCredits(buyer._id, "buyer", "signup", SIGNUP_CREDITS);
+    } catch (err) {
+      console.error("[firebase-auth] signup credit grant failed:", err?.message);
+    }
+
+    // ── The referral bonus ─────────────────────────────────────────────
+    //
+    // Paid to the REFERRER, once, when the person they sent creates an
+    // account. Idempotent on the new buyer's id, so a double-tapped sign-in
+    // that reaches this handler twice pays once — the same guarantee the
+    // signup grant relies on.
+    //
+    // Read back off the buyer rather than from the local `referrer` above,
+    // because this block also runs on a RETURNING buyer's sign-in and the
+    // local variable only exists on the creation path. The idempotency code
+    // is what makes running it every time harmless.
+    //
+    // Capped per referrer (REFERRAL_MAX_PER_BUYER) — paying on account
+    // creation alone is farmable, and the cap is what bounds it.
+    if (buyer.referredByBuyerId) {
+      try {
+        const referrerId = buyer.referredByBuyerId;
+        const bumped = await Buyer.findOneAndUpdate(
+          { _id: referrerId, referralGrants: { $lt: REFERRAL_MAX_PER_BUYER } },
+          { $inc: { referralGrants: 1 } },
+          { new: true },
+        )
+          .select("_id")
+          .lean();
+        // null means they are at the cap — or the row is gone. Either way
+        // there is nothing to pay, and nothing to say about it here.
+        if (bumped) {
+          const { granted } = await grantCredits(
+            referrerId,
+            "buyer",
+            `referral:${buyer._id}`,
+            REFERRAL_CREDITS,
+          );
+          // The counter is incremented before the grant, so a grant that
+          // turns out to be a duplicate (this handler re-entered) must give
+          // the slot back or a referrer slowly loses headroom to retries.
+          if (!granted) {
+            await Buyer.updateOne(
+              { _id: referrerId },
+              { $inc: { referralGrants: -1 } },
+            );
+          }
+        }
+      } catch (err) {
+        console.error("[firebase-auth] referral grant failed:", err?.message);
+      }
+    }
+
+    // ── Link this buyer to their VENDOR account, if they have one ───────
+    //
+    // A vendor can hold a plan on their vendor identity (2026-08-29), and
+    // this sign-in creates a SEPARATE buyer document even for someone who is
+    // already a vendor. Since resolveActor prefers the buyer cookie when
+    // both are present, an unlinked vendor who signed in here to get their
+    // history would be resolved as a brand-new free buyer — metered at 10
+    // searches having just paid for 400. The link is what carries the
+    // entitlement across (helpers/actorPlan.js).
+    //
+    // BOTH sides must have proven control of this address:
+    //   - buyer side: Firebase says so (`email_verified === false` was
+    //     rejected above).
+    //   - vendor side: `accountVerified` is set only by entering an OTP
+    //     emailed to it (controllers/auth/auth.js verify), and login is
+    //     refused until it is.
+    // The `accountVerified` filter is what makes that second half true.
+    // Registration creates the row BEFORE verification and leaves it there,
+    // so the collection contains rows holding addresses nobody proved they
+    // own — someone can type a stranger's email into vendor signup. Matching
+    // those would link a real buyer to a squatter's row. Both collections
+    // store the address lowercased, so a direct match is sound.
+    //
+    // A LINK, not a merge — nothing else about either account is touched.
+    // Best-effort: a failure here must never break a sign-in that otherwise
+    // worked, because the cost is a missed entitlement (recoverable on the
+    // next sign-in) versus locking someone out of their own history.
+    if (email && !buyer.linkedVendorId) {
+      try {
+        const vendor = await User.findOne({ email, accountVerified: true })
+          .select("_id")
+          .lean();
+        if (vendor) {
+          // Both directions, because the entitlement lookup reads whichever
+          // half is acting and must not have to scan for the other one.
+          buyer.linkedVendorId = vendor._id;
+          await buyer.save();
+          await User.updateOne(
+            { _id: vendor._id },
+            { $set: { linkedBuyerId: buyer._id } },
+          );
+          console.log(
+            `[buyer-auth] linked buyer ${buyer._id} <-> vendor ${vendor._id} on verified email`,
+          );
+        }
+      } catch (err) {
+        console.error("[buyer-auth] vendor link failed (ignored):", err);
       }
     }
 

@@ -1,6 +1,7 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
-import { verifyBuyerAuth } from "../middleware/buyerAuth.js";
+import { AppError } from "../middleware/errorHandler.js";
+import { resolveActor } from "../middleware/resolveActor.js";
 import {
   getMyPlan,
   initCheckout,
@@ -15,7 +16,16 @@ router.get("/plans", listPlans);
 
 // Everything below needs a real account — there is nobody to upgrade
 // otherwise, and a plan is account data.
-router.use(verifyBuyerAuth);
+//
+// resolveActor, not verifyBuyerAuth (2026-08-29): a VENDOR can hold a plan
+// too, and the buyer-only guard is what used to 401 them into being told to
+// open a second account. It never 401s by itself — buyer wins when both
+// cookies are present, and the controllers reject a null actor — so this
+// adds the explicit refusal the old guard was providing.
+router.use(resolveActor);
+router.use((req, _res, next) => {
+  next(req.actor ? undefined : new AppError("Sign in to upgrade.", 401));
+});
 
 router.get("/me", getMyPlan);
 

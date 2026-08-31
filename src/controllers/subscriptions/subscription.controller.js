@@ -10,6 +10,7 @@
 import { AppError } from "../../middleware/errorHandler.js";
 import { validateWebhookSignature } from "../../services/paystack.service.js";
 import { creditWalletFromCharge } from "../wallet/wallet.controller.js";
+import { creditFromCharge } from "../credits/credits.controller.js";
 import { activateFromCharge } from "../buyerBilling/buyerBilling.controller.js";
 
 // ── POST /subscription/webhook ────────────────────────────────────────────────
@@ -52,6 +53,18 @@ async function processWebhookEvent(event) {
       // silently drop a payment a buyer already made.
       if (data.metadata?.type === "buyer_plan") {
         await activateFromCharge(data);
+        break;
+      }
+      // Credit top-ups (2026-08-31), checked before the wallet handler for
+      // the same reason: they carry their own metadata type, and falling
+      // through would log a payment a buyer already made as unattributable
+      // and silently drop it. The reference travels into the grant code, so
+      // Paystack's routine retries are no-ops rather than double credits.
+      if (data.metadata?.type === "credit_topup") {
+        await creditFromCharge({
+          ...data.metadata,
+          reference: data.reference,
+        });
         break;
       }
       // Wallet top-ups are the only charge.success source left in this app —

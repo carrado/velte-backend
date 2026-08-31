@@ -50,6 +50,52 @@ const buyerSchema = new mongoose.Schema(
       default: null,
       trim: true,
     },
+    // ── Buyer referrals (2026-08-31) ─────────────────────────────────
+    //
+    // Deliberately NOT the existing Referral collection, which is a
+    // vendor→vendor mechanic end to end: both its sides are `ref: "User"`,
+    // it pays `bonusKobo` into the lead wallet, and it only credits once the
+    // referee has posted products. None of that maps onto a buyer, and a
+    // refereeId pointing at the wrong collection would be a foreign key that
+    // silently resolves to nothing.
+    //
+    // Two plain fields rather than a collection of their own: a buyer
+    // referral has no lifecycle to track — it pays at account creation and
+    // is done — so a status machine would model a state nothing can be in.
+
+    /** This buyer's own code, handed out in their share link. Sparse so the
+     *  unique index ignores the buyers who predate this and have none. */
+    referralCode: {
+      type: String,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
+
+    /** Who referred them, if anyone. Set once at creation and never changed
+     *  — a buyer can only ever have been referred once, by whoever's link
+     *  they arrived through. */
+    referredByBuyerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Buyer",
+      default: null,
+    },
+
+    /** How many referral bonuses this buyer has been paid.
+     *
+     *  Capped (see REFERRAL_MAX_PER_BUYER) because paying on ACCOUNT CREATION
+     *  alone is farmable, and this codebase has already been bitten by
+     *  exactly that: the vendor referral's own comment records a live leak in
+     *  2026-08 where a bonus could be collected without the referee ever
+     *  doing anything real. Buyer accounts are Google-backed, so each fake
+     *  one costs a Google signup — friction, but not a wall. The cap is what
+     *  bounds the damage. */
+    referralGrants: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
     phoneOtp: {
       code: {
         type: Number,
@@ -130,6 +176,28 @@ const buyerSchema = new mongoose.Schema(
     // undeclared path, which would make the guard a no-op that looks fine.
     lastPlanReference: {
       type: String,
+      default: null,
+    },
+    // The vendor account belonging to the SAME PERSON, when there is one
+    // (2026-08-29). Set at Google sign-in, and only ever from a Firebase-
+    // VERIFIED email that matches a vendor's login address — a verified
+    // email is proof of the same human, which an unverified one is not.
+    //
+    // Exists because a vendor can now hold a plan (see helpers/actorPlan.js)
+    // while Google sign-in on /chat still creates a separate Buyer, and
+    // resolveActor prefers the buyer cookie when both are present. Without
+    // this link, a vendor who bought Velte Business and then signed in with
+    // Google to get their history would be silently resolved as a brand-new
+    // free buyer — metered at 10 searches having just paid for 400, and
+    // shown their own plan as still purchasable.
+    //
+    // A LINK, never a merge: the two accounts stay separate documents with
+    // their own conversations, watches and usage counters. All this carries
+    // across is the ENTITLEMENT, because a plan is bought by a person, not
+    // by a cookie.
+    linkedVendorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
       default: null,
     },
     // NOTE: search-usage counters used to live here. They moved to their

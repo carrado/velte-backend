@@ -1,3 +1,16 @@
+// ORPHANED (2026-08-29) — nothing imports this any more.
+//
+// It backed the ANONYMOUS phone-verification path: a stranger proved a
+// number, got a short `phoneToken`, and used it to post one Buyer Request
+// without an account. Buyer Requests now require a real account first (per
+// explicit product direction), so that token had nothing left to authorise
+// and both halves of the flow were removed with it.
+//
+// Deliberately not deleted yet: the collection still holds live rows, and
+// its own TTL index drains them within minutes. Safe to delete this file
+// once you no longer want the collection registered at all — dropping the
+// model does NOT drop the collection, so that is a separate, manual step.
+
 import mongoose from "mongoose";
 
 // A phone number being verified, for someone who is NOT signed in

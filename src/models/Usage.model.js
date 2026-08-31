@@ -36,6 +36,20 @@ const usageSchema = new mongoose.Schema(
     periodKey: { type: String, default: null },
     text: { type: Number, default: 0, min: 0 },
     photo: { type: Number, default: 0, min: 0 },
+    // Fair-price checks (2026-08-30). Its own counter rather than riding on
+    // `text` because a band is a different cost from the search that
+    // produced it: no LLM, but it is what pulls external listings, and that
+    // quota is shared across the whole platform.
+    band: { type: Number, default: 0, min: 0 },
+    // Negotiation briefs (2026-08-31) — "what should I actually offer?".
+    //
+    // Its own counter for the opposite reason `band` has one. A brief costs
+    // NOTHING to serve: no LLM, no external call, pure arithmetic over a band
+    // the turn already produced. It is metered on VALUE, not cost — it is the
+    // thing Velte Plus is being sold on, in the same way price watches are.
+    // Folding it into `band` would have made the free allowance for the paid
+    // feature whatever was left of the free allowance for the free one.
+    brief: { type: Number, default: 0, min: 0 },
   },
   { timestamps: true },
 );
