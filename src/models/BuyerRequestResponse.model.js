@@ -40,6 +40,40 @@ const buyerRequestResponseSchema = new mongoose.Schema(
       enum: ["accepted", "declined"],
       required: true,
     },
+
+    // ── The QUOTE (2026-09-03) ────────────────────────────────────────────
+    //
+    // What turns this row from a yes/no into an answer. Before this, a vendor
+    // could say "I can supply that" but not "for ₦450,000, in 2 days" — so a
+    // buyer with three acceptances had three names and no way to choose
+    // between them, and the whole point of broadcasting a request to several
+    // vendors was lost at the last step.
+    //
+    // ALL THREE ARE OPTIONAL, deliberately, and only meaningful on an
+    // "accepted" row. Requiring a price would change what Accept means for
+    // every vendor already using it — some legitimately want to talk before
+    // committing to a number, and a vendor forced to type one will type a
+    // placeholder, which is worse than no quote at all. The comparison
+    // (lib/quoteCompare.ts) simply ranks whoever quoted and lists the rest.
+    //
+    // VENDOR-STATED, not verified. This is the vendor's own claim about their
+    // own price, which is exactly the kind of number Velte does not invent
+    // and does not check — the buyer is told who said it and when, and the
+    // comparison never blends a quote with a market figure.
+
+    /** Kobo, like every other money field here. Null when the vendor accepted
+     *  without naming a price. */
+    priceKobo: { type: Number, default: null, min: 0 },
+
+    /** How soon they can supply it, in days. 0 means "available now", which
+     *  is why the field is nullable rather than defaulting to 0 — "today" and
+     *  "didn't say" must not read as the same answer. */
+    leadTimeDays: { type: Number, default: null, min: 0 },
+
+    /** Anything the price alone doesn't carry: warranty, free delivery,
+     *  condition, "price is for 20 units". Short on purpose — this is a line
+     *  on a comparison row, not a message thread. */
+    note: { type: String, default: null, trim: true, maxlength: 200 },
   },
   { timestamps: true },
 );

@@ -10,6 +10,7 @@ import {
   PRODUCT_BONUS_MAX_COUNT,
 } from "../../controllers/wallet/wallet.controller.js";
 import { creditPendingReferral } from "../../services/referral.service.js";
+import { syncVendorCatalogCredits } from "../credits/credits.controller.js";
 import {
   SECTOR_CLASSIFICATION_BY_VALUE,
   CATEGORY_OPTIONAL_SECTOR_VALUES,
@@ -466,6 +467,16 @@ export const createProduct = async (req, res) => {
     } catch (err) {
       console.error("Referral credit check failed:", err.message);
     }
+
+    // Search CREDITS for catalogue depth (2026-08-31), separate from and
+    // additional to the wallet's naira bonus above — they buy different
+    // things: wallet money pays for leads coming IN, credits pay for this
+    // vendor searching Velte themselves. Checked on every create rather than
+    // only at 10 and 20, because a vendor can add listings across sessions in
+    // any order; the function no-ops once their tier is already paid, and
+    // tops up by the difference when they cross into the next one.
+    // Best-effort: a bonus must never cost someone their upload.
+    await syncVendorCatalogCredits(req.user.userId);
 
     return res
       .status(201)

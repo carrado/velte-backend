@@ -11,7 +11,6 @@ import { AppError } from "../../middleware/errorHandler.js";
 import { validateWebhookSignature } from "../../services/paystack.service.js";
 import { creditWalletFromCharge } from "../wallet/wallet.controller.js";
 import { creditFromCharge } from "../credits/credits.controller.js";
-import { activateFromCharge } from "../buyerBilling/buyerBilling.controller.js";
 
 // ── POST /subscription/webhook ────────────────────────────────────────────────
 
@@ -47,12 +46,18 @@ async function processWebhookEvent(event) {
 
   switch (eventType) {
     case "charge.success": {
-      // Buyer plan purchases are checked FIRST and return: they carry
-      // their own metadata type and must never fall through to the
-      // wallet handler, which would log them as unattributable and
-      // silently drop a payment a buyer already made.
+      // Buyer PLANS are retired (2026-08-31) and nothing can open one any
+      // more — the checkout route, the price table and the grant code are
+      // all deleted. This branch stays as a TRAP rather than being removed
+      // with them: a plan transaction opened just before the deploy can
+      // still be paid after it, and without this it would fall through to
+      // the wallet handler and either credit the wrong ledger or be logged
+      // as unattributable and quietly lost. Refunding one real payment by
+      // hand is fine; not knowing it happened is not.
       if (data.metadata?.type === "buyer_plan") {
-        await activateFromCharge(data);
+        console.error(
+          `[webhook] payment for the RETIRED buyer plan — refund by hand: ref ${data.reference}, ${data.amount} kobo, owner ${data.metadata?.ownerId ?? data.metadata?.buyerId ?? "unknown"} (${data.metadata?.ownerType ?? "buyer"})`,
+        );
         break;
       }
       // Credit top-ups (2026-08-31), checked before the wallet handler for

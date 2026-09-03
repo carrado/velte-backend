@@ -4,6 +4,7 @@ import {
   consumeCredits,
   getCredits,
   initTopUp,
+  initWalletTopUp,
   listPacks,
   refundCredits,
 } from "../controllers/credits/credits.controller.js";
@@ -25,6 +26,9 @@ router.post("/consume", consumeCredits);
 router.post("/refund", refundCredits);
 router.get("/packs", listPacks);
 router.post("/checkout", initTopUp);
+// Vendors only, and it settles in the request rather than through
+// Paystack -- the money is already ours. See initWalletTopUp.
+router.post("/wallet-topup", initWalletTopUp);
 
 // NOTE: there is deliberately no grant route. Credits are granted server-side
 // by the flows that earn them (account creation, referral completion, a

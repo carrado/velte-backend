@@ -48,6 +48,25 @@ const buyerRequestSchema = new mongoose.Schema(
       trim: true,
       maxlength: 1000,
     },
+    // What the buyer said they are willing to spend, in kobo (2026-09-03).
+    //
+    // ITS OWN FIELD, not a phrase inside `description`. It was always allowed
+    // to appear in the description — buildRequestDescription is told to fold
+    // in a budget if one was mentioned — but a number buried in prose is one
+    // a vendor may never read, and this is the number they most need before
+    // deciding whether to answer at all: a lead costs them ₦1,000, and
+    // "twenty office chairs" tells them nothing about whether their price is
+    // anywhere near this buyer's.
+    //
+    // NULLABLE, and that is deliberate. A buyer who genuinely has no figure
+    // in mind should not be blocked from asking, and every request created
+    // before this shipped has none. Vendors see "no budget given" rather than
+    // a fabricated one.
+    budgetKobo: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
     // Frontend uploads directly to Cloudinary and sends only the resulting
     // URL — no backend upload endpoint exists or is needed.
     imageUrl: {
@@ -83,7 +102,33 @@ const buyerRequestSchema = new mongoose.Schema(
     },
 
     responseCount: { type: Number, default: 0, min: 0 },
+
+    // Accepts ONLY (2026-09-03). `responseCount` counts declines too, and a
+    // decline is not news: it releases nothing, costs the vendor nothing, and
+    // is never shown to the buyer (see listMyRequests, which lists accepted
+    // responders only). Notifying on it would send "someone responded" to a
+    // buyer who then opens Velte and finds nothing — the worst possible
+    // notification, and exactly what the restored sweep would have sent if it
+    // kept watching `responseCount` the way the deleted one did.
+    acceptedCount: { type: Number, default: 0, min: 0 },
+
     lastResponseAt: { type: Date, default: null },
+
+    // ── Buyer notification watermark (restored 2026-09-03) ────────────────
+    //
+    // These were dropped on 2026-08-18 along with the sweep that used them,
+    // on the stated grounds that "buyers have no account/inbox to notify
+    // into anymore". Buyers have had accounts since 2026-08-26, and posting
+    // a request has REQUIRED one since 2026-08-29 — so that reasoning is
+    // obsolete and its consequence was not: a buyer posted a request and was
+    // never told when someone answered it. Asynchronous by nature, with no
+    // return path.
+    //
+    // Advanced only on a CONFIRMED send (jobs/buyerRequestNotifications),
+    // so a failed email/SMS retries on the next sweep rather than being
+    // silently swallowed.
+    lastBuyerNotifiedAcceptedCount: { type: Number, default: 0, min: 0 },
+    lastBuyerNotificationAt: { type: Date, default: null },
 
     expiresAt: {
       type: Date,

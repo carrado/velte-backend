@@ -105,6 +105,17 @@ const walletSchema = new mongoose.Schema(
     // independently (SMS costs money per send, unlike push) even though
     // today's specific numbers happen to trigger at the same balance.
     lowWalletSmsLastSentAt: { type: Date, default: null },
+
+    // When this vendor last bought SEARCH CREDITS out of this wallet
+    // (2026-08-31). It existed as a cheap skip for a lead-tier calculation:
+    // lead price was tiered on balance, so money moved from here into credits
+    // would otherwise have pushed a vendor into a worse per-lead rate.
+    //
+    // VESTIGIAL since 2026-09-03. Lead pricing is flat, so nothing reads this
+    // for pricing any more and the machinery it fed is deleted. Kept because
+    // it is a truthful record of when a vendor last converted wallet money to
+    // credits, and dropping a populated field earns nothing.
+    lastCreditPurchaseAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

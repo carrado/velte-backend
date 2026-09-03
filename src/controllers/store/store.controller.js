@@ -520,7 +520,7 @@ export function shuffleInPlace(arr) {
 //     backend's retrieval.service.js filterWalletEligible): a browse-
 //     sourced "Chat" click bills the vendor's wallet exactly like a
 //     search-sourced one (see MarketplaceCard's reportLead), so a vendor
-//     who can't cover MIN_LEAD_COST_KOBO — the highest tier's own rate,
+//     who can't cover MIN_LEAD_COST_KOBO — the flat per-lead rate,
 //     the only floor that actually matters for "can they afford even ONE
 //     more lead" (see that constant's own doc comment in
 //     utils/leadPricing.js for why one flat floor covers every tier) —

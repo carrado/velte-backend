@@ -29,6 +29,23 @@ const OTP_TTL_MS = 10 * 60 * 1000;
 // Both endpoints below are behind verifyBuyerAuth (see buyerAuth.routes.js),
 // so `req.buyer` is guaranteed and there is no anonymous branch left to get
 // wrong. A phone number is not an identity on Velte; a Google account is.
+//
+// ── WHY THIS STILL VERIFIES, on a different reason than it started ─────────
+//
+// The original reason is gone: the number used to be released to any vendor
+// who accepted a Buyer Request, so an unproven one meant a vendor paying for
+// a lead they could not reach. Vendors never receive it now — the buyer opens
+// the conversation from their own requests page.
+//
+// What verification protects now is a THIRD PARTY. The number's remaining job
+// is to receive an SMS when businesses answer, so an unverified one does not
+// fail quietly — it sends a real text to a stranger who never asked, on our
+// account, at our cost. Proving the number is what keeps Velte from being a
+// way to send someone else a message.
+//
+// (Removed 2026-09-03 on the reasoning that a wrong number only cost its own
+// typist a notification, then restored the same day: it does not, it costs an
+// uninvolved person an unsolicited SMS.)
 
 function generateOtp() {
   return Math.floor(100000 + Math.random() * 900000);

@@ -1,61 +1,58 @@
-// Tiered per-lead pricing (per explicit request) — the LOWER a vendor's
-// wallet balance, the MORE each lead costs, incentivizing bigger top-ups
-// instead of small, frequent ones:
-//   < ₦5,000            → ₦1,000/lead (100,000 kobo)
-//   ₦5,000 – <₦10,000   → ₦700/lead (70,000 kobo)
-//   ≥ ₦10,000           → ₦500/lead (50,000 kobo)
-// Ordered highest-balance-first so leadCostForBalance's own linear scan
-// returns on the first tier the balance actually clears. Determined by the
-// CURRENT balance at the moment of charge, never a rate locked in at
-// top-up time — a vendor's rate moves with their wallet as it drains,
-// tier by tier, same as the old flat rate always did.
+// ONE PRICE, FOR EVERYBODY: ₦1,000 per lead (2026-09-03).
 //
-// Pulled out into its own module (not left inline in wallet.controller.js)
-// specifically so walletLowBalance.job.js can import it too without a
-// circular dependency — that file already gets imported BY
-// wallet.controller.js (for LOW_BALANCE_KOBO), so the reverse import would
-// cycle.
-export const LEAD_TIERS = [
-  { minBalanceKobo: 1_000_000, costKobo: 50_000 }, // ≥ ₦10,000 → ₦500/lead
-  { minBalanceKobo: 500_000, costKobo: 70_000 }, // ₦5,000–₦9,999 → ₦700/lead
-  { minBalanceKobo: 0, costKobo: 100_000 }, // < ₦5,000 → ₦1,000/lead
-];
+// Replaced three balance-tiers — the LOWER a vendor's balance, the MORE each
+// lead cost (₦500 / ₦700 / ₦1,000), meant to reward bigger top-ups. It did
+// something else as well. A vendor sitting on ₦10,500 who spent ₦600 dropped
+// a tier and paid ₦200 more on EVERY lead afterwards: ₦4,000 over twenty
+// leads, to save ₦600. Invisible at the moment of the decision, and it
+// punished using the product.
+//
+// Everything built to contain that — the 30-day credit-spend window, the
+// tierBalanceKobo aggregate in wallet.controller.js, the lastCreditPurchaseAt
+// short-circuit — existed only because the price moved with the balance. A
+// flat price deletes the problem rather than managing it, and all of that
+// machinery went with this change.
+//
+// It reads as a rise: everyone now pays what only the lowest-balance vendors
+// used to. It is not one in practice, because it shipped alongside
+// charge-on-CONTACT (see search.controller.js's chargeLead). A vendor is no
+// longer billed for accepting a buyer request that goes nowhere — only for a
+// buyer who actually reached them. Higher per lead, far fewer leads charged.
+//
+// Mirrored in the velte frontend's services/wallet.ts, plus the standalone
+// staffly-ai-backend's LEAD_COST_KOBO env var and velte-super-admin's own
+// copies — keep them in sync until the price is served from the wallet/stats
+// response instead. One number is a far easier thing to keep in sync than a
+// tier table, which is part of the point.
+export const LEAD_COST_KOBO = 100_000; // ₦1,000
 
-/** The per-lead rate that applies to a given wallet balance right now. */
-export function leadCostForBalance(balanceKobo) {
-  for (const tier of LEAD_TIERS) {
-    if (balanceKobo >= tier.minBalanceKobo) return tier.costKobo;
-  }
-  return LEAD_TIERS[LEAD_TIERS.length - 1].costKobo;
+/** The per-lead rate. Takes no balance any more and returns a constant, but
+ *  stays a function so call sites read the same, and so there is one obvious
+ *  place to put variable pricing back if it ever returns. */
+export function leadCost() {
+  return LEAD_COST_KOBO;
 }
+
+// What a vendor needs available to be charged for one lead. The same number
+// as the rate now that there is only one rate — kept as its own name because
+// "what does a lead cost" and "can this vendor afford one" are different
+// questions asked by different callers (store.controller.js's search-time
+// eligibility filter, wallet.controller.js's canAffordLead), and only the
+// first of them is a price.
+export const MIN_LEAD_COST_KOBO = LEAD_COST_KOBO;
 
 /**
- * How many more leads a balance can still cover, capped at `cap` (default
- * 2) — callers of this only ever need to distinguish "0", "1", or "2+",
- * never an exact count (see walletLowBalance.job.js's own SMS trigger:
- * "covers at most 1 lead"), so this stops simulating once it hits the cap
- * rather than walking a large balance all the way down to zero. Ordinary
- * eligibility ("can this vendor afford even one more lead") is simpler
- * and doesn't need this — see MIN_LEAD_COST_KOBO below.
+ * How many more leads a balance can still cover, capped at `cap` (default 2)
+ * — callers only ever need to distinguish "0", "1", or "2+" (see
+ * walletLowBalance.job.js's SMS trigger: "covers at most 1 lead"), never an
+ * exact count.
+ *
+ * A plain divide now that the price is flat; it used to simulate the drain
+ * tier by tier, because each lead could cost more than the one before it.
+ * Clamped at 0 so a negative balance — reachable under charge-on-contact,
+ * which lets a connection through even when the wallet moved after the
+ * accept — reports none rather than a negative count.
  */
 export function leadsRemaining(balanceKobo, cap = 2) {
-  let remaining = balanceKobo;
-  let count = 0;
-  while (count < cap) {
-    const cost = leadCostForBalance(remaining);
-    if (remaining < cost) break;
-    remaining -= cost;
-    count += 1;
-  }
-  return count;
+  return Math.max(0, Math.min(Math.floor(balanceKobo / LEAD_COST_KOBO), cap));
 }
-
-// The most expensive tier's own rate — by construction (every OTHER tier's
-// minBalanceKobo comfortably covers its own, cheaper costKobo), a balance
-// clears MIN_LEAD_COST_KOBO if and only if it can afford at least one
-// lead, at WHATEVER rate its own tier charges. This is what search-time
-// wallet-eligibility filtering actually needs (store.controller.js here,
-// plus staffly-ai-backend's and velte-super-admin's own mirrors) — a
-// single flat floor, not the full tier table, since eligibility only ever
-// asks "can they afford ONE more lead," never "which rate."
-export const MIN_LEAD_COST_KOBO = LEAD_TIERS[LEAD_TIERS.length - 1].costKobo;

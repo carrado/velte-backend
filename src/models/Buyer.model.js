@@ -144,67 +144,42 @@ const buyerSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
-    // Which plan this buyer is on. A plain string rather than an enum so
-    // retiring or renaming a tier can never make an existing buyer
-    // unreadable — the frontend resolves an unknown value to Free (see
-    // plans.ts planFor), which under-charges rather than locking anyone out.
-    plan: {
-      type: String,
-      default: "free",
-    },
-    // When the current paid plan lapses. Null on Free and on any buyer
-    // who has never paid. A paid plan is never downgraded by a job — see
-    // config/buyerPlans.js effectivePlanId, which computes the real tier
-    // from this date on every read, so there is no cron to miss and no
-    // window where a paying buyer is locked out because one didn't fire.
-    planExpiresAt: {
-      type: Date,
-      default: null,
-    },
-    // "monthly" or "yearly" — what they last bought. Display only (it
-    // drives the renewal prompt); access is always computed from
-    // planExpiresAt, never from this.
-    planCycle: {
-      type: String,
-      default: null,
-    },
-    // The Paystack reference of the last plan purchase applied to this
-    // account. This is the idempotency key: Paystack retries webhooks, and
-    // without it a redelivered charge.success would extend the expiry a
-    // second time and hand out a free month per retry. Must stay declared
-    // in the schema — Mongoose strict mode silently DROPS a $set to an
-    // undeclared path, which would make the guard a no-op that looks fine.
-    lastPlanReference: {
-      type: String,
-      default: null,
-    },
+    // NOTE: the plan fields (`plan`, `planExpiresAt`, `planCycle`,
+    // `lastPlanReference`) lived here until 2026-08-31 and are gone with the
+    // subscription model itself. A balance replaced them — see
+    // models/Credits.model.js, which is keyed on (ownerId, ownerType) rather
+    // than hanging off this document, so a vendor can hold one too. Stale
+    // values may still sit on old buyer documents; nothing reads them, and
+    // Mongoose will not return them now they are undeclared.
+    //
     // The vendor account belonging to the SAME PERSON, when there is one
     // (2026-08-29). Set at Google sign-in, and only ever from a Firebase-
     // VERIFIED email that matches a vendor's login address — a verified
     // email is proof of the same human, which an unverified one is not.
     //
-    // Exists because a vendor can now hold a plan (see helpers/actorPlan.js)
-    // while Google sign-in on /chat still creates a separate Buyer, and
-    // resolveActor prefers the buyer cookie when both are present. Without
-    // this link, a vendor who bought Velte Business and then signed in with
-    // Google to get their history would be silently resolved as a brand-new
-    // free buyer — metered at 10 searches having just paid for 400, and
-    // shown their own plan as still purchasable.
+    // KEPT through the credits switch (2026-08-31) even though the plan it
+    // was built to carry across is gone. It cost real care to make sound —
+    // both halves must have PROVEN control of the address (Firebase on the
+    // buyer side, the signup OTP's `accountVerified` on the vendor side),
+    // and it deliberately cannot be done on phone numbers, which vendors
+    // never verify. Anything that later has to follow a person rather than
+    // a cookie — a shared balance, support looking up "this human", a
+    // merge — needs exactly this, and it is far easier to keep than to
+    // re-establish. It is also already backfilled.
     //
     // A LINK, never a merge: the two accounts stay separate documents with
-    // their own conversations, watches and usage counters. All this carries
-    // across is the ENTITLEMENT, because a plan is bought by a person, not
-    // by a cookie.
+    // their own conversations, watches and balances. Nothing is currently
+    // read ACROSS it — a vendor spends from their lead wallet and a buyer
+    // from their credits — so linking today changes no entitlement.
     linkedVendorId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       default: null,
     },
-    // NOTE: search-usage counters used to live here. They moved to their
-    // own Usage collection (2026-08-29) once vendors needed metering too —
-    // a vendor signs in with a different cookie and is not a Buyer at all,
-    // so counters hanging off this document could never cover them. See
-    // models/Usage.model.js.
+    // NOTE: search-usage counters used to live here. They moved to their own
+    // Usage collection (2026-08-29) once vendors needed metering too, and
+    // that collection is itself gone (2026-08-31) — there is no monthly
+    // counter left anywhere, only a Credits balance.
   },
   {
     timestamps: true,

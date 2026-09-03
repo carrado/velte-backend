@@ -151,40 +151,23 @@ const userSchema = new mongoose.Schema({
   // with — never changes after. null for a vendor who signed up organically.
   referredBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 
-  // ── Buyer plan, held on a VENDOR identity (2026-08-29) ─────────────────────
-  // A vendor sells stock and also buys it, which makes them the best-qualified
-  // Velte Business prospect in the product. They used to be unable to buy one
-  // at all — buyerBilling refused a vendor session, and the plans page told
-  // them to open a second account. These are the same four fields Buyer
-  // carries, with the same meanings, so effectivePlanId() and the billing
-  // controller resolve either document without caring which it got.
-  //
-  // Paid for by CARD, never from the wallet: wallet money is Velte's revenue
-  // from leads, and lead price is tiered on wallet balance, so a plan bought
-  // from it would silently raise this vendor's cost per lead. See
-  // helpers/actorPlan.js.
-  //
-  // Absent/expired here is NOT the Free tier for a vendor — it resolves to the
-  // `vendor` row instead, which is what keeps allowances Free lacks (price
-  // watches) switched on for vendors who never subscribe.
-  plan:               { type: String, default: 'free' },
-  planExpiresAt:      { type: Date,   default: null },
-  planCycle:          { type: String, default: null },
-  // Idempotency key for the Paystack webhook — Paystack retries, and without
-  // this a redelivered charge.success grants a second window for one payment.
-  // MUST stay declared: Mongoose strict mode silently drops a $set to an
-  // undeclared path, which would make the guard a no-op that looks correct.
-  lastPlanReference:  { type: String, default: null },
+  // NOTE: a vendor could hold a BUYER PLAN on this identity between
+  // 2026-08-29 and 2026-08-31 (`plan`, `planExpiresAt`, `planCycle`,
+  // `lastPlanReference`). Subscriptions are retired; the replacement is a
+  // credit balance in models/Credits.model.js, keyed on
+  // (ownerId, ownerType) so it covers either kind of account without fields
+  // on either document. Stale values may still sit on old vendor rows;
+  // nothing reads them, and Mongoose will not return them now they are
+  // undeclared.
+
   // The buyer account belonging to the SAME PERSON, when there is one. The
   // mirror of Buyer.linkedVendorId, written at the same moment (Google
   // sign-in, on a Firebase-verified email that matches this login address).
   //
-  // Denormalised onto both sides ON PURPOSE: the entitlement lookup runs on
-  // every metered search and must compare both halves without a short-circuit
-  // (see helpers/actorPlan.js resolveEntitlement for why skipping it was a
-  // bug). Holding the id here keeps that a keyed findById instead of a query
-  // over the buyers collection, so an UNLINKED account — nearly all of them —
-  // still costs exactly one lookup.
+  // KEPT through the credits switch even though the plan it carried is gone
+  // — see Buyer.linkedVendorId for why. Denormalised onto both sides so any
+  // future cross-account read is a keyed findById rather than a query over
+  // the other collection.
   linkedBuyerId:      { type: mongoose.Schema.Types.ObjectId, ref: 'Buyer', default: null },
 }, {
   timestamps: true

@@ -3,13 +3,11 @@ import { notifyUser } from "../services/pushNotification.service.js";
 import { sendSms } from "../services/sendchamp.service.js";
 import { leadsRemaining, MIN_LEAD_COST_KOBO } from "../utils/leadPricing.js";
 
-// ₦2,000 — still higher than MIN_LEAD_COST_KOBO (₦1,000, the top tier's own
-// rate — see utils/leadPricing.js; pricing is tiered now, but a vendor this
-// low is already IN that top, most-expensive tier) so a vendor gets warned
-// with room to top up before search-eligibility (which gates on the SAME
-// MIN_LEAD_COST_KOBO floor) actually cuts them off. Raised alongside the
-// tiers' own introduction to preserve that same 2x buffer — leaving this at
-// the old ₦1,000 would have meant the warning fired at the EXACT moment a
+// ₦2,000 — twice MIN_LEAD_COST_KOBO (₦1,000, the flat per-lead rate — see
+// utils/leadPricing.js) so a vendor gets warned with room to top up before
+// search-eligibility (which gates on the SAME MIN_LEAD_COST_KOBO floor)
+// actually cuts them off. The 2x buffer is the point: leaving this at
+// ₦1,000 would have meant the warning fired at the EXACT moment a
 // vendor could no longer afford a lead, with zero room to react. This is a
 // separate, wider-buffer signal from the narrower "covers at most 1 lead"
 // SMS trigger below (canOnlyAffordUpToOneLead) — this one still only ever
@@ -32,21 +30,21 @@ export const LOW_BALANCE_KOBO = 200_000;
 // other edit, since every read below already handles either mode.
 const REMINDER_INTERVAL_MS = null;
 
-// A cheap Mongo-side prefilter for the SMS check below, NOT the
-// authoritative test — leadsRemaining/canOnlyAffordUpToOneLead (real tier
-// math, can't be expressed as a single balance comparison) is what
-// actually decides. Twice the top tier's own rate is always enough
-// headroom: covering a SECOND lead at the single WORST (most expensive)
-// rate never needs more than 2 × MIN_LEAD_COST_KOBO, so anything at or
-// above that can always afford at least 2 leads and is never worth
-// fetching for this check in the first place.
+// A cheap Mongo-side prefilter for the SMS check below;
+// leadsRemaining/canOnlyAffordUpToOneLead is still what actually decides.
+// Twice the per-lead rate is always enough headroom: covering a second lead
+// never needs more than 2 × MIN_LEAD_COST_KOBO, so anything at or above that
+// can afford at least 2 leads and is never worth fetching for this check.
+// (This was load-bearing while pricing was tiered and the real test could not
+// be expressed as a single balance comparison. Flat pricing makes the two
+// agree exactly, but the prefilter is still the cheaper query.)
 const SMS_QUERY_CEILING_KOBO = MIN_LEAD_COST_KOBO * 2;
 
 // Per explicit request: the trigger for the low-wallet SMS (see below) is
 // "the balance can cover at most ONE more lead" — narrower and more urgent
 // than the general LOW_BALANCE_KOBO push threshold above. Delegates to
 // leadsRemaining (utils/leadPricing.js) rather than a flat number so this
-// stays correct if the tiers, or LOW_BALANCE_KOBO, ever change
+// stays correct if the per-lead rate, or LOW_BALANCE_KOBO, ever change
 // independently — even though today's specific numbers happen to make
 // this trigger at the same balance as the push.
 function canOnlyAffordUpToOneLead(balanceKobo) {

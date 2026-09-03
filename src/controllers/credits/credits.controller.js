@@ -3,8 +3,19 @@ import crypto from "crypto";
 import Credits from "../../models/Credits.model.js";
 import { AppError } from "../../middleware/errorHandler.js";
 import { CREDIT_PACKS, packFor } from "../../config/creditPacks.js";
+import {
+  VENDOR_CATALOG_GRANTS,
+  catalogGrantCode,
+  catalogGrantFor,
+} from "../../config/credits.js";
+import Product from "../../models/Product.model.js";
 import { initializeTransaction } from "../../services/paystack.service.js";
+import {
+  debitWalletForCredits,
+  refundWalletCreditPurchase,
+} from "../wallet/wallet.controller.js";
 import Buyer from "../../models/Buyer.model.js";
+import Wallet from "../../models/Wallet.model.js";
 import User from "../../models/Users.js";
 
 // Credit spending for any signed-in account (2026-08-31).
@@ -65,6 +76,11 @@ export async function consumeCredits(req, res, next) {
     }
     if (!req.actor) throw new AppError("Not authenticated.", 401);
     const { id: ownerId, type: ownerType } = req.actor;
+
+    // Before the debit, so a vendor whose catalogue already earned them
+    // credits is never refused for want of a grant nobody had applied yet.
+    // A no-op (one indexed lookup) for every vendor already on the top tier.
+    if (ownerType === "vendor") await syncVendorCatalogCredits(ownerId);
 
     await rowFor(ownerId, ownerType);
 
@@ -144,7 +160,28 @@ export async function getCredits(req, res, next) {
   try {
     if (!req.actor) throw new AppError("Not authenticated.", 401);
     const { id: ownerId, type: ownerType } = req.actor;
+    // What backfills every vendor who had a catalogue before this existed —
+    // the gauge is the first thing that reads a balance, so there is no
+    // migration to run and no vendor who has to search before being paid.
+    if (ownerType === "vendor") await syncVendorCatalogCredits(ownerId);
     const row = await Credits.findOne({ ownerId, ownerType }).lean();
+
+    // A vendor's LEAD WALLET balance travels with the credit balance, because
+    // for them the panel has to offer a choice of funding and an offer to
+    // "pay from your wallet" without saying what is in it is not an offer.
+    // Never fetched for a buyer: they have no wallet, and a null here is what
+    // the panel branches on to show the card-only view.
+    let walletBalanceKobo = null;
+    if (ownerType === "vendor") {
+      const wallet = await Wallet.findOne({ vendorId: ownerId })
+        .select("balanceKobo")
+        .lean()
+        // A wallet read failing must not break the credit gauge -- the two are
+        // separate ledgers and only one of them is being asked about.
+        .catch(() => null);
+      walletBalanceKobo = wallet?.balanceKobo ?? 0;
+    }
+
     return res.json({
       success: true,
       data: {
@@ -152,6 +189,7 @@ export async function getCredits(req, res, next) {
         ownerType,
         totalGranted: row?.totalGranted ?? 0,
         totalSpent: row?.totalSpent ?? 0,
+        walletBalanceKobo,
       },
     });
   } catch (err) {
@@ -206,6 +244,85 @@ export async function grantCredits(ownerId, ownerType, code, amount) {
   return { granted: Boolean(updated), balance: updated?.balance ?? null };
 }
 
+
+/**
+ * Brings a VENDOR's catalogue grant up to whatever their listings have earned.
+ *
+ * Vendors are paid in credits for the thing Velte actually needs from them —
+ * offerings to match against. See config/credits.js VENDOR_CATALOG_GRANTS for
+ * why the numbers dwarf a buyer's signup grant.
+ *
+ * Called from three places, all of them safe to repeat: product creation (the
+ * moment a vendor crosses 10 or 20 is when the reward should land), and the
+ * balance read + consume paths (which is what backfills every vendor who
+ * already had a catalogue before this existed, with no migration to run).
+ *
+ * TOPS UP TO THE TIER, never re-pays it. Each tier is granted once ever under
+ * its own code, and the amount granted is the tier's target MINUS the highest
+ * tier already held — so a vendor who joined with 3 products on 50 credits and
+ * grows to 20 receives 50 then 100, landing on exactly the 200 the table
+ * promises. A catalogue that shrinks and regrows pays nothing the second time,
+ * which is what stops delete-and-repost farming.
+ *
+ * Best-effort and silent on failure: this is a bonus, and a vendor must never
+ * lose a product upload or a search because crediting it went wrong.
+ */
+export async function syncVendorCatalogCredits(vendorId) {
+  try {
+    const row = await Credits.findOne({ ownerId: vendorId, ownerType: "vendor" })
+      .select("grants")
+      .lean();
+    const held = row?.grants ?? [];
+
+    // The top tier is terminal — once it is held there is nothing left to
+    // earn, so the overwhelmingly common case costs one indexed lookup and
+    // never counts products at all.
+    const top = VENDOR_CATALOG_GRANTS[0];
+    if (held.includes(catalogGrantCode(top))) return;
+
+    const count = await Product.countDocuments({ vendorId });
+    const tier = catalogGrantFor(count);
+    const code = catalogGrantCode(tier);
+    if (held.includes(code)) return;
+
+    // The most they have already been paid for their catalogue. `max`, not a
+    // sum: the tiers are cumulative targets, so adding them would credit a
+    // vendor at 20 offerings for 50 + 100 + 200.
+    const alreadyPaid = VENDOR_CATALOG_GRANTS.filter((t) =>
+      held.includes(catalogGrantCode(t)),
+    ).reduce((most, t) => Math.max(most, t.credits), 0);
+
+    const difference = tier.credits - alreadyPaid;
+    // Zero or negative can only mean a tier table edited downward after a
+    // vendor was already paid. Recording the code without moving the balance
+    // is the right answer: nothing is clawed back, and the tier stops being
+    // re-evaluated on every call.
+    if (difference <= 0) {
+      await Credits.updateOne(
+        { ownerId: vendorId, ownerType: "vendor" },
+        { $addToSet: { grants: code } },
+      );
+      return;
+    }
+
+    const { granted, balance } = await grantCredits(
+      vendorId,
+      "vendor",
+      code,
+      difference,
+    );
+    if (granted) {
+      console.log(
+        `[credits] +${difference} to vendor ${vendorId} for ${count} offerings (${code}), balance ${balance}`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      "[credits] vendor catalogue grant failed (ignored):",
+      err?.message,
+    );
+  }
+}
 
 // ── GET /api/credits/packs ───────────────────────────────────────────────
 //
@@ -303,6 +420,106 @@ export async function initTopUp(req, res, next) {
         authorizationUrl,
         reference,
         amountKobo: pack.priceNgn * 100,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── POST /api/credits/wallet-topup ───────────────────────────────
+//
+// Body: { packId: "shopper" }
+// 200:  { success, data: { balance, credits, amountKobo, walletBalanceKobo } }
+//
+// VENDORS ONLY, and the only thing on Velte that spends wallet money on
+// anything other than a lead. A vendor already keeps a float with us; making
+// them re-enter a card to buy search is the kind of friction that stops a
+// vendor using their own product. Buyers have no wallet, so for them this
+// simply does not exist.
+//
+// Same packs, same naira prices as the card route. The funding source is a
+// funding source, not a second price list -- a credit costs a vendor exactly
+// what it costs a buyer.
+//
+// UNLIKE the card route this completes IN THE REQUEST. There is no Paystack
+// round trip and therefore no webhook to wait for: the money is already ours,
+// so the debit and the grant both happen here and the vendor sees the new
+// balance immediately.
+//
+// Buying credits does NOT worsen this vendor's lead rate, and since
+// 2026-09-03 nothing has to be done to keep it that way: the lead price is a
+// single flat rate, so spending the wallet down cannot move it. This used to
+// need a 30-day credit-spend window to stop ₦600 spent here costing ₦200 more
+// on every subsequent lead.
+export async function initWalletTopUp(req, res, next) {
+  try {
+    if (!req.actor) throw new AppError("Not authenticated.", 401);
+    if (req.actor.type !== "vendor") {
+      // A buyer reaching this has no wallet to spend, and saying so plainly
+      // is better than a 404 that reads like the feature is broken.
+      throw new AppError(
+        "Only vendor accounts have a Velte wallet. Top up with a card instead.",
+        403,
+      );
+    }
+    const pack = packFor(req.body?.packId);
+    if (!pack) throw new AppError("Unknown credit pack.", 400);
+
+    // Ours, random, and carrying nothing about who bought what -- the same
+    // discipline as the Paystack reference above. `vcredw` (w for wallet)
+    // keeps the two purchase kinds distinguishable in the ledger at a glance.
+    const reference = `vcredw_${crypto.randomBytes(12).toString("hex")}`;
+
+    const debit = await debitWalletForCredits(req.actor.id, pack, reference);
+    if (!debit.debited) {
+      if (debit.reason === "already_paid") {
+        throw new AppError("That purchase already went through.", 409);
+      }
+      // Named amounts, because the vendor's next action depends on the gap.
+      throw new AppError(
+        `Your Velte wallet doesn't have the ₦${pack.priceNgn.toLocaleString(
+          "en-NG",
+        )} for this pack. Top the wallet up, or pay with a card.`,
+        402,
+      );
+    }
+
+    let granted;
+    try {
+      // Idempotent on the reference, like every other grant here -- a retry
+      // that got as far as the grant cannot pay twice.
+      granted = await grantCredits(
+        req.actor.id,
+        "vendor",
+        `topup:${reference}`,
+        pack.credits,
+      );
+    } catch (err) {
+      // The money left the wallet and the credits never arrived. Put it back
+      // rather than leaving a vendor short with nothing to show for it.
+      await refundWalletCreditPurchase(
+        req.actor.id,
+        debit.amountKobo,
+        reference,
+      );
+      throw err;
+    }
+
+    console.log(
+      `[credits] +${pack.credits} to vendor ${req.actor.id} from wallet (${reference}), balance ${granted.balance}`,
+    );
+
+    return res.json({
+      success: true,
+      data: {
+        balance: granted.balance,
+        credits: pack.credits,
+        amountKobo: debit.amountKobo,
+        // So the panel can redraw the wallet figure it just spent from
+        // without a second request.
+        walletBalanceKobo: debit.wallet.balanceKobo,
+        reference,
       },
     });
   } catch (err) {

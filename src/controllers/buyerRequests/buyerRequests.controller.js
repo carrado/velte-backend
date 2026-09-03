@@ -21,7 +21,7 @@ import { notifyUser } from "../../services/pushNotification.service.js";
 // (createBuyerRequestTool) falls back to surfacing Google Places instead.
 export async function createRequest(req, res, next) {
   try {
-    const { description, imageUrl, location, name, matchQuery } =
+    const { description, imageUrl, location, name, matchQuery, budgetKobo } =
       req.body ?? {};
     if (typeof description !== "string" || !description.trim()) {
       return next(new AppError("A description is required.", 400));
@@ -30,24 +30,44 @@ export async function createRequest(req, res, next) {
       return next(new AppError("A name is required.", 400));
     }
 
+    // Absent is fine and common — the capture step lets a buyer skip it. What
+    // is not fine is a present-but-nonsense value, because that becomes a
+    // number vendors price against. Rejected rather than coerced to null: a
+    // budget silently dropped is worse than an error the buyer can correct,
+    // since neither they nor the vendor would ever know it went missing.
+    let budget = null;
+    if (budgetKobo !== undefined && budgetKobo !== null) {
+      if (
+        typeof budgetKobo !== "number" ||
+        !Number.isFinite(budgetKobo) ||
+        budgetKobo < 0
+      ) {
+        return next(new AppError("Budget must be a positive amount.", 400));
+      }
+      budget = Math.round(budgetKobo);
+    }
+
     // One way to get here since 2026-08-29: a signed-in buyer, guaranteed by
     // verifyBuyerAuth on the route. The `phoneToken` path — someone with no
     // account who had just proved a number for this one request — is gone.
     const buyer = await Buyer.findById(req.buyer.buyerId);
     if (!buyer) return next(new AppError("Buyer not found.", 404));
 
-    // Their own PROVEN number, and nothing else. `phoneVerified` is checked
-    // rather than trusting `phone` to be non-null: a vendor replies over
-    // WhatsApp, so an unproven number is a request nobody can answer and a
-    // buyer who never learns why nothing came back.
+    // Their own PROVEN number. `phoneVerified` is checked rather than
+    // trusting `phone` to be non-null — and the reason changed on 2026-09-03
+    // without the check changing. It used to be that vendors received this
+    // number, so an unproven one was a lead nobody could follow. Vendors never
+    // receive it now; what an unproven number would do instead is point our
+    // own "businesses answered" SMS at a stranger who never asked for it.
     const buyerPhone = buyer.phoneVerified ? buyer.phone : null;
     if (!buyerPhone) {
       // Returned directly rather than through AppError, which carries only
-      // (message, statusCode) — the same shape and reason as
-      // priceWatch.controller.js's `plan_required`. The CODE is the point:
+      // (message, statusCode); the frontend branches on `code`, not on the
+      // wording. (priceWatch.controller.js used to answer `plan_required`
+      // the same way, until plans were retired.) The CODE is the point:
       // this is the ordinary next step in the flow (signed in, number not
       // proven yet), and the frontend opens its phone capture on it instead
-      // of showing an error.
+      // of showing an error. Branch on the CODE, never on the wording.
       return res.status(403).json({
         success: false,
         message: "Verify your phone number to send this request.",
@@ -130,6 +150,7 @@ export async function createRequest(req, res, next) {
       buyerName: name.trim(),
       buyerPhone,
       description: description.trim(),
+      budgetKobo: budget,
       imageUrl: typeof imageUrl === "string" ? imageUrl : null,
       ...(geo && { location: geo }),
       matchedVendorIds,
@@ -181,7 +202,6 @@ export async function createRequest(req, res, next) {
   }
 }
 
-
 // ── GET /api/buyer-requests/mine ────────────────────────────────────────────
 // The buyer's own view of what they've sent out (2026-08-30). Reverses the
 // 2026-08-18 note on buyerRequests.routes.js that there is no buyer inbox to
@@ -224,7 +244,7 @@ export async function listMyRequests(req, res, next) {
       requestId: { $in: requests.map((r) => r._id) },
       decision: "accepted",
     })
-      .select("requestId vendorId createdAt")
+      .select("requestId vendorId createdAt priceKobo leadTimeDays note")
       .sort({ createdAt: 1 })
       .lean();
 
@@ -264,6 +284,13 @@ export async function listMyRequests(req, res, next) {
         area: vendor.area ?? null,
         state: vendor.state ?? null,
         respondedAt: response.createdAt,
+        // The quote (2026-09-03). Null throughout for a vendor who accepted
+        // without naming terms — the comparison ranks whoever quoted and
+        // lists the rest underneath, rather than treating "didn't say" as a
+        // worse offer than one that was actually made.
+        priceKobo: response.priceKobo ?? null,
+        leadTimeDays: response.leadTimeDays ?? null,
+        note: response.note ?? null,
       });
       respondersByRequestId.set(key, list);
     }
@@ -285,7 +312,12 @@ export async function listMyRequests(req, res, next) {
             ? "expired"
             : r.status,
         matchedVendorCount: r.matchedVendorIds?.length ?? 0,
+        // Derived from what is actually being SHOWN, not read off the
+        // document's own acceptedCount — a responder whose vendor account was
+        // deleted is skipped above, and a card saying "2 businesses accepted"
+        // above one row would be wrong in the direction that matters.
         acceptedCount: responders.length,
+        quotedCount: responders.filter((v) => v.priceKobo != null).length,
         responders,
       };
     });

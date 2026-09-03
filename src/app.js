@@ -11,9 +11,7 @@ import hpp from "hpp";
 import authRoutes from "./routes/auth.js";
 import buyerAuthRoutes from "./routes/buyerAuth.routes.js";
 import buyerRequestsRoutes from "./routes/buyerRequests.routes.js";
-import usageRoutes from "./routes/usage.routes.js";
 import creditsRoutes from "./routes/credits.routes.js";
-import buyerBillingRoutes from "./routes/buyerBilling.routes.js";
 import priceWatchRoutes from "./routes/priceWatch.routes.js";
 import vendorBuyerRequestsRoutes from "./routes/vendorBuyerRequests.routes.js";
 import subscriptionRoutes from "./routes/subscription.routes.js";
@@ -35,6 +33,7 @@ import { startUnverifiedUsersCleanupCron } from "./initializers/unverifiedUsersC
 import { startAutoRechargeRetryCron } from "./initializers/autoRechargeRetryCron.js";
 import { startBuyerRequestExpiryCron } from "./initializers/buyerRequestExpiryCron.js";
 import { startPriceWatchCron } from "./jobs/priceWatch.job.js";
+import { startBuyerRequestNotificationsCron } from "./jobs/buyerRequestNotifications.job.js";
 
 const app = express();
 
@@ -113,9 +112,7 @@ mongoose
 app.use("/api/auth", authRoutes);
 app.use("/api/buyer-auth", buyerAuthRoutes);
 app.use("/api/buyer-requests", buyerRequestsRoutes);
-app.use("/api/usage", usageRoutes);
 app.use("/api/credits", creditsRoutes);
-app.use("/api/buyer-billing", buyerBillingRoutes);
 app.use("/api/price-watch", priceWatchRoutes);
 app.use("/api/vendor/buyer-requests", vendorBuyerRequestsRoutes);
 app.use("/api/subscription", subscriptionRoutes);
@@ -181,4 +178,11 @@ app.listen(PORT, () => {
   // "expired" (spec §11/§36).
   startBuyerRequestExpiryCron();
   startPriceWatchCron();
+
+  // 3-hourly sweep — tells a buyer when vendors have accepted their Buyer
+  // Request, batched into one notification per request. RESTORED 2026-09-03:
+  // the version deleted on 2026-08-18 was removed because buyers had no
+  // account to notify into, which stopped being true on 2026-08-26. Without
+  // it a request is a one-way broadcast and the vendor quotes are never read.
+  startBuyerRequestNotificationsCron();
 });

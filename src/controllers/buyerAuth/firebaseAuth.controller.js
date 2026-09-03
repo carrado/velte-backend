@@ -17,8 +17,10 @@ import { AppError } from "../../middleware/errorHandler.js";
 //
 // Firebase is the identity PROVIDER only. The browser signs in with Google
 // through Firebase, gets a Firebase ID token, and POSTs it here; this
-// verifies it and issues the SAME `buyer_auth_token` cookie verify-otp
-// issues — `{ buyerId, type: "buyer" }`, same secret, same lifetime.
+// verifies it and issues the `buyer_auth_token` cookie —
+// `{ buyerId, type: "buyer" }`, same secret and lifetime as the vendor
+// token. It is the ONLY thing that issues one: verifying a phone attaches a
+// number to a session that already exists, and has never created one.
 // Nothing downstream (verifyBuyerAuth here, buyerGuards.ts in the frontend,
 // the conversation endpoints) knows or cares that Firebase was involved.
 //
@@ -43,7 +45,7 @@ import { AppError } from "../../middleware/errorHandler.js";
 // hourly on its own, and nothing here is a standing authorisation. Revisit
 // if buyer accounts ever hold anything worth stealing.
 
-const SESSION_TTL = "7d"; // matches verify-otp and the vendor auth_token
+const SESSION_TTL = "7d"; // matches the vendor auth_token
 
 // Google's published signing keys for Firebase ID tokens. createRemoteJWKSet
 // caches them and refetches only when a token arrives with a key id it
@@ -70,7 +72,7 @@ function cookieOptions() {
 }
 
 // POST /api/buyer-auth/firebase — { idToken }
-// Issues the same buyer session cookie verify-otp does.
+// Issues the buyer session cookie. The only thing that does.
 /** A short, unambiguous share code. Base32-ish alphabet with no 0/O/1/I, so a
  *  code read aloud or typed off a screenshot survives the trip. Collisions are
  *  caught by the unique index, and at 8 characters from a 32-symbol alphabet
@@ -295,13 +297,14 @@ export async function firebaseSignIn(req, res, next) {
 
     // ── Link this buyer to their VENDOR account, if they have one ───────
     //
-    // A vendor can hold a plan on their vendor identity (2026-08-29), and
-    // this sign-in creates a SEPARATE buyer document even for someone who is
-    // already a vendor. Since resolveActor prefers the buyer cookie when
-    // both are present, an unlinked vendor who signed in here to get their
-    // history would be resolved as a brand-new free buyer — metered at 10
-    // searches having just paid for 400. The link is what carries the
-    // entitlement across (helpers/actorPlan.js).
+    // This sign-in creates a SEPARATE buyer document even for someone who is
+    // already a vendor, and resolveActor prefers the buyer cookie when both
+    // are present — so the two halves of one person are otherwise invisible
+    // to each other. Built (2026-08-29) to carry a PLAN across that gap;
+    // plans are retired (2026-08-31) and nothing is read across the link
+    // today, since a vendor spends from their lead wallet and a buyer from
+    // their credits. Kept because the hard part is proving both halves
+    // belong to the same human, and that proof is what is recorded here.
     //
     // BOTH sides must have proven control of this address:
     //   - buyer side: Firebase says so (`email_verified === false` was
@@ -343,8 +346,8 @@ export async function firebaseSignIn(req, res, next) {
       }
     }
 
-    // Identical claims and cookie to verify-otp's, on purpose — see this
-    // file's own header.
+    // See this file's own header for the claims and why they are shaped
+    // this way.
     const token = jwt.sign(
       { buyerId: buyer._id, type: "buyer" },
       process.env.JWT_SECRET,

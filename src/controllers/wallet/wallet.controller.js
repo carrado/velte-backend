@@ -12,7 +12,7 @@ import {
 } from "../../services/paystack.service.js";
 import { LOW_BALANCE_KOBO } from "../../jobs/walletLowBalance.job.js";
 import { notifyUser } from "../../services/pushNotification.service.js";
-import { leadCostForBalance, MIN_LEAD_COST_KOBO } from "../../utils/leadPricing.js";
+import { leadCost, MIN_LEAD_COST_KOBO } from "../../utils/leadPricing.js";
 
 // Every direct balance credit must clear this immediately, not wait for the
 // cron's point-in-time sample — a wallet that dips below the threshold,
@@ -50,18 +50,14 @@ function clearAutoRechargeFailureIfRecovered(wallet) {
 // for one — removes the cold-start "prepay with zero track record" barrier.
 const STARTER_CREDIT_KOBO = 200_000; // ₦2,000
 
-// Tiered per-lead pricing now lives in utils/leadPricing.js (LEAD_TIERS/
-// leadCostForBalance) — re-exported here since every other file in this
-// repo, plus this whole module's own header notes elsewhere, already
-// imports "LEAD_COST_KOBO"-shaped things from THIS file, not from
-// utils/leadPricing.js directly. MIN_LEAD_COST_KOBO is the one number that
-// stayed a flat constant on purpose — see its own doc comment in
-// leadPricing.js for why a single floor is all search-time
-// wallet-eligibility filtering (store.controller.js just below, plus the
-// standalone staffly-ai-backend service's own LEAD_COST_KOBO env var and
-// velte-super-admin's nudge.controller.js/lowWalletMessage.js mirrors —
-// none of which can run the full tier table server-side) actually needs.
-export { leadCostForBalance, MIN_LEAD_COST_KOBO };
+// Per-lead pricing lives in utils/leadPricing.js and is now a single flat
+// rate — re-exported here because every other file in this repo already
+// imports pricing from THIS module rather than from the util directly.
+// MIN_LEAD_COST_KOBO is what search-time wallet-eligibility filtering needs
+// (store.controller.js just below, plus the standalone staffly-ai-backend
+// service's own LEAD_COST_KOBO env var and velte-super-admin's
+// nudge.controller.js/lowWalletMessage.js mirrors).
+export { leadCost, MIN_LEAD_COST_KOBO };
 
 // Floor for top-ups and auto-recharge amounts — keeps card fees proportionate
 // and matches the frontend's client-side minimum.
@@ -683,6 +679,104 @@ export async function getTransactions(req, res, next) {
   }
 }
 
+// ── Lead pricing vs. spending the wallet on credits ────────────────────────
+//
+// There used to be a trap here, and roughly sixty lines closing it. Lead price
+// was tiered on wallet BALANCE, so a vendor on ₦10,500 who spent ₦600 on
+// search credits dropped a tier and paid ₦200 more on every lead afterwards --
+// ₦4,000 over twenty leads, to save ₦600. The fix was to keep credit spend
+// counting toward the tier for thirty days (creditSpendWithin30dKobo,
+// tierBalanceKobo, Wallet.lastCreditPurchaseAt).
+//
+// All of it is gone as of 2026-09-03, because the price is flat now (see
+// utils/leadPricing.js). Nothing a vendor spends can move a rate that does not
+// move. `Wallet.lastCreditPurchaseAt` is left on the model as a harmless
+// record of when they last bought credits, but nothing reads it for pricing.
+//
+// ── Buying search credits out of the wallet (not an HTTP endpoint) ─────────
+//
+// Called by credits.controller.js's initWalletTopUp. Vendors get a CHOICE of
+// funding: a card like any buyer, or this. The wallet is money they already
+// keep with Velte, and making them re-enter a card to spend it is the kind of
+// friction that stops a vendor using their own product.
+//
+// The pack table is the same one a card buys from, at the same naira price --
+// so a credit costs a vendor exactly what it costs a buyer, and the funding
+// source is genuinely just a funding source rather than a second price list.
+//
+// Debit FIRST, then grant. The reverse would hand out credits a failed debit
+// never paid for; this way the worst case is a debit whose grant failed, which
+// is reversed below and visible in the ledger either way.
+export async function debitWalletForCredits(vendorId, pack, reference) {
+  const amountKobo = pack.priceNgn * 100;
+
+  const wallet = await Wallet.findOneAndUpdate(
+    { vendorId, balanceKobo: { $gte: amountKobo } },
+    {
+      $inc: { balanceKobo: -amountKobo },
+      $set: { lastCreditPurchaseAt: new Date() },
+    },
+    { new: true },
+  );
+  if (!wallet) return { debited: false, reason: "insufficient_balance" };
+
+  try {
+    await WalletTransaction.create({
+      walletId: wallet._id,
+      vendorId,
+      type: "debit",
+      amountKobo,
+      balanceAfterKobo: wallet.balanceKobo,
+      reference,
+      status: "success",
+      channel: "credits",
+      description: `${pack.credits} search credits`,
+    });
+  } catch (err) {
+    // A duplicate reference means this exact purchase already posted -- the
+    // balance change above was the double, so back it out.
+    await Wallet.updateOne(
+      { _id: wallet._id },
+      { $inc: { balanceKobo: amountKobo } },
+    );
+    if (err?.code === 11000) return { debited: false, reason: "already_paid" };
+    throw err;
+  }
+
+  return { debited: true, wallet, amountKobo };
+}
+
+/** Puts a wallet-funded credit purchase back when the grant it paid for could
+ *  not be applied. Best-effort -- a reversal that could throw is worse than
+ *  the money it failed to return. */
+export async function refundWalletCreditPurchase(
+  vendorId,
+  amountKobo,
+  reference,
+) {
+  try {
+    const wallet = await Wallet.findOneAndUpdate(
+      { vendorId },
+      { $inc: { balanceKobo: amountKobo } },
+      { new: true },
+    );
+    if (!wallet) return;
+    await WalletTransaction.create({
+      walletId: wallet._id,
+      vendorId,
+      type: "topup",
+      amountKobo,
+      balanceAfterKobo: wallet.balanceKobo,
+      reference: `${reference}_reversal`,
+      status: "success",
+      channel: "credits",
+      description: "Reversed - credits could not be applied",
+    });
+  } catch (err) {
+    console.error("[wallet] credit-purchase reversal failed:", err?.message);
+  }
+}
+
 // ── Lead-billing hook (not an HTTP endpoint) ────────────────────────────────
 // Called from search.controller.js's chargeLead (POST /api/search/lead) and
 // vendorBuyerRequests.controller.js's decideOnRequest, fired the instant a
@@ -693,23 +787,20 @@ export async function getTransactions(req, res, next) {
 // this path is a last-resort race (balance dropped between that filter
 // running and the buyer actually clicking), not the primary gate.
 //
-// No longer takes an `amountKobo` param — the rate is now tiered (see
-// leadCostForBalance/LEAD_TIERS in utils/leadPricing.js), determined by
-// the wallet's OWN current balance, not a flat number the caller decides.
-// Read fresh right here, immediately before the atomic debit below, not
-// cached from earlier in the request — a vendor's balance changing in
-// between (another lead landing for them in the same instant) is a
-// genuine, if narrow, race window, but the SAME tolerance this function's
-// own top comment already accepts for the "insufficient balance" case
-// applies here too: wallet debiting was never the primary gate, just the
-// actual charge once eligibility already passed elsewhere.
+// Takes no `amountKobo` param: the rate is not the caller's to decide. It
+// was briefly tiered on the vendor's own balance, which is why this reads
+// from utils/leadPricing.js rather than accepting a number; since 2026-09-03
+// that module returns one flat rate for everybody.
 export async function debitWalletForLead(
   vendorId,
   { leadId, description, source, requestId } = {},
 ) {
-  const current = await Wallet.findOne({ vendorId }).select("balanceKobo");
-  if (!current) return { debited: false, reason: "insufficient_balance" };
-  const amountKobo = leadCostForBalance(current.balanceKobo);
+  // One flat rate, so there is nothing to look up before charging. This used
+  // to read the wallet first purely to work out which tier the balance landed
+  // in; the atomic update below already returns null for a missing wallet or
+  // an insufficient balance, which is the same answer that pre-read gave, for
+  // one query instead of two (three, when the tier aggregate ran).
+  const amountKobo = leadCost();
 
   const wallet = await Wallet.findOneAndUpdate(
     { vendorId, balanceKobo: { $gte: amountKobo } },
@@ -718,19 +809,39 @@ export async function debitWalletForLead(
   );
   if (!wallet) return { debited: false, reason: "insufficient_balance" };
 
-  await WalletTransaction.create({
-    walletId: wallet._id,
-    vendorId,
-    type: "debit",
-    amountKobo,
-    balanceAfterKobo: wallet.balanceKobo,
-    reference: leadId,
-    status: "success",
-    channel: "lead",
-    description: description ?? "Lead charge",
-    source: source ?? null,
-    requestId: requestId ?? null,
-  });
+  // The ledger row is what makes `leadId` an idempotency key, and it is
+  // written AFTER the debit — so a duplicate has to be unwound rather than
+  // prevented. That ordering was harmless while every leadId was unique
+  // (search leads mint a random one), but buyer-request leads now use a
+  // DETERMINISTIC key so the same (request, vendor) can only ever be charged
+  // once — see search.controller.js's chargeLead. Which makes a duplicate a
+  // normal, expected outcome here rather than a bug.
+  //
+  // Any other ledger failure is unwound too. A balance that went down with no
+  // row to explain it is money taken with no record — strictly worse than a
+  // lead going unbilled, which is a cost we already accept elsewhere in this
+  // function.
+  try {
+    await WalletTransaction.create({
+      walletId: wallet._id,
+      vendorId,
+      type: "debit",
+      amountKobo,
+      balanceAfterKobo: wallet.balanceKobo,
+      reference: leadId,
+      status: "success",
+      channel: "lead",
+      description: description ?? "Lead charge",
+      source: source ?? null,
+      requestId: requestId ?? null,
+    });
+  } catch (err) {
+    await Wallet.updateOne({ vendorId }, { $inc: { balanceKobo: amountKobo } });
+    if (err.code === 11000) {
+      return { debited: false, reason: "already_charged" };
+    }
+    throw err;
+  }
 
   // Auto-recharge is fully wired here so it works the moment leads start
   // calling this — never fails the debit itself (already succeeded above),
@@ -738,6 +849,24 @@ export async function debitWalletForLead(
   await maybeAutoRecharge(wallet);
 
   return { debited: true, wallet, amountKobo };
+}
+
+// ── Lead affordability gate (not an HTTP endpoint) ─────────────────────────
+// "Could this vendor pay for one lead right now?" — a read, never a debit.
+//
+// Exists because the buyer-request charge moved to CONTACT time (2026-09-03):
+// the vendor is no longer the one clicking when the money moves, so accepting
+// is gated on being able to cover a lead rather than on paying for one. See
+// decideOnRequest, which is its only caller.
+//
+// Deliberately asks about the REAL balance, not the tiered one — affording a
+// lead is a question about money that is actually there, the same distinction
+// debitWalletForLead's own `$gte` filter draws.
+export async function canAffordLead(vendorId) {
+  const wallet = await Wallet.findOne({ vendorId })
+    .select("balanceKobo")
+    .lean();
+  return (wallet?.balanceKobo ?? 0) >= MIN_LEAD_COST_KOBO;
 }
 
 // ── Referral-bonus hook (not an HTTP endpoint) ──────────────────────────────
