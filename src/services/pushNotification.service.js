@@ -49,13 +49,38 @@ export function isPushEnabled() {
 }
 
 /**
- * Send a push notification to all of a user's registered devices.
- * Also saves an in-app notification record.
+ * Send a push notification to all of an OWNER's registered devices, and save
+ * the in-app notification record.
  *
- * @param {string} userId
+ * Owner-keyed since 2026-09-05, because a buyer-owned notification (a buyer
+ * request being accepted, say) has to reach the Buyer collection just as
+ * readily as a vendor one reaches User. Before this, `Notification` and
+ * `PushSubscription` both carried `ref: 'User'` — not decoration, but the
+ * assumption that only vendors are ever notified, which is why buyers had no
+ * in-app notifications at all.
+ *
+ * @param {{ ownerId: string, ownerType: 'buyer'|'vendor' }} owner
  * @param {{ title, body, url, tag, icon, type, requireInteraction, metadata }} payload
  */
+export async function notifyOwner({ ownerId, ownerType = 'vendor' }, payload) {
+  return notifyUserInternal(ownerId, ownerType, payload);
+}
+
+/**
+ * The vendor-shaped call, unchanged for every existing caller.
+ *
+ * Kept as a wrapper rather than migrated: a dozen call sites across orders,
+ * wallet, referrals and buyer-requests all mean "a vendor", and rewriting
+ * them to say so explicitly would be churn with a chance of getting one
+ * wrong, to express what this wrapper already states once.
+ *
+ * @param {string} userId a vendor User._id
+ */
 export async function notifyUser(userId, payload) {
+  return notifyUserInternal(userId, 'vendor', payload);
+}
+
+async function notifyUserInternal(userId, ownerType, payload) {
   const {
     title,
     body,
@@ -69,15 +94,18 @@ export async function notifyUser(userId, payload) {
   } = payload;
 
   // Save in-app notification (always, regardless of push subscriptions or VAPID).
-  await Notification.create({ userId, title, body, url, tag, type, metadata });
+  await Notification.create({ userId, ownerType, title, body, url, tag, type, metadata });
 
   // Web-push is best-effort and needs valid VAPID config; the in-app bell above
   // is the guaranteed channel.
   if (!pushEnabled) return;
 
-  const subscriptions = await PushSubscription.find({ userId });
+  // Scoped by ownerType as well as id: a Buyer._id and a User._id are both
+  // ObjectIds, and pushing one account's alert to the other's devices is not
+  // a mistake worth risking for the sake of a shorter query.
+  const subscriptions = await PushSubscription.find({ userId, ownerType });
   if (!subscriptions.length) {
-    console.warn(`[Push] notifyUser(${userId}): no push subscriptions — nothing to deliver`);
+    console.warn(`[Push] notify(${ownerType}:${userId}): no push subscriptions — nothing to deliver`);
     return;
   }
 
@@ -85,7 +113,7 @@ export async function notifyUser(userId, payload) {
   const sendOptions = HIGH_URGENCY_TYPES.has(type)
     ? { TTL: HIGH_URGENCY_TTL_SECONDS, urgency: 'high' }
     : undefined;
-  console.log(`[Push] notifyUser(${userId}): pushing to ${subscriptions.length} subscription(s)`);
+  console.log(`[Push] notify(${ownerType}:${userId}): pushing to ${subscriptions.length} subscription(s)`);
 
   await Promise.allSettled(
     subscriptions.map(async (sub) => {

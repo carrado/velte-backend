@@ -1,11 +1,21 @@
 import mongoose from 'mongoose';
 
 const pushSubscriptionSchema = new mongoose.Schema({
+  // Buyer._id or User._id — see Notification.model.js's own note on why the
+  // ref is gone and the field name stayed.
   userId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
     required: true,
     index: true,
+  },
+  // Defaults to "vendor": every subscription registered before 2026-09-05
+  // came from the dashboard, so the default makes existing rows correct
+  // without a migration.
+  ownerType: {
+    type: String,
+    enum: ['buyer', 'vendor'],
+    default: 'vendor',
+    required: true,
   },
   endpoint: {
     type: String,

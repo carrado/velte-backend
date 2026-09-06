@@ -5,7 +5,6 @@ import { grantCredits } from "../credits/credits.controller.js";
 import {
   REFERRAL_CREDITS,
   REFERRAL_MAX_PER_BUYER,
-  SIGNUP_CREDITS,
 } from "../../config/credits.js";
 import crypto from "crypto";
 import User from "../../models/Users.js";
@@ -226,26 +225,9 @@ export async function firebaseSignIn(req, res, next) {
       }
     }
 
-    // ── The signup credit grant (2026-08-31) ───────────────────────────
-    //
-    // Every buyer account starts with SIGNUP_CREDITS, once and only once.
-    // Idempotent on the code rather than on "did we just create the row",
-    // because the creation path above is deliberately race-tolerant: a
-    // double-tapped sign-in button can reach here twice for the same buyer,
-    // and the second must not grant a second batch.
-    //
-    // Keyed off the BUYER, so it is granted on the first sign-in of an
-    // account that predates this — which is intended. An existing buyer who
-    // has never had credits should get their fifteen, not be punished for
-    // having signed up early.
-    //
-    // Never fatal: a buyer who signs in successfully must be signed in even
-    // if the ledger is unreachable. They can be granted on their next visit.
-    try {
-      await grantCredits(buyer._id, "buyer", "signup", SIGNUP_CREDITS);
-    } catch (err) {
-      console.error("[firebase-auth] signup credit grant failed:", err?.message);
-    }
+    // The signup credit grant that used to live here was removed 2026-09-06
+    // — see config/credits.js's own note. A buyer account now starts at
+    // whatever they've been granted otherwise (referral, below) or 0.
 
     // ── The referral bonus ─────────────────────────────────────────────
     //

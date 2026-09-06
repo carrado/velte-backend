@@ -168,9 +168,9 @@ const buyerSchema = new mongoose.Schema(
     // re-establish. It is also already backfilled.
     //
     // A LINK, never a merge: the two accounts stay separate documents with
-    // their own conversations, watches and balances. Nothing is currently
-    // read ACROSS it — a vendor spends from their lead wallet and a buyer
-    // from their credits — so linking today changes no entitlement.
+    // their own conversations and balances. Nothing is currently read
+    // ACROSS it — a vendor spends from their lead wallet and a buyer from
+    // their credits — so linking today changes no entitlement.
     linkedVendorId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

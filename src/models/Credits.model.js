@@ -10,8 +10,8 @@ import mongoose from "mongoose";
 // left — which is the one prepaid shape every Nigerian buyer already has a
 // mental model for.
 //
-// KEYED ON (ownerId, ownerType) like Usage and PriceWatch before it, so a
-// vendor and a buyer can both hold a balance without a second collection.
+// KEYED ON (ownerId, ownerType) like Usage before it, so a vendor and a
+// buyer can both hold a balance without a second collection.
 // Vendors spend from their LEAD WALLET rather than from here (see
 // controllers/wallet) — this row exists for them only if they are also acting
 // as a buyer with their own balance.

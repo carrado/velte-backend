@@ -17,6 +17,7 @@ import {
 import Buyer from "../../models/Buyer.model.js";
 import Wallet from "../../models/Wallet.model.js";
 import User from "../../models/Users.js";
+import GuestIpUsage from "../../models/GuestIpUsage.model.js";
 
 // Credit spending for any signed-in account (2026-08-31).
 //
@@ -203,7 +204,6 @@ export async function getCredits(req, res, next) {
  * NOT A ROUTE, and must never become one — see this file's header. Call it
  * from the server-side flow that earns the grant:
  *
- *   grantCredits(buyerId, "buyer", "signup", 15)
  *   grantCredits(referrerId, "buyer", `referral:${referralId}`, 5)
  *   grantCredits(buyerId, "buyer", `topup:${paystackRef}`, 350)
  *
@@ -409,7 +409,15 @@ export async function initTopUp(req, res, next) {
       // payment being split to a vendor.
     });
 
-    const authorizationUrl = result?.data?.authorization_url;
+    // initializeTransaction already returns the UNWRAPPED data object
+    // (paystack.service.js's own paystackFetch resolves to `data.data`, not
+    // the full Paystack envelope) — wallet.controller.js's own call reads
+    // `transaction.authorization_url` directly for the same reason. This
+    // used to read `result?.data?.authorization_url`, one `.data` too many,
+    // so `authorizationUrl` was undefined on every call — including a
+    // genuinely successful one — and every card top-up failed with the
+    // generic message below regardless of whether Paystack ever objected.
+    const authorizationUrl = result?.authorization_url;
     if (!authorizationUrl) {
       throw new AppError("Couldn't start the payment. Please try again.", 502);
     }
@@ -556,5 +564,69 @@ export async function creditFromCharge(meta) {
     console.log(
       `[credits] +${pack.credits} to ${ownerType} ${ownerId} (${reference}), balance ${balance}`,
     );
+  }
+}
+
+// How many guest TURNS one address may generate before the network-level
+// backstop engages (2026-09-05). Counted in turns, not credits — simpler to
+// reason about, and each turn's actual price is already the browser-side
+// GUEST_CREDITS allowance's job (lib/credits.ts on the frontend), not this
+// backstop's.
+//
+// Sized as roughly 40 "fresh guest browsers" worth of activity (5 turns
+// apiece, GUEST_CREDITS' own ceiling) from ONE address in a day. Deliberately
+// generous: this exists to catch someone repeatedly resetting their OWN
+// browser to keep re-claiming a free allowance, not to measure anything
+// precisely — carrier-grade mobile NAT means dozens of genuine strangers can
+// legitimately share one address in a day. An ESTIMATE, the same honest
+// caveat lib/credits.ts's own cost ratios carry: the number to revisit once
+// there is real guest traffic to look at, not a value settled by reasoning
+// alone.
+const GUEST_IP_DAILY_LIMIT = 200;
+
+function todayUtc() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// ── POST /api/credits/guest-usage ────────────────────────────────────────
+//
+// The network-level backstop behind a guest's own browser-side allowance
+// (2026-09-05, see GuestIpUsage.model.js for the full reasoning). Called by
+// the frontend's /api/search route once per GUEST turn, before any model or
+// retrieval call runs — same placement rule every other credit gate in this
+// system follows.
+//
+// Public and unauthenticated on purpose, the same trust level as GET
+// /packs: nothing sensitive is read or written here, and the worst a
+// stranger calling this directly could do is inflate a COUNTER — never
+// spend real money, never touch a real account's balance. `ip` is trusted
+// as given by the caller (the frontend's own BFF route, which reads it off
+// the actual incoming request's forwarded-for header) rather than
+// re-derived from the socket here — that socket only ever sees the BFF's
+// own address, never the guest's.
+export async function checkGuestIpUsage(req, res, next) {
+  try {
+    const ip = typeof req.body?.ip === "string" ? req.body.ip.trim() : "";
+    if (!ip) {
+      // No usable address to bucket by — fail OPEN, the same direction
+      // every other gate in this system fails. Refusing a guest because we
+      // could not tell where they came from would be a worse outcome than
+      // letting one more turn through unmetered by this one check.
+      return res.json({ success: true, data: { allowed: true } });
+    }
+
+    const day = todayUtc();
+    const row = await GuestIpUsage.findOneAndUpdate(
+      { ip, day },
+      { $inc: { count: 1 } },
+      { new: true, upsert: true, setDefaultsOnInsert: true },
+    );
+
+    return res.json({
+      success: true,
+      data: { allowed: row.count <= GUEST_IP_DAILY_LIMIT, count: row.count },
+    });
+  } catch (err) {
+    next(err);
   }
 }

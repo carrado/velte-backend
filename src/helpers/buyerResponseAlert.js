@@ -2,10 +2,10 @@ import { sendBuyerResponseEmail } from "./buyerResponseEmail.js";
 import { sendSms } from "../services/sendchamp.service.js";
 
 // One place that decides HOW a buyer hears that their request was answered
-// (2026-09-03). Same two-channel, best-effort shape as priceDropAlert.js, and
-// extracted for the same reason: more than one thing will eventually want to
-// send this, and duplicating a notification is how two copies drift into
-// saying different things about the same event.
+// (2026-09-03). Extracted on its own for a simple reason: more than one
+// thing will eventually want to send this, and duplicating a notification
+// is how two copies drift into saying different things about the same
+// event.
 //
 // Both channels are attempted independently and neither is required:
 //   - EMAIL reaches any buyer with an address, carries the quotes, and costs
@@ -24,8 +24,7 @@ const SMS_HARD_CAP = 160;
 /** SMS is billed per segment and the segment size depends on ENCODING: 160
  *  characters of GSM 03.38, but only 70 if a single character falls outside
  *  it. "₦" does. So SMS spells prices as NGN and avoids the typography used
- *  freely in the email — the same measured constraint priceDropAlert.js
- *  documents, and the same conclusion. */
+ *  freely in the email. */
 function smsNaira(kobo) {
   return `NGN ${Math.round(kobo / 100).toLocaleString("en-NG")}`;
 }
@@ -43,8 +42,8 @@ function buildSms({ count, cheapestKobo }) {
 }
 
 /**
- * @param {object}   buyer       - { name, email, phone } (see findWatchOwner's
- *                                 note: Buyer and User share these three).
+ * @param {object}   buyer       - { name, email, phone } (Buyer and User
+ *                                 share this same shape).
  * @param {object}   request     - the BuyerRequest document.
  * @param {object[]} responders  - the NEW accepted responders since the last
  *                                 notification, each { name, priceKobo,

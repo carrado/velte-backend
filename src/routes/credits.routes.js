@@ -1,6 +1,7 @@
 import express from "express";
 import { resolveActor } from "../middleware/resolveActor.js";
 import {
+  checkGuestIpUsage,
   consumeCredits,
   getCredits,
   initTopUp,
@@ -17,8 +18,13 @@ const router = express.Router();
 // already signed in.
 //
 // It never 401s; the controller does, if there turns out to be no account at
-// all. Guests never reach these routes — their balance is honour-system in
-// browser storage and the frontend answers them without a round trip.
+// all. A GUEST reaches exactly one route below now (/guest-usage,
+// 2026-09-05) — every other route here still expects a real account, and
+// their own PERSONAL balance is still honour-system in browser storage,
+// answered by the frontend without a round trip. /guest-usage is a
+// different thing: a NETWORK-level backstop that was never inside any one
+// guest's browser to begin with, so it is the one guest-relevant fact this
+// service can actually hold. See its own controller comment.
 router.use(resolveActor);
 
 router.get("/", getCredits);
@@ -29,6 +35,9 @@ router.post("/checkout", initTopUp);
 // Vendors only, and it settles in the request rather than through
 // Paystack -- the money is already ours. See initWalletTopUp.
 router.post("/wallet-topup", initWalletTopUp);
+// GUEST-only, and public — see checkGuestIpUsage's own comment for why an
+// unauthenticated route is the right call here.
+router.post("/guest-usage", checkGuestIpUsage);
 
 // NOTE: there is deliberately no grant route. Credits are granted server-side
 // by the flows that earn them (account creation, referral completion, a

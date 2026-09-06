@@ -17,8 +17,13 @@
 // credits.ts, which is what the pricing UI shows. They are the numbers a
 // buyer is promised; these are the numbers they get.
 
-/** Handed to every buyer account on creation, once. */
-export const SIGNUP_CREDITS = 15;
+// SIGNUP_CREDITS removed (2026-09-06) — a buyer account no longer gets a
+// bonus grant on creation. Alongside this, guest pricing was unified with
+// signed-in pricing and the guest allowance raised to 10 (see the
+// frontend's credits.ts) — a guest now gets the full, real-price allowance
+// up front instead of a smaller discounted one plus a bonus for signing in,
+// so there is nothing left for a signup grant to add. Do not re-add this
+// without also revisiting that guest-side change; the two were one decision.
 
 /** Handed to the REFERRER when someone they referred creates an account.
  *  The only valve in a system with no monthly reset. */
@@ -45,8 +50,8 @@ export const REFERRAL_MAX_PER_BUYER = 10;
 // actually matches against, so a deep catalogue is the single most valuable
 // thing a vendor can give us — and paying for it in the currency they will
 // spend on search is the cheapest acquisition Velte has. A vendor with twenty
-// listings is worth far more than four buyers, and gets more than thirteen
-// times a buyer's signup grant.
+// listings is worth far more than four buyers, and gets twenty times a
+// buyer's signup grant.
 //
 // Ordered highest-first so `catalogGrantFor`'s linear scan returns on the
 // first tier the count actually clears. (utils/leadPricing.js used to hold a

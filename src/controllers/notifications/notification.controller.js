@@ -2,6 +2,28 @@ import Notification from '../../models/Notification.model.js';
 
 const PAGE_SIZE = 20;
 
+/**
+ * Whose notifications this request is about (2026-09-05).
+ *
+ * These routes used to read `req.user.userId` — a vendor, always, because
+ * that is the only kind of account that had notifications. Buyers have them
+ * now too, so the owner has to be resolved rather than assumed.
+ *
+ * `resolveActor` is already mounted on these routes and prefers the buyer
+ * cookie when both are present, which is the right precedence here for the
+ * same reason it is everywhere else: someone reading notifications on /chat
+ * is acting as a buyer. A vendor in their dashboard carries no buyer cookie,
+ * so they resolve as a vendor exactly as before.
+ *
+ * Falls back to `req.user` so nothing breaks if a route is ever mounted with
+ * only the vendor guard.
+ */
+function ownerOf(req) {
+  if (req.actor) return { userId: req.actor.id, ownerType: req.actor.type };
+  if (req.user?.userId) return { userId: req.user.userId, ownerType: 'vendor' };
+  return null;
+}
+
 // Maps backend type enum → frontend NotificationType
 const TYPE_MAP = {
   'new-order': 'order',
@@ -13,6 +35,7 @@ const TYPE_MAP = {
   'system': 'system',
   'new-message': 'system',
   'buyer-follow': 'system',
+  'buyer-request': 'buyer-request',
 };
 
 function toClientShape(n) {
@@ -29,17 +52,18 @@ function toClientShape(n) {
 
 export const getNotifications = async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const owner = ownerOf(req);
+    if (!owner) return res.status(401).json({ success: false, message: 'Not authenticated.' });
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const skip = (page - 1) * PAGE_SIZE;
 
     const [raw, unreadCount] = await Promise.all([
-      Notification.find({ userId })
+      Notification.find(owner)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(PAGE_SIZE)
         .lean(),
-      Notification.countDocuments({ userId, isRead: false }),
+      Notification.countDocuments({ ...owner, isRead: false }),
     ]);
 
     res.status(200).json({
@@ -56,11 +80,12 @@ export const getNotifications = async (req, res) => {
 
 export const markRead = async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const owner = ownerOf(req);
+    if (!owner) return res.status(401).json({ success: false, message: 'Not authenticated.' });
     const { id } = req.params;
 
     const notification = await Notification.findOneAndUpdate(
-      { _id: id, userId },
+      { _id: id, ...owner },
       { isRead: true },
       { new: true },
     );
@@ -78,9 +103,10 @@ export const markRead = async (req, res) => {
 
 export const markAllRead = async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const owner = ownerOf(req);
+    if (!owner) return res.status(401).json({ success: false, message: 'Not authenticated.' });
 
-    await Notification.updateMany({ userId, isRead: false }, { isRead: true });
+    await Notification.updateMany({ ...owner, isRead: false }, { isRead: true });
 
     res.status(200).json({ success: true, message: 'All notifications marked as read' });
   } catch (error) {
@@ -91,10 +117,11 @@ export const markAllRead = async (req, res) => {
 
 export const deleteNotification = async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const owner = ownerOf(req);
+    if (!owner) return res.status(401).json({ success: false, message: 'Not authenticated.' });
     const { id } = req.params;
 
-    const notification = await Notification.findOneAndDelete({ _id: id, userId });
+    const notification = await Notification.findOneAndDelete({ _id: id, ...owner });
 
     if (!notification) {
       return res.status(404).json({ message: 'Notification not found' });

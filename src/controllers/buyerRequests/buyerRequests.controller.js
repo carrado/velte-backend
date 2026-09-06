@@ -63,11 +63,10 @@ export async function createRequest(req, res, next) {
     if (!buyerPhone) {
       // Returned directly rather than through AppError, which carries only
       // (message, statusCode); the frontend branches on `code`, not on the
-      // wording. (priceWatch.controller.js used to answer `plan_required`
-      // the same way, until plans were retired.) The CODE is the point:
-      // this is the ordinary next step in the flow (signed in, number not
-      // proven yet), and the frontend opens its phone capture on it instead
-      // of showing an error. Branch on the CODE, never on the wording.
+      // wording. The CODE is the point: this is the ordinary next step in
+      // the flow (signed in, number not proven yet), and the frontend opens
+      // its phone capture on it instead of showing an error. Branch on the
+      // CODE, never on the wording.
       return res.status(403).json({
         success: false,
         message: "Verify your phone number to send this request.",

@@ -7,7 +7,19 @@ const MAX_SUBSCRIPTIONS_PER_USER = 10;
 
 export const subscribe = async (req, res) => {
   try {
-    const userId = req.user.userId;
+    // Either account kind (2026-09-05) — see Notification.model.js on why
+    // push stopped being vendor-only. Buyers get notified of their own
+    // events now (a buyer request being accepted, say), so they must be
+    // able to register a device.
+    const owner = req.actor
+      ? { userId: req.actor.id, ownerType: req.actor.type }
+      : req.user?.userId
+        ? { userId: req.user.userId, ownerType: "vendor" }
+        : null;
+    if (!owner) {
+      return res.status(401).json({ success: false, message: "Not authenticated." });
+    }
+    const { userId, ownerType } = owner;
     const { subscription } = req.body;
 
     if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
@@ -18,6 +30,7 @@ export const subscribe = async (req, res) => {
       { endpoint: subscription.endpoint },
       {
         userId,
+        ownerType,
         endpoint: subscription.endpoint,
         p256dh: subscription.keys.p256dh,
         auth: subscription.keys.auth,
@@ -29,7 +42,7 @@ export const subscribe = async (req, res) => {
       { upsert: true, new: true },
     );
 
-    await pruneOrphanSubscriptions(userId);
+    await pruneOrphanSubscriptions(userId, ownerType);
 
     res.status(200).json({ success: true, message: 'Subscribed to push notifications' });
   } catch (error) {
@@ -39,8 +52,8 @@ export const subscribe = async (req, res) => {
 };
 
 // Evict everything beyond the N most-recently-seen subscriptions for a user.
-async function pruneOrphanSubscriptions(userId) {
-  const subs = await PushSubscription.find({ userId })
+async function pruneOrphanSubscriptions(userId, ownerType) {
+  const subs = await PushSubscription.find({ userId, ownerType })
     .sort({ lastSeenAt: -1 })
     .select('_id');
 
@@ -53,11 +66,25 @@ async function pruneOrphanSubscriptions(userId) {
 
 export const unsubscribe = async (req, res) => {
   try {
-    const userId = req.user.userId;
+    // Either account kind (2026-09-05) — see Notification.model.js on why
+    // push stopped being vendor-only. Buyers get notified of their own
+    // events now (a buyer request being accepted, say), so they must be
+    // able to register a device.
+    const owner = req.actor
+      ? { userId: req.actor.id, ownerType: req.actor.type }
+      : req.user?.userId
+        ? { userId: req.user.userId, ownerType: "vendor" }
+        : null;
+    if (!owner) {
+      return res.status(401).json({ success: false, message: "Not authenticated." });
+    }
+    const { userId, ownerType } = owner;
 
     // If a specific endpoint is provided, remove only that device; otherwise remove all
     const { endpoint } = req.body;
-    const filter = endpoint ? { userId, endpoint } : { userId };
+    const filter = endpoint
+      ? { userId, ownerType, endpoint }
+      : { userId, ownerType };
 
     await PushSubscription.deleteMany(filter);
 

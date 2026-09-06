@@ -2,13 +2,12 @@ import { Resend } from "resend";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-// "Someone answered your request" (2026-09-03). Same shape and same reasoning
-// as priceDropEmail.js: email rather than push, because PushSubscription in
-// this repo is vendor-scoped (`ref: 'User'`) and buyer push would mean a whole
-// new subscribe flow, while every Google-signed-in buyer already has a
-// verified address. Email also survives the buyer not having Velte open —
-// which is the entire point here, since a Buyer Request is answered hours
-// after it is posted, long after the conversation that created it ended.
+// "Someone answered your request" (2026-09-03). Email over push here because
+// every Google-signed-in buyer already has a verified address with no extra
+// subscribe flow needed. Email also survives the buyer not having Velte
+// open — which is the entire point here, since a Buyer Request is answered
+// hours after it is posted, long after the conversation that created it
+// ended.
 //
 // Written inline rather than as an emailTemplates/*.html file for the same
 // reason that one is: it is short and carries no branding assets to keep in

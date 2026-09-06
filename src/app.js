@@ -11,8 +11,8 @@ import hpp from "hpp";
 import authRoutes from "./routes/auth.js";
 import buyerAuthRoutes from "./routes/buyerAuth.routes.js";
 import buyerRequestsRoutes from "./routes/buyerRequests.routes.js";
+import shoppingPlanRoutes from "./routes/shoppingPlan.routes.js";
 import creditsRoutes from "./routes/credits.routes.js";
-import priceWatchRoutes from "./routes/priceWatch.routes.js";
 import vendorBuyerRequestsRoutes from "./routes/vendorBuyerRequests.routes.js";
 import subscriptionRoutes from "./routes/subscription.routes.js";
 import { errorHandler, notFound } from "./middleware/errorHandler.js";
@@ -32,7 +32,6 @@ import { startWalletLowBalanceCron } from "./initializers/walletLowBalanceCron.j
 import { startUnverifiedUsersCleanupCron } from "./initializers/unverifiedUsersCleanupCron.js";
 import { startAutoRechargeRetryCron } from "./initializers/autoRechargeRetryCron.js";
 import { startBuyerRequestExpiryCron } from "./initializers/buyerRequestExpiryCron.js";
-import { startPriceWatchCron } from "./jobs/priceWatch.job.js";
 import { startBuyerRequestNotificationsCron } from "./jobs/buyerRequestNotifications.job.js";
 
 const app = express();
@@ -112,8 +111,8 @@ mongoose
 app.use("/api/auth", authRoutes);
 app.use("/api/buyer-auth", buyerAuthRoutes);
 app.use("/api/buyer-requests", buyerRequestsRoutes);
+app.use("/api/shopping-plan", shoppingPlanRoutes);
 app.use("/api/credits", creditsRoutes);
-app.use("/api/price-watch", priceWatchRoutes);
 app.use("/api/vendor/buyer-requests", vendorBuyerRequestsRoutes);
 app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/users", usersRoutes);
@@ -177,7 +176,6 @@ app.listen(PORT, () => {
   // Hourly sweep — flips active Buyer Requests past their expiresAt to
   // "expired" (spec §11/§36).
   startBuyerRequestExpiryCron();
-  startPriceWatchCron();
 
   // 3-hourly sweep — tells a buyer when vendors have accepted their Buyer
   // Request, batched into one notification per request. RESTORED 2026-09-03:
