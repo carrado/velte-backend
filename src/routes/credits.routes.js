@@ -8,6 +8,7 @@ import {
   initWalletTopUp,
   listPacks,
   refundCredits,
+  verifyCreditTopUp,
 } from "../controllers/credits/credits.controller.js";
 
 const router = express.Router();
@@ -32,6 +33,10 @@ router.post("/consume", consumeCredits);
 router.post("/refund", refundCredits);
 router.get("/packs", listPacks);
 router.post("/checkout", initTopUp);
+// Confirms a card top-up directly with Paystack instead of only waiting on
+// the webhook — safe to call even if the webhook already landed (or lands
+// later); see verifyCreditTopUp's own comment.
+router.post("/verify-topup", verifyCreditTopUp);
 // Vendors only, and it settles in the request rather than through
 // Paystack -- the money is already ours. See initWalletTopUp.
 router.post("/wallet-topup", initWalletTopUp);

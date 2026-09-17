@@ -137,6 +137,21 @@ const buyerRequestSchema = new mongoose.Schema(
         new Date(Date.now() + BUYER_REQUEST_EXPIRY_HOURS * 60 * 60 * 1000),
       index: true,
     },
+
+    // Set once, at the halfway point of THIS request's own window (see
+    // jobs/buyerRequestVendorReminder.job.js) — a vendor who was matched but
+    // has neither accepted nor declined gets exactly one nudge, never a
+    // repeat. Computed from createdAt/expiresAt rather than a hardcoded
+    // hour count, same reasoning as RequestsPage.tsx's own elapsed-window
+    // bar: changing BUYER_REQUEST_EXPIRY_HOURS must not quietly change what
+    // "halfway" means for a request already in flight.
+    //
+    // Best-effort, not a delivery watermark like lastBuyerNotifiedAt above —
+    // this fires alongside the same best-effort push notifyUser already
+    // sends on request creation, not the confirmed-delivery SMS/email path.
+    // Set regardless of individual push outcomes so one dead subscription
+    // can't leave a request re-scanned by every sweep forever.
+    reminderSentAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

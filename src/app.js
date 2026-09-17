@@ -11,7 +11,6 @@ import hpp from "hpp";
 import authRoutes from "./routes/auth.js";
 import buyerAuthRoutes from "./routes/buyerAuth.routes.js";
 import buyerRequestsRoutes from "./routes/buyerRequests.routes.js";
-import shoppingPlanRoutes from "./routes/shoppingPlan.routes.js";
 import creditsRoutes from "./routes/credits.routes.js";
 import vendorBuyerRequestsRoutes from "./routes/vendorBuyerRequests.routes.js";
 import subscriptionRoutes from "./routes/subscription.routes.js";
@@ -27,12 +26,15 @@ import notificationsRoutes from "./routes/notifications.routes.js";
 import pushRoutes from "./routes/push.routes.js";
 import referralsRoutes from "./routes/referrals.routes.js";
 import shortlinksRoutes from "./routes/shortlinks.routes.js";
+import shoppingListJobRoutes from "./routes/shoppingListJob.routes.js";
 import { startKeepAlive } from "./initializers/keepAlive.js";
 import { startWalletLowBalanceCron } from "./initializers/walletLowBalanceCron.js";
 import { startUnverifiedUsersCleanupCron } from "./initializers/unverifiedUsersCleanupCron.js";
 import { startAutoRechargeRetryCron } from "./initializers/autoRechargeRetryCron.js";
 import { startBuyerRequestExpiryCron } from "./initializers/buyerRequestExpiryCron.js";
 import { startBuyerRequestNotificationsCron } from "./jobs/buyerRequestNotifications.job.js";
+import { startBuyerRequestVendorReminderCron } from "./jobs/buyerRequestVendorReminder.job.js";
+import { startShoppingListJobsCron } from "./jobs/shoppingListJob.job.js";
 
 const app = express();
 
@@ -111,7 +113,6 @@ mongoose
 app.use("/api/auth", authRoutes);
 app.use("/api/buyer-auth", buyerAuthRoutes);
 app.use("/api/buyer-requests", buyerRequestsRoutes);
-app.use("/api/shopping-plan", shoppingPlanRoutes);
 app.use("/api/credits", creditsRoutes);
 app.use("/api/vendor/buyer-requests", vendorBuyerRequestsRoutes);
 app.use("/api/subscription", subscriptionRoutes);
@@ -126,6 +127,7 @@ app.use("/api/notifications", notificationsRoutes);
 app.use("/api/push", pushRoutes);
 app.use("/api/referrals", referralsRoutes);
 app.use("/api/shortlinks", shortlinksRoutes);
+app.use("/api/shopping-list-jobs", shoppingListJobRoutes);
 
 // Health check route
 app.get("/health", (req, res) => {
@@ -183,4 +185,17 @@ app.listen(PORT, () => {
   // account to notify into, which stopped being true on 2026-08-26. Without
   // it a request is a one-way broadcast and the vendor quotes are never read.
   startBuyerRequestNotificationsCron();
+
+  // Hourly sweep — nudges vendors who were matched to a Buyer Request but
+  // have neither accepted nor declined, once per request, at that
+  // request's own halfway point. The one gap left in the quote loop after
+  // everything else in it turned out to already be built (2026-09-14).
+  startBuyerRequestVendorReminderCron();
+
+  // 20-second sweep — advances every Shopping List background search job
+  // one item at a time (spec: Shopping Lists §9/§23). Lives here rather
+  // than as a frontend `after()` callback specifically because this
+  // process is the one that survives — see shoppingListJob.job.js's own
+  // header comment.
+  startShoppingListJobsCron();
 });

@@ -9,7 +9,10 @@ import {
   catalogGrantFor,
 } from "../../config/credits.js";
 import Product from "../../models/Product.model.js";
-import { initializeTransaction } from "../../services/paystack.service.js";
+import {
+  initializeTransaction,
+  verifyTransaction,
+} from "../../services/paystack.service.js";
 import {
   debitWalletForCredits,
   refundWalletCreditPurchase,
@@ -39,9 +42,7 @@ import GuestIpUsage from "../../models/GuestIpUsage.model.js";
 const MAX_ACTION_COST = 100;
 
 function validCost(value) {
-  return (
-    Number.isInteger(value) && value > 0 && value <= MAX_ACTION_COST
-  );
+  return Number.isInteger(value) && value > 0 && value <= MAX_ACTION_COST;
 }
 
 async function rowFor(ownerId, ownerType) {
@@ -50,12 +51,54 @@ async function rowFor(ownerId, ownerType) {
   // first-requests is the outcome we wanted anyway — the row exists.
   await Credits.updateOne(
     { ownerId, ownerType },
-    { $setOnInsert: { balance: 0, grants: [], totalGranted: 0, totalSpent: 0 } },
+    {
+      $setOnInsert: { balance: 0, grants: [], totalGranted: 0, totalSpent: 0 },
+    },
     { upsert: true },
   ).catch((err) => {
     if (err?.code !== 11000) throw err;
   });
   return Credits.findOne({ ownerId, ownerType }).lean();
+}
+
+/**
+ * The atomic check-and-debit itself, extracted (2026-09-12) so it can be
+ * called two ways: over HTTP, for any caller with a cookie (consumeCredits
+ * below, unchanged behavior), and DIRECTLY, in-process, for a caller that
+ * has none — the Shopping List background sweep (shoppingListJob.job.js)
+ * runs as a `setInterval` inside this same backend process, charging a
+ * buyer per completed item with no request/cookie to authenticate. Same
+ * DB, same process, so a function call is the whole fix — no internal HTTP
+ * hop needed for a caller already living on this side of the network.
+ *
+ * Callers are trusted to have already validated `cost` (see MAX_ACTION_COST/
+ * validCost above) and to own the syncVendorCatalogCredits/rowFor
+ * bootstrapping themselves if their owner type needs it — this function is
+ * just the atomic `$gte`-filtered debit, nothing else.
+ */
+export async function consumeCreditsAtomic(ownerId, ownerType, cost) {
+  await rowFor(ownerId, ownerType);
+
+  // The `$gte` sits in the FILTER, so the affordability check and the debit
+  // are one document-level operation. Two searches landing together cannot
+  // both spend the last credit, and the balance can never go negative.
+  const updated = await Credits.findOneAndUpdate(
+    { ownerId, ownerType, balance: { $gte: cost } },
+    // spentSinceTopUp moves in lockstep with totalSpent — see its own
+    // comment on the model for why it's a second counter rather than the
+    // same one.
+    { $inc: { balance: -cost, totalSpent: cost, spentSinceTopUp: cost } },
+    { new: true },
+  ).lean();
+
+  if (updated) {
+    return { allowed: true, balance: updated.balance, cost };
+  }
+
+  const current = await Credits.findOne({ ownerId, ownerType })
+    .lean()
+    .catch(() => null);
+  return { allowed: false, balance: current?.balance ?? 0, cost };
 }
 
 // ── POST /api/credits/consume ────────────────────────────────────────────
@@ -83,34 +126,16 @@ export async function consumeCredits(req, res, next) {
     // A no-op (one indexed lookup) for every vendor already on the top tier.
     if (ownerType === "vendor") await syncVendorCatalogCredits(ownerId);
 
-    await rowFor(ownerId, ownerType);
-
-    // The `$gte` sits in the FILTER, so the affordability check and the debit
-    // are one document-level operation. Two searches landing together cannot
-    // both spend the last credit, and the balance can never go negative.
-    const updated = await Credits.findOneAndUpdate(
-      { ownerId, ownerType, balance: { $gte: cost } },
-      { $inc: { balance: -cost, totalSpent: cost } },
-      { new: true },
-    ).lean();
-
-    if (updated) {
-      return res.json({
-        success: true,
-        data: { allowed: true, balance: updated.balance, cost },
-      });
-    }
-
-    const current = await Credits.findOne({ ownerId, ownerType })
-      .lean()
-      .catch(() => null);
+    const result = await consumeCreditsAtomic(ownerId, ownerType, cost);
     return res.json({
       success: true,
       data: {
-        allowed: false,
-        balance: current?.balance ?? 0,
-        cost,
-        action: typeof action === "string" ? action : undefined,
+        ...result,
+        action: result.allowed
+          ? undefined
+          : typeof action === "string"
+            ? action
+            : undefined,
       },
     });
   } catch (err) {
@@ -137,10 +162,30 @@ export async function refundCredits(req, res, next) {
 
     // Never below zero on totalSpent either — a refund of a charge that was
     // never applied (a retry, a race) must not manufacture credits, so this is
-    // filtered on there being something to give back.
+    // filtered on there being something to give back. Not similarly filtered
+    // on spentSinceTopUp: the two counters normally move together, but a
+    // top-up landing between the original charge and this refund (a real
+    // possibility since they're two separate requests, unlike most
+    // charge/refund pairs in this file) would otherwise block the refund —
+    // and totalSpent's own filter is the one that actually guards against
+    // manufacturing credits, so spentSinceTopUp is left to float (floored at
+    // 0) rather than gating this on a figure that only feeds a UI meter.
     const updated = await Credits.findOneAndUpdate(
       { ownerId, ownerType, totalSpent: { $gte: cost } },
-      { $inc: { balance: cost, totalSpent: -cost } },
+      [
+        {
+          $set: {
+            balance: { $add: ["$balance", cost] },
+            totalSpent: { $subtract: ["$totalSpent", cost] },
+            spentSinceTopUp: {
+              $max: [
+                0,
+                { $subtract: [{ $ifNull: ["$spentSinceTopUp", 0] }, cost] },
+              ],
+            },
+          },
+        },
+      ],
       { new: true },
     ).lean();
 
@@ -153,6 +198,44 @@ export async function refundCredits(req, res, next) {
   }
 }
 
+// Shared by getCredits and verifyCreditTopUp (2026-09-16) — both answer "what
+// does this account's balance look like right now", the read simply happens
+// to be the last step of a top-up verification instead of the whole request.
+async function readBalance(ownerId, ownerType) {
+  // What backfills every vendor who had a catalogue before this existed —
+  // the gauge is the first thing that reads a balance, so there is no
+  // migration to run and no vendor who has to search before being paid.
+  if (ownerType === "vendor") await syncVendorCatalogCredits(ownerId);
+  const row = await Credits.findOne({ ownerId, ownerType }).lean();
+
+  // A vendor's LEAD WALLET balance travels with the credit balance, because
+  // for them the panel has to offer a choice of funding and an offer to
+  // "pay from your wallet" without saying what is in it is not an offer.
+  // Never fetched for a buyer: they have no wallet, and a null here is what
+  // the panel branches on to show the card-only view.
+  let walletBalanceKobo = null;
+  if (ownerType === "vendor") {
+    const wallet = await Wallet.findOne({ vendorId: ownerId })
+      .select("balanceKobo")
+      .lean()
+      // A wallet read failing must not break the credit gauge -- the two are
+      // separate ledgers and only one of them is being asked about.
+      .catch(() => null);
+    walletBalanceKobo = wallet?.balanceKobo ?? 0;
+  }
+
+  return {
+    balance: row?.balance ?? 0,
+    ownerType,
+    totalGranted: row?.totalGranted ?? 0,
+    // Lifetime — for support, never what the meter reads. See
+    // spentSinceTopUp below, and that field's own comment on the model.
+    totalSpent: row?.totalSpent ?? 0,
+    spentSinceTopUp: row?.spentSinceTopUp ?? 0,
+    walletBalanceKobo,
+  };
+}
+
 // ── GET /api/credits ─────────────────────────────────────────────────────
 //
 // Read-only, never mutates, safe to call on render — this is what the credit
@@ -161,38 +244,8 @@ export async function getCredits(req, res, next) {
   try {
     if (!req.actor) throw new AppError("Not authenticated.", 401);
     const { id: ownerId, type: ownerType } = req.actor;
-    // What backfills every vendor who had a catalogue before this existed —
-    // the gauge is the first thing that reads a balance, so there is no
-    // migration to run and no vendor who has to search before being paid.
-    if (ownerType === "vendor") await syncVendorCatalogCredits(ownerId);
-    const row = await Credits.findOne({ ownerId, ownerType }).lean();
-
-    // A vendor's LEAD WALLET balance travels with the credit balance, because
-    // for them the panel has to offer a choice of funding and an offer to
-    // "pay from your wallet" without saying what is in it is not an offer.
-    // Never fetched for a buyer: they have no wallet, and a null here is what
-    // the panel branches on to show the card-only view.
-    let walletBalanceKobo = null;
-    if (ownerType === "vendor") {
-      const wallet = await Wallet.findOne({ vendorId: ownerId })
-        .select("balanceKobo")
-        .lean()
-        // A wallet read failing must not break the credit gauge -- the two are
-        // separate ledgers and only one of them is being asked about.
-        .catch(() => null);
-      walletBalanceKobo = wallet?.balanceKobo ?? 0;
-    }
-
-    return res.json({
-      success: true,
-      data: {
-        balance: row?.balance ?? 0,
-        ownerType,
-        totalGranted: row?.totalGranted ?? 0,
-        totalSpent: row?.totalSpent ?? 0,
-        walletBalanceKobo,
-      },
-    });
+    const data = await readBalance(ownerId, ownerType);
+    return res.json({ success: true, data });
   } catch (err) {
     next(err);
   }
@@ -225,17 +278,28 @@ export async function grantCredits(ownerId, ownerType, code, amount) {
 
   await Credits.updateOne(
     { ownerId, ownerType },
-    { $setOnInsert: { balance: 0, grants: [], totalGranted: 0, totalSpent: 0 } },
+    {
+      $setOnInsert: { balance: 0, grants: [], totalGranted: 0, totalSpent: 0 },
+    },
     { upsert: true },
   ).catch((err) => {
     if (err?.code !== 11000) throw err;
   });
 
+  // A TOP-UP resets spentSinceTopUp to 0 (2026-09-09) — see that field's own
+  // comment on Credits.model.js. `totalSpent` (the LIFETIME figure) is
+  // untouched either way; this only ever affects the meter's own "used"
+  // half. Scoped to an actual top-up (`topup:<reference>`, both the
+  // card-checkout webhook and the wallet path use this prefix) — a
+  // referral/signup/vendor-catalog grant is not a buyer choosing to top up,
+  // so those leave spentSinceTopUp exactly where it was.
+  const isTopUp = code.startsWith("topup:");
   const updated = await Credits.findOneAndUpdate(
     { ownerId, ownerType, grants: { $ne: code } },
     {
       $inc: { balance: amount, totalGranted: amount },
       $push: { grants: code },
+      ...(isTopUp ? { $set: { spentSinceTopUp: 0 } } : {}),
     },
     { new: true },
   ).lean();
@@ -243,7 +307,6 @@ export async function grantCredits(ownerId, ownerType, code, amount) {
   // null means the code was already there — an honest no-op, not a failure.
   return { granted: Boolean(updated), balance: updated?.balance ?? null };
 }
-
 
 /**
  * Brings a VENDOR's catalogue grant up to whatever their listings have earned.
@@ -269,7 +332,10 @@ export async function grantCredits(ownerId, ownerType, code, amount) {
  */
 export async function syncVendorCatalogCredits(vendorId) {
   try {
-    const row = await Credits.findOne({ ownerId: vendorId, ownerType: "vendor" })
+    const row = await Credits.findOne({
+      ownerId: vendorId,
+      ownerType: "vendor",
+    })
       .select("grants")
       .lean();
     const held = row?.grants ?? [];
@@ -347,7 +413,23 @@ const CALLBACK_PATH = "/chat?topup=done";
 
 function callbackUrl() {
   const base = (process.env.FRONTEND_URL || "").replace(/\/+$/, "");
-  return base ? `${base}${CALLBACK_PATH}` : undefined;
+  if (!base) {
+    // Found live (2026-09-14): this returning `undefined` makes
+    // `callback_url` vanish from the Paystack payload entirely (JSON.stringify
+    // drops `undefined` keys), so Paystack silently falls back to whatever
+    // default callback URL is set on the dashboard instead of failing loud —
+    // the buyer lands on a bare `/chat?trxref=...&reference=...` with no
+    // `topup=done`, and nothing in these logs said why. A missing env var
+    // should never degrade silently into a different, wrong URL.
+    console.error(
+      "[credits] FRONTEND_URL is not set — Paystack will use its dashboard " +
+        "default callback instead of /chat?topup=done. If this is a local " +
+        "dev process, restart it after editing .env (dotenv-flow reads it " +
+        "once at boot).",
+    );
+    return undefined;
+  }
+  return `${base}${CALLBACK_PATH}`;
 }
 
 // ── POST /api/credits/checkout ───────────────────────────────────────────
@@ -527,6 +609,12 @@ export async function initWalletTopUp(req, res, next) {
         // So the panel can redraw the wallet figure it just spent from
         // without a second request.
         walletBalanceKobo: debit.wallet.balanceKobo,
+        // Always exactly 0 — grantCredits just reset it as part of this
+        // same top-up (this route only ever calls it with a `topup:` code).
+        // Returned directly, same reasoning as `balance` above: the client
+        // sets its meter from this response, not from a follow-up /api/usage
+        // read that could race the fire-and-forget spend-reconcile logic.
+        spentSinceTopUp: 0,
         reference,
       },
     });
@@ -564,6 +652,68 @@ export async function creditFromCharge(meta) {
     console.log(
       `[credits] +${pack.credits} to ${ownerType} ${ownerId} (${reference}), balance ${balance}`,
     );
+  }
+}
+
+// ── POST /api/credits/verify-topup ───────────────────────────────────────
+//
+// Body: { reference }
+// 200:  { success, data: { balance, spentSinceTopUp, walletBalanceKobo } }
+//
+// Verifies a card top-up directly with Paystack instead of only waiting on
+// the `charge.success` webhook (2026-09-16). The webhook is authoritative
+// and stays the primary path — this exists to close two real gaps it left
+// on its own: a dev/staging environment with no public callback URL never
+// receives a webhook at all no matter how long the frontend polls
+// /api/usage, and even in production a slow or dropped webhook left a buyer
+// who had genuinely paid staring at a stale balance once the frontend's own
+// poll window ran out. Called by the frontend the instant the buyer lands
+// back on /chat from Paystack, on the `reference`/`trxref` query param
+// Paystack itself always appends to the redirect — see SearchHome.tsx's own
+// comment on why that param survives even when our own `?topup=done` does
+// not.
+//
+// SAFE TO RACE THE WEBHOOK, in either order: this calls the exact same
+// creditFromCharge → grantCredits path the webhook does, idempotent on the
+// `topup:<reference>` code, so whichever of the two runs first wins and the
+// other is a no-op. Never applies an amount or owner the client supplies —
+// both come back from Paystack's own verify response (`transaction.metadata`
+// was set by THIS backend at checkout, not by the browser), which is the
+// same reason the ownership check below compares against `req.actor` rather
+// than trusting anything in the request body.
+export async function verifyCreditTopUp(req, res, next) {
+  try {
+    if (!req.actor) throw new AppError("Not authenticated.", 401);
+    const { reference } = req.body ?? {};
+    if (typeof reference !== "string" || !reference.trim()) {
+      throw new AppError("reference is required.", 400);
+    }
+
+    const transaction = await verifyTransaction(reference);
+    if (transaction.status !== "success") {
+      throw new AppError(`Payment ${transaction.status}.`, 402);
+    }
+
+    const meta = transaction.metadata || {};
+    if (meta.type !== "credit_topup") {
+      throw new AppError("Reference does not belong to a credit top-up.", 400);
+    }
+    // Whoever started this checkout, not whoever happens to be asking — a
+    // buyer session cannot verify a vendor's top-up (or a stranger's) just
+    // by guessing/replaying their reference.
+    if (
+      String(meta.ownerId) !== String(req.actor.id) ||
+      meta.ownerType !== req.actor.type
+    ) {
+      throw new AppError("Reference does not belong to this account.", 403);
+    }
+
+    await creditFromCharge({ ...meta, reference: transaction.reference });
+
+    const data = await readBalance(req.actor.id, req.actor.type);
+    return res.json({ success: true, data });
+  } catch (err) {
+    next(err);
   }
 }
 

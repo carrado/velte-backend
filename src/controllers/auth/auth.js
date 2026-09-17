@@ -14,6 +14,10 @@ import { getOrCreateStore } from "../store/store.controller.js";
 import { embedAndSaveStore } from "../../services/embedding.service.js";
 import { sectorLabel, isKnownSector } from "../../utils/sectorLabels.js";
 import { geocodeVendorAddressGoogle } from "../../services/geocode.service.js";
+import {
+  findBuyerByEmail,
+  linkVerifiedAccounts,
+} from "../../services/identityLink.service.js";
 
 const MAX_SECTORS = 5;
 
@@ -252,7 +256,7 @@ export const login = async (req, res) => {
     const user = await User.findOne({
       $or: [{ email: idLower }, { username: idRaw }],
     });
-    if (user) return loginAsVendor(user, password, res);
+    if (user) return loginAsVendor(user, password, req, res);
 
     return res.status(401).json({ message: "Invalid credentials" });
   } catch (error) {
@@ -267,7 +271,7 @@ export const login = async (req, res) => {
 // (can't `return` a 401 for a bad password here and expect the caller to
 // keep going, so a wrong VENDOR password still short-circuits inside here,
 // exactly as before).
-async function loginAsVendor(user, password, res) {
+async function loginAsVendor(user, password, req, res) {
   try {
     if (!(await user.comparePassword(password))) {
       return res.status(401).json({ message: "Invalid credentials" });
@@ -327,6 +331,33 @@ async function loginAsVendor(user, password, res) {
 
     // 🔹 Set token in HttpOnly cookie
     res.cookie("auth_token", token, authCookieOptions());
+
+    // ── Pair (or clear) this browser's BUYER cookie (2026-09-16) ────────
+    //
+    // Symmetric to firebaseAuth.controller.js's own vendor-pairing half —
+    // see identityLink.service.js's header for the full reasoning (both
+    // sides must have independently proven control of the email before a
+    // link is trusted). A vendor logging in whose email also belongs to a
+    // real buyer gets that buyer's `buyer_auth_token` set alongside
+    // `auth_token`, so /chat shows THEIR OWN history rather than nothing.
+    // No match, but a `buyer_auth_token` is already sitting in this
+    // browser, means it belongs to someone else entirely — cleared rather
+    // than left to leak into this vendor's view of /chat.
+    const linkedBuyer = await findBuyerByEmail(user.email);
+    if (linkedBuyer) {
+      await linkVerifiedAccounts({
+        buyerId: linkedBuyer._id,
+        vendorId: user._id,
+      });
+      const buyerToken = jwt.sign(
+        { buyerId: linkedBuyer._id, type: "buyer" },
+        process.env.JWT_SECRET,
+        { expiresIn: "7d" },
+      );
+      res.cookie("buyer_auth_token", buyerToken, authCookieOptions());
+    } else if (req.cookies?.buyer_auth_token) {
+      res.clearCookie("buyer_auth_token", authCookieOptions());
+    }
 
     // 🔹 Success response
     res.status(200).json({

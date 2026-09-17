@@ -28,7 +28,14 @@ router.delete("/delete-account", verifyAuth, deleteAccount)
 router.put("/profile", verifyAuth, updateProfile);
 router.post("/verify-reset-otp", verifyPasswordOTP)
 router.post("/reset-password", resetPassword);
-router.get("/me", verifyAuth, profile)
+// NOT verifyAuth (2026-09-16) — "the single auth API": this now reads BOTH
+// the vendor and buyer cookies itself and returns whichever exist together
+// (see userProfile.js's own header). The strict "vendor required or 401"
+// behavior callers like the dashboard still need lives in the FRONTEND's
+// own requireAuth() gate (src/app/api/auth/me/route.ts in the velte repo),
+// not here — this route has to stay permissive so the same endpoint also
+// serves lenient callers (src/app/api/auth/whoami/route.ts).
+router.get("/me", profile)
 
 // Account settings — password change (two-step)
 router.post("/change-password/request", verifyAuth, requestPasswordChange);

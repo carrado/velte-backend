@@ -3,6 +3,7 @@ import { AppError } from "../../middleware/errorHandler.js";
 import Product from "../../models/Product.model.js";
 import Store from "../../models/Store.model.js";
 import LeadCooldown from "../../models/LeadCooldown.model.js";
+import BuyerRequest from "../../models/BuyerRequest.model.js";
 import { debitWalletForLead } from "../wallet/wallet.controller.js";
 import { notifyUser } from "../../services/pushNotification.service.js";
 
@@ -70,6 +71,41 @@ export async function chargeLead(req, res, next) {
     // request over — the buyer's chat has already opened by the time this
     // fires (see this endpoint's own doc comment) — just don't tag it.
     const leadSource = LEAD_SOURCES.includes(source) ? source : null;
+
+    // The buyer contacting ANY vendor from a request closes it (2026-09-14).
+    // Before this, chargeLead only ever touched the wallet ledger — the
+    // BuyerRequest itself was never told, so it sat "active" for the full
+    // 48h regardless: other vendors kept quoting, the reminder sweep kept
+    // nudging non-responders, and the buyer notification sweep kept firing,
+    // all for a request the buyer had already acted on. `"fulfilled"` has
+    // existed in the model's own status enum since the schema was written;
+    // this is the first place anything actually sets it.
+    //
+    // Fire-and-forget, matching every other best-effort side-effect on this
+    // hot path (see notifyUser below) — closing the request is not part of
+    // what the buyer's chat is waiting on. `status: "active"` in the filter
+    // makes this a no-op on an already-fulfilled/expired/cancelled request,
+    // so a repeat click (this buyer messaging a SECOND vendor from the same
+    // request, or reopening the same conversation later) never reopens or
+    // errors on one already closed — and the buyer keeps being able to
+    // message other responders from their own Requests page regardless;
+    // only the BACKGROUND soliciting (reminders, new-response notices, the
+    // vendor's own "still open" list) stops.
+    if (
+      leadSource === "buyer_request" &&
+      typeof requestId === "string" &&
+      requestId
+    ) {
+      BuyerRequest.updateOne(
+        { _id: requestId, status: "active" },
+        { $set: { status: "fulfilled" } },
+      ).catch((err) => {
+        console.error(
+          `[chargeLead] failed to close request ${requestId}:`,
+          err.message,
+        );
+      });
+    }
 
     // NOTE on buyerId semantics for a "buyer_request"-sourced lead: for
     // "browse"/"search" this has always been an anonymous, per-browser

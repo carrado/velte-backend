@@ -51,9 +51,21 @@ const creditsSchema = new mongoose.Schema(
     grants: { type: [String], default: [] },
 
     /** Lifetime totals, for support and for answering "what has this account
-     *  actually cost us" without replaying a ledger we don't keep. */
+     *  actually cost us" without replaying a ledger we don't keep. NEVER
+     *  reset — see spentSinceTopUp below for the figure that resets. */
     totalGranted: { type: Number, default: 0, min: 0 },
     totalSpent: { type: Number, default: 0, min: 0 },
+
+    /** The credit meter's OWN "used" half (2026-09-09) — deliberately a
+     *  separate figure from totalSpent above, which stays lifetime. Reset
+     *  to 0 by grantCredits on every TOP-UP (never on a referral/signup/
+     *  catalog grant — see that function's own comment), because the whole
+     *  product is modeled on airtime: the meter should read usage against
+     *  the bundle just bought, not a running total since the account began.
+     *  Found live: a buyer topping up Y credits on top of X remaining saw
+     *  the meter immediately show most of X+Y as already "used", because it
+     *  was reading totalSpent — every credit ever spent, forever. */
+    spentSinceTopUp: { type: Number, default: 0, min: 0 },
   },
   { timestamps: true },
 );

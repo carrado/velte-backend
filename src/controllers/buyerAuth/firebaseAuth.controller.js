@@ -7,8 +7,11 @@ import {
   REFERRAL_MAX_PER_BUYER,
 } from "../../config/credits.js";
 import crypto from "crypto";
-import User from "../../models/Users.js";
 import { AppError } from "../../middleware/errorHandler.js";
+import {
+  findVerifiedVendorByEmail,
+  linkVerifiedAccounts,
+} from "../../services/identityLink.service.js";
 
 // Buyer sign-in via Firebase Auth (2026-08-26). Buyers have real accounts so
 // their search conversations can be listed and reopened — see
@@ -277,55 +280,42 @@ export async function firebaseSignIn(req, res, next) {
       }
     }
 
-    // ── Link this buyer to their VENDOR account, if they have one ───────
+    // ── Pair (or clear) this browser's VENDOR cookie (2026-09-16) ───────
     //
-    // This sign-in creates a SEPARATE buyer document even for someone who is
-    // already a vendor, and resolveActor prefers the buyer cookie when both
-    // are present — so the two halves of one person are otherwise invisible
-    // to each other. Built (2026-08-29) to carry a PLAN across that gap;
-    // plans are retired (2026-08-31) and nothing is read across the link
-    // today, since a vendor spends from their lead wallet and a buyer from
-    // their credits. Kept because the hard part is proving both halves
-    // belong to the same human, and that proof is what is recorded here.
+    // Both sides of identityLink.service.js's own header comment explain
+    // WHY a link is trusted (verified email on both sides). What changed
+    // today is WHEN it's acted on: this used to only write
+    // Buyer.linkedVendorId/User.linkedBuyerId in the background, leaving
+    // whatever `auth_token` cookie was already sitting in the browser
+    // untouched either way. Found live: a vendor signed in under email A
+    // in one browser tab, while an UNRELATED buyer session for email B was
+    // still active from earlier — nothing here ever checked the two
+    // against each other, so the vendor's own dashboard visit to /chat
+    // inherited a stranger's chat history and credits.
     //
-    // BOTH sides must have proven control of this address:
-    //   - buyer side: Firebase says so (`email_verified === false` was
-    //     rejected above).
-    //   - vendor side: `accountVerified` is set only by entering an OTP
-    //     emailed to it (controllers/auth/auth.js verify), and login is
-    //     refused until it is.
-    // The `accountVerified` filter is what makes that second half true.
-    // Registration creates the row BEFORE verification and leaves it there,
-    // so the collection contains rows holding addresses nobody proved they
-    // own — someone can type a stranger's email into vendor signup. Matching
-    // those would link a real buyer to a squatter's row. Both collections
-    // store the address lowercased, so a direct match is sound.
-    //
-    // A LINK, not a merge — nothing else about either account is touched.
-    // Best-effort: a failure here must never break a sign-in that otherwise
-    // worked, because the cost is a missed entitlement (recoverable on the
-    // next sign-in) versus locking someone out of their own history.
-    if (email && !buyer.linkedVendorId) {
-      try {
-        const vendor = await User.findOne({ email, accountVerified: true })
-          .select("_id")
-          .lean();
-        if (vendor) {
-          // Both directions, because the entitlement lookup reads whichever
-          // half is acting and must not have to scan for the other one.
-          buyer.linkedVendorId = vendor._id;
-          await buyer.save();
-          await User.updateOne(
-            { _id: vendor._id },
-            { $set: { linkedBuyerId: buyer._id } },
-          );
-          console.log(
-            `[buyer-auth] linked buyer ${buyer._id} <-> vendor ${vendor._id} on verified email`,
-          );
-        }
-      } catch (err) {
-        console.error("[buyer-auth] vendor link failed (ignored):", err);
-      }
+    // Now this sign-in actively owns cookie hygiene for BOTH roles: a
+    // verified vendor sharing this same email gets their `auth_token` set
+    // alongside `buyer_auth_token` (so /api/auth/whoami can answer "both"
+    // in one call — see that route). No match, but an `auth_token` cookie
+    // is already present in this browser, means it belongs to some OTHER,
+    // unrelated vendor — cleared rather than left to silently coexist.
+    const vendor = email ? await findVerifiedVendorByEmail(email) : null;
+    if (vendor) {
+      await linkVerifiedAccounts({ buyerId: buyer._id, vendorId: vendor._id });
+      // Same claim shape controllers/auth/auth.js's loginAsVendor signs —
+      // no `type` claim, since resolveActor.js's own vendor branch checks
+      // for exactly that ABSENCE to reject a replayed buyer token here.
+      const vendorToken = jwt.sign(
+        { userId: vendor._id },
+        process.env.JWT_SECRET,
+        { expiresIn: SESSION_TTL },
+      );
+      // This file's own cookieOptions() — identical shape to auth.js's
+      // authCookieOptions() (see that function's own comment on why they're
+      // kept as two separate definitions rather than a shared import).
+      res.cookie("auth_token", vendorToken, cookieOptions());
+    } else if (req.cookies?.auth_token) {
+      res.clearCookie("auth_token", cookieOptions());
     }
 
     // See this file's own header for the claims and why they are shaped
