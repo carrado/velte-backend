@@ -64,12 +64,10 @@ async function rowFor(ownerId, ownerType) {
 /**
  * The atomic check-and-debit itself, extracted (2026-09-12) so it can be
  * called two ways: over HTTP, for any caller with a cookie (consumeCredits
- * below, unchanged behavior), and DIRECTLY, in-process, for a caller that
- * has none — the Shopping List background sweep (shoppingListJob.job.js)
- * runs as a `setInterval` inside this same backend process, charging a
- * buyer per completed item with no request/cookie to authenticate. Same
- * DB, same process, so a function call is the whole fix — no internal HTTP
- * hop needed for a caller already living on this side of the network.
+ * below, unchanged behavior), and DIRECTLY, in-process, for a background
+ * job with no request/cookie to authenticate. Same DB, same process, so a
+ * function call is the whole fix — no internal HTTP hop needed for a
+ * caller already living on this side of the network.
  *
  * Callers are trusted to have already validated `cost` (see MAX_ACTION_COST/
  * validCost above) and to own the syncVendorCatalogCredits/rowFor

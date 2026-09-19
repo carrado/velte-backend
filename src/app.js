@@ -26,7 +26,7 @@ import notificationsRoutes from "./routes/notifications.routes.js";
 import pushRoutes from "./routes/push.routes.js";
 import referralsRoutes from "./routes/referrals.routes.js";
 import shortlinksRoutes from "./routes/shortlinks.routes.js";
-import shoppingListJobRoutes from "./routes/shoppingListJob.routes.js";
+import shoppingPlanRoutes from "./routes/shoppingPlan.routes.js";
 import { startKeepAlive } from "./initializers/keepAlive.js";
 import { startWalletLowBalanceCron } from "./initializers/walletLowBalanceCron.js";
 import { startUnverifiedUsersCleanupCron } from "./initializers/unverifiedUsersCleanupCron.js";
@@ -34,7 +34,7 @@ import { startAutoRechargeRetryCron } from "./initializers/autoRechargeRetryCron
 import { startBuyerRequestExpiryCron } from "./initializers/buyerRequestExpiryCron.js";
 import { startBuyerRequestNotificationsCron } from "./jobs/buyerRequestNotifications.job.js";
 import { startBuyerRequestVendorReminderCron } from "./jobs/buyerRequestVendorReminder.job.js";
-import { startShoppingListJobsCron } from "./jobs/shoppingListJob.job.js";
+import { startShoppingPlanCron } from "./jobs/shoppingPlan.job.js";
 
 const app = express();
 
@@ -127,7 +127,7 @@ app.use("/api/notifications", notificationsRoutes);
 app.use("/api/push", pushRoutes);
 app.use("/api/referrals", referralsRoutes);
 app.use("/api/shortlinks", shortlinksRoutes);
-app.use("/api/shopping-list-jobs", shoppingListJobRoutes);
+app.use("/api/shopping-plans", shoppingPlanRoutes);
 
 // Health check route
 app.get("/health", (req, res) => {
@@ -192,10 +192,9 @@ app.listen(PORT, () => {
   // everything else in it turned out to already be built (2026-09-14).
   startBuyerRequestVendorReminderCron();
 
-  // 20-second sweep — advances every Shopping List background search job
-  // one item at a time (spec: Shopping Lists §9/§23). Lives here rather
-  // than as a frontend `after()` callback specifically because this
-  // process is the one that survives — see shoppingListJob.job.js's own
-  // header comment.
-  startShoppingListJobsCron();
+  // 5-minute sweep — advances every Shopping Plan whose next monitoring
+  // cycle is due (deadline 7+ days away, recurring roughly every 24h with
+  // a per-plan jitter — see shoppingPlan.job.js's own header for why this
+  // lives here rather than as a frontend route/`after()` callback).
+  startShoppingPlanCron();
 });

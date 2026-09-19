@@ -16,8 +16,8 @@ import { notifyUser } from "../services/pushNotification.service.js";
 // no, and renudging them would be noise, not a fix for silence.
 //
 // Same setInterval idiom as every other sweep here (buyerRequestExpiry.job,
-// buyerRequestNotifications.job, shoppingListJob) — this process is already
-// assumed long-lived, so no scheduler dependency is needed.
+// buyerRequestNotifications.job) — this process is already assumed
+// long-lived, so no scheduler dependency is needed.
 
 /** How often the sweep ticks. Hourly, same granularity as the expiry sweep
  *  — being off by up to an hour on when a reminder fires is nothing against

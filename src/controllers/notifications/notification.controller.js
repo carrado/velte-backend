@@ -36,7 +36,7 @@ const TYPE_MAP = {
   'new-message': 'system',
   'buyer-follow': 'system',
   'buyer-request': 'buyer-request',
-  'shopping-list': 'shopping-list',
+  'shopping-plan-digest': 'shopping-plan-digest',
 };
 
 function toClientShape(n) {

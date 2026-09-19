@@ -144,6 +144,16 @@ const buyerSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    // Shopping Plan digest delivery (2026-09-18). The background monitoring
+    // job itself never reads these — disabling a channel only disables
+    // DELIVERY of the daily update, it never stops the monitoring (spec
+    // §14). SMS defaults OFF (opt-in, not opt-out) since it costs money per
+    // message; push defaults ON, matching how push already behaves
+    // everywhere else in the app.
+    notificationPrefs: {
+      pushEnabled: { type: Boolean, default: true },
+      smsEnabled: { type: Boolean, default: false },
+    },
     // NOTE: the plan fields (`plan`, `planExpiresAt`, `planCycle`,
     // `lastPlanReference`) lived here until 2026-08-31 and are gone with the
     // subscription model itself. A balance replaced them — see
