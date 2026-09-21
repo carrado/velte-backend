@@ -682,6 +682,56 @@ async function runMonitoringCycle(plan, now) {
   await plan.save();
 }
 
+/**
+ * Fires once, the moment a plan flips to "expired" — the owner otherwise
+ * hears nothing at all (found live, 2026-09-21: expiry silently stopped
+ * monitoring with no push and no SMS, so a buyer had no way to know their
+ * plan was done short of opening the app and noticing the status pill).
+ * Same push/SMS gating as a digest (notificationPrefs, phoneVerified) and
+ * reuses the "shopping-plan-digest" notification type rather than minting a
+ * new one — same feature bucket/icon on both the backend enum and the
+ * frontend's exhaustive `Record<NotificationType, …>` maps, and the title
+ * below is what actually tells the two apart in the bell/SMS copy. Called
+ * before `plan.save()` persists the new status, so a delivery failure here
+ * (caught, logged, never rethrown — a plan must still expire even if
+ * notifying about it fails) can't leave the plan stuck un-expired.
+ */
+async function notifyPlanExpired(plan) {
+  const { ownerId, ownerType } = ownerOf(plan);
+  const buyer =
+    ownerType === "buyer"
+      ? await Buyer.findById(ownerId).select("phone phoneVerified notificationPrefs").lean()
+      : null;
+  const pushEnabled = ownerType === "vendor" || buyer?.notificationPrefs?.pushEnabled !== false;
+  const smsEnabled = ownerType === "buyer" && buyer?.notificationPrefs?.smsEnabled === true;
+  const body = `Your Shopping Plan "${plan.goalText}" has reached its deadline and Velte has stopped monitoring it. Open Velte to review what was found.`;
+
+  try {
+    if (pushEnabled) {
+      await notifyOwner(
+        { ownerId, ownerType },
+        {
+          type: "shopping-plan-digest",
+          title: "Shopping Plan Expired",
+          body,
+          url: `/chat/shopping-plan/${plan._id}`,
+          metadata: { planId: plan._id.toString() },
+        },
+      );
+    }
+  } catch (err) {
+    console.error(`[shopping-plan] expiry push for plan ${plan._id} failed:`, err?.message ?? err);
+  }
+
+  try {
+    if (smsEnabled && buyer?.phoneVerified && buyer.phone) {
+      await sendSms(buyer.phone, `Velte: Your Shopping Plan "${plan.goalText}" has expired. Open Velte to review what was found.`);
+    }
+  } catch (err) {
+    console.error(`[shopping-plan] expiry sms for plan ${plan._id} failed:`, err?.message ?? err);
+  }
+}
+
 export async function processShoppingPlans() {
   const now = new Date();
   const plans = await ShoppingPlan.find({
@@ -696,6 +746,7 @@ export async function processShoppingPlans() {
     try {
       if (plan.deadlineDate && plan.deadlineDate.getTime() < now.getTime()) {
         plan.status = "expired";
+        await notifyPlanExpired(plan);
         await plan.save();
         continue;
       }

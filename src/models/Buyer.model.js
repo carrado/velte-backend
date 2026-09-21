@@ -144,15 +144,25 @@ const buyerSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
-    // Shopping Plan digest delivery (2026-09-18). The background monitoring
-    // job itself never reads these — disabling a channel only disables
-    // DELIVERY of the daily update, it never stops the monitoring (spec
-    // §14). SMS defaults OFF (opt-in, not opt-out) since it costs money per
-    // message; push defaults ON, matching how push already behaves
-    // everywhere else in the app.
+    // Shopping Plan digest + expiry delivery (2026-09-18, SMS default
+    // flipped 2026-09-21). The background monitoring job itself never reads
+    // these — disabling a channel only disables DELIVERY, never the
+    // monitoring itself (spec §14). Both channels now default ON: SMS
+    // shipped opt-in (default false) behind a preference with no way to
+    // ever set it true — no PATCH route, no settings UI, anywhere in either
+    // repo (found live, 2026-09-21, while wiring the plan-expiry
+    // notification: every real buyer's SMS was silently unreachable,
+    // digest or expiry, from day one). Defaulting to true is a stopgap
+    // until a real toggle exists; still gated on `phoneVerified` at the
+    // call site, so this alone doesn't newly SMS anyone whose number isn't
+    // proven. Existing Buyer documents already have `smsEnabled: false`
+    // persisted from the old default — this schema change only affects
+    // buyers created from now on; see
+    // src/scripts/backfill-buyer-sms-notifications.js for the one-off that
+    // flips it on for accounts that predate this change.
     notificationPrefs: {
       pushEnabled: { type: Boolean, default: true },
-      smsEnabled: { type: Boolean, default: false },
+      smsEnabled: { type: Boolean, default: true },
     },
     // NOTE: the plan fields (`plan`, `planExpiresAt`, `planCycle`,
     // `lastPlanReference`) lived here until 2026-08-31 and are gone with the
