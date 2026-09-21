@@ -58,6 +58,29 @@ const candidateSchema = new mongoose.Schema(
       ],
       default: [],
     },
+    // Real user action, not inferred from search results — "found" only
+    // means Velte identified an option; only this means money actually
+    // changed hands (spec §28's "purchasing = actual user progress"). No
+    // payment-tracking integration exists anywhere in this codebase to
+    // verify it automatically, so this is a plain manual toggle for now
+    // (see shoppingPlan.controller.js's own markItemPurchased).
+    //
+    // Per-CANDIDATE, not per-item (2026-09-20, replacing the item-level
+    // `selectedCandidateId` + `purchased` pair this schema used to have) —
+    // explicit product decision: since Velte's own agent never executes a
+    // purchase on the buyer's behalf, a standing "this is my pick" state
+    // ahead of actually buying it added a step (and the "your pick just
+    // went unavailable, approve this replacement" flow that state existed
+    // to protect) without anything the app itself does with that
+    // intermediate state. What's left is the one fact worth recording:
+    // which listing did the buyer actually end up buying. The controller
+    // enforces at most one purchased candidate per item.
+    purchased: { type: Boolean, default: false },
+    // Snapshotted at the moment of purchase — a candidate's OWN price can
+    // keep moving in later monitoring cycles (a vendor raising or dropping
+    // their price doesn't retroactively change what was actually paid), so
+    // "amount spent" must freeze independently of the live price history.
+    purchasedPriceNaira: { type: Number, default: null },
   },
   { _id: true },
 );
@@ -92,35 +115,10 @@ const itemSchema = new mongoose.Schema(
     },
     lastCheckedAt: { type: Date, default: null },
     candidates: { type: [candidateSchema], default: [] },
-    // The buyer's own pick (candidateSchema._id) — null until they choose
-    // one via the Shopping Plans page. Never auto-selected by the
-    // monitoring job itself; finding options and picking one are
-    // deliberately different states (spec §28).
-    selectedCandidateId: { type: mongoose.Schema.Types.ObjectId, default: null },
-    // Phase 2 (2026-09-19) — "alternatives with approval" (spec §20): set
-    // by the monitoring job the moment the SELECTED candidate is detected
-    // unavailable (never for a candidate the buyer never picked — there's
-    // nothing to replace). Purely a SUGGESTION; the job never writes it
-    // into selectedCandidateId itself — the buyer approves (moves it into
-    // selectedCandidateId via the same select endpoint) or dismisses it
-    // (cleared, no replacement) explicitly. Never silent.
-    suggestedAlternativeCandidateId: {
-      type: mongoose.Schema.Types.ObjectId,
-      default: null,
-    },
-    // Real user action, not inferred from search results — "found" and
-    // "selected" both mean Velte/the buyer identified an option; only this
-    // means money actually changed hands (spec §28's "purchasing = actual
-    // user progress"). No payment-tracking integration exists anywhere in
-    // this codebase to verify it automatically, so this is a plain manual
-    // toggle for now (see shoppingPlan.controller.js's own markPurchased).
-    purchased: { type: Boolean, default: false },
-    // Snapshotted at the moment of purchase — the SELECTED candidate's
-    // price can keep moving in later monitoring cycles (a vendor raising
-    // or dropping their price doesn't retroactively change what was
-    // actually paid), so "amount spent" must freeze independently of the
-    // live price history.
-    purchasedPriceNaira: { type: Number, default: null },
+    // `selectedCandidateId` and `suggestedAlternativeCandidateId` (spec
+    // §20's "alternatives with approval") lived here until 2026-09-20,
+    // removed together in the same explicit product decision — see
+    // candidateSchema's own `purchased` comment above for the reasoning.
     // Phase 3 (2026-09-19) — conversational management ("I don't need
     // sportswear anymore" / "remove the expensive school bag"). A soft
     // flag, not a real array splice: the item's own discovery/price

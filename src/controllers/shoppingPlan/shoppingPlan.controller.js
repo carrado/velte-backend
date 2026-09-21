@@ -1,5 +1,3 @@
-import mongoose from "mongoose";
-
 import ShoppingPlan from "../../models/ShoppingPlan.model.js";
 import { AppError } from "../../middleware/errorHandler.js";
 
@@ -49,25 +47,27 @@ function activeItems(plan) {
   return plan.items.filter((item) => !item.removed);
 }
 
-// The four values spec §8 asks the UI to distinguish: budgetNaira (stated
-// target) and estimatedTotalNaira ship already; these two are the other
-// half — selectedTotalNaira (the buyer's own picks, bought or not) and
-// spentTotalNaira (only what's ACTUALLY been bought — spec §28's "real
-// user action, not merely options found").
-function selectedTotalNaira(plan) {
-  return activeItems(plan).reduce((sum, item) => {
-    if (!item.selectedCandidateId) return sum;
-    const selected = item.candidates.id(item.selectedCandidateId);
-    const price = selected ? latestPrice(selected) : null;
-    return sum + (price ?? 0) * item.quantity;
-  }, 0);
+// budgetNaira (stated target) and estimatedTotalNaira are the "planning"
+// half of spec §8's four values; spentTotalNaira is the other half — only
+// what's ACTUALLY been bought (spec §28's "real user action, not merely
+// options found"). The third value spec §8 originally asked for,
+// selectedTotalNaira (the buyer's own picks, bought or not), was removed
+// 2026-09-20 along with `selectedCandidateId` itself — see the model's own
+// comment on candidateSchema.purchased for why.
+//
+// `purchased` now lives on the CANDIDATE, not the item — at most one
+// candidate per item is ever purchased (markItemPurchased enforces this),
+// so a plain find is enough; there's no need to sum across candidates the
+// way estimatedTotalNaira sums across possibilities.
+function purchasedCandidate(item) {
+  return item.candidates.find((c) => c.purchased) ?? null;
 }
 
 function spentTotalNaira(plan) {
-  return activeItems(plan).reduce(
-    (sum, item) => sum + (item.purchased ? (item.purchasedPriceNaira ?? 0) : 0),
-    0,
-  );
+  return activeItems(plan).reduce((sum, item) => {
+    const purchased = purchasedCandidate(item);
+    return sum + (purchased ? (purchased.purchasedPriceNaira ?? 0) : 0);
+  }, 0);
 }
 
 // Sums only what's actually been FOUND by a real search — an item with no
@@ -80,10 +80,13 @@ function spentTotalNaira(plan) {
 // what tells them how much of the total is actually priced in yet.
 function estimatedTotalNaira(plan) {
   return activeItems(plan).reduce((sum, item) => {
-    if (item.selectedCandidateId) {
-      const selected = item.candidates.id(item.selectedCandidateId);
-      const price = selected ? latestPrice(selected) : null;
-      if (price != null) return sum + price * item.quantity;
+    // A purchased candidate's own frozen price wins outright — what was
+    // actually paid is a more real number than "cheapest still available"
+    // once a purchase has actually happened, and the two would otherwise
+    // disagree the moment the purchased listing's price moves again.
+    const purchased = purchasedCandidate(item);
+    if (purchased) {
+      return sum + (purchased.purchasedPriceNaira ?? 0) * item.quantity;
     }
     let cheapest = null;
     for (const c of item.candidates) {
@@ -105,7 +108,6 @@ function toClientShape(plan) {
     deadlineDate: plan.deadlineDate,
     budgetNaira: plan.budgetNaira ?? null,
     estimatedTotalNaira: estimatedTotalNaira(plan),
-    selectedTotalNaira: selectedTotalNaira(plan),
     spentTotalNaira: spentTotalNaira(plan),
     status: plan.status,
     nextMonitorAt: plan.nextMonitorAt,
@@ -126,11 +128,6 @@ function toClientShape(plan) {
       notes: item.notes,
       status: item.status,
       lastCheckedAt: item.lastCheckedAt,
-      selectedCandidateId: item.selectedCandidateId?.toString?.() ?? null,
-      suggestedAlternativeCandidateId:
-        item.suggestedAlternativeCandidateId?.toString?.() ?? null,
-      purchased: item.purchased,
-      purchasedPriceNaira: item.purchasedPriceNaira ?? null,
       removed: item.removed,
       candidates: item.candidates.map((c) => ({
         id: c._id.toString(),
@@ -140,6 +137,8 @@ function toClientShape(plan) {
         lastCheckedAt: c.lastCheckedAt,
         priceHistory: c.priceHistory,
         availabilityHistory: c.availabilityHistory,
+        purchased: c.purchased,
+        purchasedPriceNaira: c.purchasedPriceNaira ?? null,
       })),
     })),
   };
@@ -349,97 +348,53 @@ export async function getShoppingPlan(req, res, next) {
   }
 }
 
-// ── PATCH /api/shopping-plans/:id/items/:itemId/select ────────────────────
-//
-// Persists the buyer's own pick of a candidate onto an item (spec §17's
-// "Selected" state). Never accepts a raw candidate; only an id already
-// present on this account's own plan. Doubles as the "approve" action for
-// a suggested alternative (spec §20) — the buyer approving one is just
-// selecting it like any other candidate, so this clears
-// suggestedAlternativeCandidateId on ANY selection change, whether it's
-// the suggestion itself or something else entirely; either way the
-// suggestion has been acted on and stops being an open question.
-export async function selectItemCandidate(req, res, next) {
-  try {
-    const owner = requireOwner(req);
-    const { candidateId } = req.body ?? {};
-    const plan = await ShoppingPlan.findOne({ _id: req.params.id, ...owner.filter });
-    if (!plan) throw new AppError("Shopping plan not found.", 404);
-    const item = plan.items.id(req.params.itemId);
-    if (!item) throw new AppError("Item not found on this plan.", 404);
-    if (candidateId && !item.candidates.id(candidateId)) {
-      throw new AppError("Candidate not found on this item.", 404);
-    }
-    item.selectedCandidateId = candidateId
-      ? new mongoose.Types.ObjectId(candidateId)
-      : null;
-    item.suggestedAlternativeCandidateId = null;
-    // A fresh pick supersedes any earlier purchase record on this item —
-    // the buyer swapping their selection means the old "bought" claim no
-    // longer refers to what's actually selected now.
-    item.purchased = false;
-    item.purchasedPriceNaira = null;
-    await plan.save();
-    return res.json({ success: true, data: { plan: toClientShape(plan) } });
-  } catch (err) {
-    next(err);
-  }
-}
-
-// ── PATCH /api/shopping-plans/:id/items/:itemId/dismiss-alternative ───────
-//
-// The other half of spec §20's approval requirement — the buyer declining
-// a suggested replacement rather than accepting it. Clears the suggestion
-// with no side effect on the (now unavailable) original selection; the
-// monitoring job will suggest again later if a different alternative turns
-// up, or the buyer can pick one manually from the item's own candidates.
-export async function dismissSuggestedAlternative(req, res, next) {
-  try {
-    const owner = requireOwner(req);
-    const plan = await ShoppingPlan.findOne({ _id: req.params.id, ...owner.filter });
-    if (!plan) throw new AppError("Shopping plan not found.", 404);
-    const item = plan.items.id(req.params.itemId);
-    if (!item) throw new AppError("Item not found on this plan.", 404);
-    item.suggestedAlternativeCandidateId = null;
-    await plan.save();
-    return res.json({ success: true, data: { plan: toClientShape(plan) } });
-  } catch (err) {
-    next(err);
-  }
-}
-
 // ── PATCH /api/shopping-plans/:id/items/:itemId/purchase ──────────────────
 //
-// Marks the item's SELECTED candidate as actually bought (spec §28 —
-// "purchasing = actual user progress," distinct from merely being found or
-// selected). Manual, not inferred: no payment-tracking integration exists
-// anywhere in this codebase to verify it automatically (see the model's
-// own comment). Freezes the price paid at the moment of marking so a later
-// price move on the same listing can't retroactively change "amount
+// Marks a SPECIFIC candidate as actually bought (spec §28 — "purchasing =
+// actual user progress," distinct from merely being found). Per-candidate,
+// not per-item (2026-09-20, replacing this endpoint's own former
+// select-then-purchase flow along with `selectItemCandidate`/
+// `dismissSuggestedAlternative`, both deleted — see the model's own
+// comment on candidateSchema.purchased for the reasoning): since there's
+// no more standing "selected" pick to purchase, the buyer marks whichever
+// listing they actually bought directly. Manual, not inferred: no
+// payment-tracking integration exists anywhere in this codebase to verify
+// it automatically. Freezes the price paid at the moment of marking so a
+// later price move on the same listing can't retroactively change "amount
 // spent." `purchased: false` un-marks it (a buyer correcting a mistake),
 // clearing the frozen price along with it.
+//
+// At most one purchased candidate per item, enforced here rather than left
+// to the caller — marking a new one purchased clears any other candidate
+// on the SAME item that was previously marked, since an item can only
+// really have been bought once.
 export async function markItemPurchased(req, res, next) {
   try {
     const owner = requireOwner(req);
-    const { purchased } = req.body ?? {};
+    const { candidateId, purchased } = req.body ?? {};
+    if (!candidateId) throw new AppError("candidateId is required.", 400);
     const plan = await ShoppingPlan.findOne({ _id: req.params.id, ...owner.filter });
     if (!plan) throw new AppError("Shopping plan not found.", 404);
     const item = plan.items.id(req.params.itemId);
     if (!item) throw new AppError("Item not found on this plan.", 404);
+    const candidate = item.candidates.id(candidateId);
+    if (!candidate) throw new AppError("Candidate not found on this item.", 404);
 
     if (purchased) {
-      if (!item.selectedCandidateId) {
-        throw new AppError("Select an option for this item before marking it purchased.", 400);
+      for (const other of item.candidates) {
+        if (other._id.toString() !== candidateId) {
+          other.purchased = false;
+          other.purchasedPriceNaira = null;
+        }
       }
-      const selected = item.candidates.id(item.selectedCandidateId);
-      const price = selected?.priceHistory?.length
-        ? selected.priceHistory[selected.priceHistory.length - 1].priceNaira
+      const price = candidate.priceHistory.length
+        ? candidate.priceHistory[candidate.priceHistory.length - 1].priceNaira
         : null;
-      item.purchased = true;
-      item.purchasedPriceNaira = price ?? item.estimatedPriceNaira;
+      candidate.purchased = true;
+      candidate.purchasedPriceNaira = price ?? item.estimatedPriceNaira;
     } else {
-      item.purchased = false;
-      item.purchasedPriceNaira = null;
+      candidate.purchased = false;
+      candidate.purchasedPriceNaira = null;
     }
 
     await plan.save();

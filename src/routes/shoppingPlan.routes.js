@@ -5,8 +5,6 @@ import {
   listShoppingPlans,
   listManageableShoppingPlans,
   updateShoppingPlan,
-  selectItemCandidate,
-  dismissSuggestedAlternative,
   markItemPurchased,
   addPlanItem,
   updatePlanItem,
@@ -31,11 +29,10 @@ router.get("/:id", getShoppingPlan);
 router.patch("/:id", updateShoppingPlan);
 router.post("/:id/items", addPlanItem);
 router.patch("/:id/items/:itemId", updatePlanItem);
-router.patch("/:id/items/:itemId/select", selectItemCandidate);
-router.patch(
-  "/:id/items/:itemId/dismiss-alternative",
-  dismissSuggestedAlternative,
-);
+// select/dismiss-alternative routes removed 2026-09-20 (explicit product
+// decision) — see shoppingPlan.controller.js's own markItemPurchased
+// comment. Purchase now takes a candidateId in its body instead of relying
+// on a standing selection.
 router.patch("/:id/items/:itemId/purchase", markItemPurchased);
 
 export default router;

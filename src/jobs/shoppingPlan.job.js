@@ -113,6 +113,21 @@ async function searchItemViaFrontend(item, location, planBudgetNaira) {
   if (!base || !secret) {
     throw new Error("FRONTEND_URL / SHOPPING_PLAN_INTERNAL_SECRET not configured");
   }
+  // Sent alongside the search itself (2026-09-19 fix) so the frontend can
+  // directly re-check them, rather than this job inferring their fate from
+  // whether they happen to reappear in the fresh ranked results below — see
+  // diffItemCandidates' own comment on why that inference was wrong.
+  const knownVelteProductIds = item.candidates
+    .map((c) => velteProductIdOf(c.candidateKey))
+    .filter(Boolean);
+  // The external-source counterpart (2026-09-21 fix) — see
+  // diffItemCandidates' own comment on the gap this closes. `snapshot.url`
+  // is the listing's own direct product-page link, exactly as
+  // search-item/route.ts's connector stored it on the ExternalOffer.
+  const knownExternalUrls = item.candidates
+    .filter((c) => c.source === "external")
+    .map((c) => c.snapshot?.url)
+    .filter(Boolean);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
   try {
@@ -132,6 +147,8 @@ async function searchItemViaFrontend(item, location, planBudgetNaira) {
         // never a genuinely affordable one.
         maxBudgetNaira: planBudgetNaira || undefined,
         location,
+        knownVelteProductIds,
+        knownExternalUrls,
       }),
       signal: controller.signal,
     });
@@ -154,25 +171,30 @@ function latestAvailable(candidate) {
     : true;
 }
 
-/**
- * Picks a replacement for an item's SELECTED candidate once it's gone —
- * the cheapest still-available candidate other than the stale one.
- * Deliberately simple arithmetic, not an LLM call (pickRecommendation):
- * this runs inside the background sweep's own hot path across every item
- * of every due plan, and "cheapest available" is a correct, defensible
- * answer to "what should replace the one that disappeared" without adding
- * model latency/cost to a job that already makes one HTTP call per item.
- */
-function pickAlternativeCandidate(item, staleCandidateId) {
-  let best = null;
-  for (const c of item.candidates) {
-    if (c._id.equals(staleCandidateId)) continue;
-    if (!latestAvailable(c)) continue;
-    const price = latestPrice(c);
-    if (price == null) continue;
-    if (!best || price < latestPrice(best)) best = c;
-  }
-  return best;
+// Whether this item has anything a buyer could actually act on RIGHT NOW —
+// never just "has candidates.length", which stays true forever once a
+// single listing was ever discovered, since diffItemCandidates never
+// deletes one (an unavailable listing is a HISTORY entry, not a removal).
+// Found live (2026-09-19): an item's `status` stayed "found" long after its
+// only candidate went unavailable, so the buyer's own detail page showed a
+// green "Options found" pill above a list that had correctly filtered
+// itself down to nothing — the pill and the list were answering two
+// different questions ("ever found" vs "available now") and only the list
+// was telling the truth.
+function hasAvailableCandidate(item) {
+  return item.candidates.some((c) => latestAvailable(c));
+}
+
+// `purchasedCandidate`/`pickAlternativeCandidate` (spec §20's "alternatives
+// with approval") lived here until 2026-09-20, removed together with
+// `selectedCandidateId`/`suggestedAlternativeCandidateId` in the same
+// explicit product decision — see the model's own comment on
+// candidateSchema.purchased for the reasoning. At most one candidate per
+// item is ever purchased (markItemPurchased enforces this), so a plain
+// find is enough here too, mirroring shoppingPlan.controller.js's own
+// identical helper.
+function purchasedCandidate(item) {
+  return item.candidates.find((c) => c.purchased) ?? null;
 }
 
 /**
@@ -182,11 +204,43 @@ function pickAlternativeCandidate(item, staleCandidateId) {
  * the array itself IS the history (spec §16), and re-running this against
  * unchanged data is a no-op (what makes a crash-and-retry of a cycle safe).
  *
- * Phase 2: also detects the SELECTED candidate going unavailable and
- * suggests a replacement (spec §20) — never auto-applied, see the model's
- * own comment on suggestedAlternativeCandidateId.
+ * Used to also detect the SELECTED candidate going unavailable and suggest
+ * a replacement (spec §20) — removed 2026-09-20 along with
+ * `selectedCandidateId` itself, see the model's own comment on
+ * candidateSchema.purchased.
  */
-function diffItemCandidates(item, freshCandidates, now) {
+// `velteProductId` from a candidateKey shaped "velte_product:<id>" — the
+// same format search-item/route.ts's own NormalizedCandidate mints it in.
+function velteProductIdOf(candidateKey) {
+  return candidateKey.startsWith("velte_product:")
+    ? candidateKey.slice("velte_product:".length)
+    : null;
+}
+
+/**
+ * @param stillAvailableVelteProductIds The internal route's DIRECT
+ *   existence/suspension check (2026-09-19 fix) for every velte_product
+ *   candidate this item already knew about — `null` means the check itself
+ *   failed and nothing about those candidates should be inferred either
+ *   way (see search-item/route.ts's own verifyStillAvailable comment), an
+ *   array (possibly empty) means it ran and lists exactly which ids are
+ *   still real and un-suspended.
+ * @param goneExternalUrls The counterpart check for EXTERNAL candidates
+ *   (2026-09-21 fix, see search-item/route.ts's own verifyGoneExternalUrls
+ *   comment) — INVERTED polarity from the param above: this lists exactly
+ *   which already-known external listing urls were CONFIRMED gone (an
+ *   unambiguous 404/410), never which ones are still real. Always an array,
+ *   never null — an external url this couldn't check at all is simply
+ *   absent from it, which already means "leave as-is", the same safe
+ *   default a `null` velte check gets via the branch above.
+ */
+function diffItemCandidates(
+  item,
+  freshCandidates,
+  now,
+  stillAvailableVelteProductIds,
+  goneExternalUrls,
+) {
   const freshKeys = new Set(freshCandidates.map((f) => f.candidateKey));
 
   for (const fresh of freshCandidates) {
@@ -220,55 +274,68 @@ function diffItemCandidates(item, freshCandidates, now) {
     }
   }
 
-  // A Velte/external listing that goes away doesn't come back flagged
-  // `available: false` — it just stops being RETURNED by the search at
-  // all (a suspended product is excluded at the DB layer, not marked).
-  // So absence from this cycle's fresh results is itself the signal.
+  // A candidate that drops out of THIS cycle's fresh results is not, by
+  // itself, proof it's gone (2026-09-19, fixed — was previously the only
+  // signal used here, see git history on this block for the old reasoning
+  // and the false-negative it caused live: a still-available product that
+  // merely ranked outside the capped top-N looked identical to a genuinely
+  // suspended one). The two sources now get different treatment because
+  // only one of them CAN be checked directly:
   //
-  // Known tradeoff: the search only returns a capped top-N per item, so a
-  // still-available candidate that merely ranked outside that window this
-  // cycle looks identical to a genuinely gone one and would be flagged
-  // unavailable too. Accepted for now (the internal route returns a
-  // generous cap to reduce how often this happens) rather than adding a
-  // multi-cycle "missing streak" confirmation before flagging.
+  // - velte_product: re-checked for real via the internal route's direct
+  //   existence/suspension query, independent of this cycle's ranking. Old
+  //   ones only ever go unavailable now because that check confirmed they
+  //   are — never merely because the ranked search didn't happen to
+  //   surface them again. A `null` result (the check itself failed) leaves
+  //   these exactly as they were rather than guessing.
+  // - external (2026-09-21 fix — this branch used to have NO direct check
+  //   at all, and just fell through to the unconditional "mark unavailable"
+  //   line below on every absence; found live: a buyer's category lost
+  //   items between cycles that were never actually out of stock on the
+  //   shop itself, only absent from that cycle's re-ranked top-N Google
+  //   Shopping/organic results). Re-checked by fetching the listing's own
+  //   url directly — the closest equivalent this source has to a database
+  //   query, though a far less reliable one (see verifyGoneExternalUrls'
+  //   own comment on why it only ever confirms an UNAMBIGUOUS 404/410, never
+  //   "still available"). Old ones only go unavailable now because that
+  //   fetch confirmed the page itself is gone — never merely because the
+  //   ranked search didn't happen to surface them again.
   for (const existing of item.candidates) {
     if (freshKeys.has(existing.candidateKey)) continue;
-    if (latestAvailable(existing)) {
-      existing.availabilityHistory.push({ available: false, checkedAt: now });
-    }
-  }
+    if (!latestAvailable(existing)) continue;
 
-  // Alternatives with approval (spec §20) — only when the candidate that
-  // JUST went unavailable this pass is the one the buyer actually
-  // selected; a candidate nobody picked disappearing is an ordinary,
-  // silent history update, not something worth interrupting the buyer
-  // over. Never overwrites an alternative already awaiting the buyer's own
-  // approval/dismissal.
-  if (item.selectedCandidateId && !item.suggestedAlternativeCandidateId) {
-    const selected = item.candidates.id(item.selectedCandidateId);
-    if (selected && !latestAvailable(selected)) {
-      const alternative = pickAlternativeCandidate(item, item.selectedCandidateId);
-      if (alternative) item.suggestedAlternativeCandidateId = alternative._id;
+    const velteProductId = velteProductIdOf(existing.candidateKey);
+    if (velteProductId) {
+      if (stillAvailableVelteProductIds == null) continue; // check failed — leave as-is
+      if (stillAvailableVelteProductIds.includes(velteProductId)) continue; // confirmed still real
+    } else if (existing.source === "external") {
+      const url = existing.snapshot?.url;
+      // No url on the stored snapshot (shouldn't happen — every
+      // ExternalOffer carries one) or the fetch didn't confirm this exact
+      // url as gone: leave it as-is, same "no assumption without a real
+      // signal" rule the velte_product branch above follows for a failed
+      // check.
+      if (!url || !goneExternalUrls.includes(url)) continue;
     }
+    existing.availabilityHistory.push({ available: false, checkedAt: now });
   }
 
   item.lastCheckedAt = now;
-  item.status = item.candidates.length ? "found" : "no_match";
+  item.status = hasAvailableCandidate(item) ? "found" : "no_match";
 }
 
-/** The cheapest currently-available REAL price for an item — the buyer's
- *  own selected candidate if they made one, else the lowest available price
- *  seen, else 0 (no real candidate found for this item yet — never a
- *  model-invented placeholder; estimatedPriceNaira stopped being populated
- *  2026-09-19, see buildShoppingPlanSnapshot.ts). An item contributing 0
- *  here undercounts estimatedTotalNaira rather than overstating it with a
- *  guess. */
+/** The cheapest currently-available REAL price for an item — a purchased
+ *  candidate's own frozen price if there is one (what was actually paid is
+ *  a more real number than "cheapest still available" once a purchase has
+ *  happened — mirrors shoppingPlan.controller.js's own estimatedTotalNaira),
+ *  else the lowest available price seen, else 0 (no real candidate found
+ *  for this item yet — never a model-invented placeholder;
+ *  estimatedPriceNaira stopped being populated 2026-09-19, see
+ *  buildShoppingPlanSnapshot.ts). An item contributing 0 here undercounts
+ *  estimatedTotalNaira rather than overstating it with a guess. */
 function currentPriceForItem(item) {
-  if (item.selectedCandidateId) {
-    const selected = item.candidates.id(item.selectedCandidateId);
-    const price = selected ? latestPrice(selected) : null;
-    if (price != null) return price;
-  }
+  const purchased = purchasedCandidate(item);
+  if (purchased) return purchased.purchasedPriceNaira ?? 0;
   let cheapest = null;
   for (const c of item.candidates) {
     if (!latestAvailable(c)) continue;
@@ -291,23 +358,12 @@ function estimatedTotalNaira(plan) {
 }
 
 /** Sum of what's ACTUALLY been bought — real user action, never inferred
- *  (spec §28). */
+ *  (spec §28). `purchased` lives on the CANDIDATE, not the item, since
+ *  2026-09-20 (see the model's own comment on candidateSchema.purchased). */
 function spentTotalNaira(plan) {
-  return activeItems(plan).reduce(
-    (sum, item) => sum + (item.purchased ? (item.purchasedPriceNaira ?? 0) : 0),
-    0,
-  );
-}
-
-/** Sum of the buyer's own picks, whether or not bought yet — distinct
- *  from the estimate (spec §8's four values: budget/estimated/selected/
- *  spent). Falls back to nothing for an item with no selection. */
-function selectedTotalNaira(plan) {
   return activeItems(plan).reduce((sum, item) => {
-    if (!item.selectedCandidateId) return sum;
-    const selected = item.candidates.id(item.selectedCandidateId);
-    const price = selected ? latestPrice(selected) : null;
-    return sum + (price ?? 0) * item.quantity;
+    const purchased = purchasedCandidate(item);
+    return sum + (purchased ? (purchased.purchasedPriceNaira ?? 0) : 0);
   }, 0);
 }
 
@@ -365,11 +421,15 @@ function cycleHasMeaningfulChange(cycle) {
   );
 }
 
-/** Items with no suitable option yet, ranked-selected-first is nothing to
- *  report on again — used both for urgency ordering and for the
+/** Items with nothing bought yet — "needs attention" now means "not
+ *  purchased" rather than "not selected" (2026-09-20, following the
+ *  removal of `selectedCandidateId` — see the model's own comment on
+ *  candidateSchema.purchased). Used both for urgency ordering and for the
  *  deadline-approaching digest line (spec §19). */
 function itemsNeedingAttention(plan) {
-  return activeItems(plan).filter((i) => !i.selectedCandidateId && i.status !== "searching");
+  return activeItems(plan).filter(
+    (i) => !purchasedCandidate(i) && i.status !== "searching",
+  );
 }
 
 function digestBody(plan, cycle, daysLeft) {
@@ -418,18 +478,20 @@ function digestBody(plan, cycle, daysLeft) {
  * made for a much longer-running job.
  *
  * Urgency ordering (spec §18, "3-7"/"1-2 days" tiers: "stronger focus on
- * currently obtainable options") — items with no selection yet are
- * checked FIRST once the deadline is close, so a credit-limited or
+ * currently obtainable options") — items not yet PURCHASED are checked
+ * FIRST once the deadline is close (2026-09-20: was "not yet selected",
+ * following the removal of `selectedCandidateId` — see the model's own
+ * comment on candidateSchema.purchased), so a credit-limited or
  * time-limited pass spends its effort on what still needs attention
- * rather than re-confirming items already settled.
+ * rather than re-confirming an item already bought.
  */
 async function checkPlanItems(plan, now, daysLeft) {
   const eligible = activeItems(plan);
   const ordered =
     daysLeft != null && daysLeft <= 7
       ? [...eligible].sort((a, b) => {
-          const aNeeds = a.selectedCandidateId ? 0 : 1;
-          const bNeeds = b.selectedCandidateId ? 0 : 1;
+          const aNeeds = purchasedCandidate(a) ? 0 : 1;
+          const bNeeds = purchasedCandidate(b) ? 0 : 1;
           return bNeeds - aNeeds || b.priority - a.priority;
         })
       : eligible;
@@ -439,10 +501,55 @@ async function checkPlanItems(plan, now, daysLeft) {
       item.status = "searching";
       const result = await searchItemViaFrontend(item, plan.location, plan.budgetNaira);
       const freshCandidates = Array.isArray(result?.candidates) ? result.candidates : [];
-      diffItemCandidates(item, freshCandidates, now);
+      // `undefined` (the field missing/malformed) is treated the same as a
+      // failed check (`null`) — diffItemCandidates leaves those candidates
+      // untouched either way, never reading a malformed response as "every
+      // known velte_product candidate is now gone".
+      const stillAvailableVelteProductIds = Array.isArray(
+        result?.stillAvailableVelteProductIds,
+      )
+        ? result.stillAvailableVelteProductIds
+        : null;
+      // No null case here (2026-09-21 fix) — verifyGoneExternalUrls on the
+      // frontend never distinguishes "didn't run" from "ran and found
+      // nothing gone" the way verifyStillAvailable does; both already mean
+      // the same thing to diffItemCandidates (don't mark anything gone), so
+      // a missing/malformed field defaults straight to the empty array
+      // rather than needing its own null branch.
+      const goneExternalUrls = Array.isArray(result?.goneExternalUrls)
+        ? result.goneExternalUrls
+        : [];
+      diffItemCandidates(
+        item,
+        freshCandidates,
+        now,
+        stillAvailableVelteProductIds,
+        goneExternalUrls,
+      );
 
+      // The search above already ran regardless of balance — there's no
+      // pre-check the way a buyer-initiated turn gets (see credits.ts's
+      // "check before, charge after" rule; this job has no equivalent
+      // "before"). consumeCreditsAtomic itself fails safe (never goes
+      // negative, never throws), but until now nothing looked at
+      // `allowed: false` — an owner out of credits kept getting free,
+      // unbilled monitoring forever, silently. Flagged rather than fixed
+      // (2026-09-21, explicit product decision to flag first): pausing
+      // monitoring or notifying the owner is a bigger call — what "out of
+      // credits mid-plan" should actually do — than this job should make on
+      // its own, so for now this just makes the gap visible in logs instead
+      // of invisible.
       const { ownerId, ownerType } = ownerOf(plan);
-      await consumeCreditsAtomic(ownerId, ownerType, PER_ITEM_CHECK_COST);
+      const charge = await consumeCreditsAtomic(
+        ownerId,
+        ownerType,
+        PER_ITEM_CHECK_COST,
+      );
+      if (!charge.allowed) {
+        console.warn(
+          `[shopping-plan] plan ${plan._id} item "${item.label}" checked UNBILLED — ${ownerType} ${ownerId} balance ${charge.balance} < ${PER_ITEM_CHECK_COST}`,
+        );
+      }
     } catch (err) {
       // One item's search failing must never fail the whole plan (spec
       // §27) — keep its existing candidates, log, move to the next item.
@@ -450,7 +557,7 @@ async function checkPlanItems(plan, now, daysLeft) {
         `[shopping-plan] plan ${plan._id} item "${item.label}" check failed:`,
         err?.message ?? err,
       );
-      item.status = item.candidates.length ? "found" : "failed";
+      item.status = hasAvailableCandidate(item) ? "found" : "failed";
     }
   }
 }
