@@ -188,9 +188,15 @@ const buyerSchema = new mongoose.Schema(
     // re-establish. It is also already backfilled.
     //
     // A LINK, never a merge: the two accounts stay separate documents with
-    // their own conversations and balances. Nothing is currently read
-    // ACROSS it — a vendor spends from their lead wallet and a buyer from
-    // their credits — so linking today changes no entitlement.
+    // their own conversations and balances. ONE thing now reads across it
+    // (2026-09-21): `resolveActor.js`'s middleware resolves a buyer carrying
+    // this field AS the linked vendor instead — found live, a vendor signed
+    // into /chat with Google using their own vendor email kept being
+    // metered against a fresh buyer allowance rather than their own vendor
+    // credit balance. That is a real, deliberate entitlement change for
+    // exactly this one case (a proven same-human link); everything else —
+    // conversations, notifications, any other balance read — still belongs
+    // to whichever document actually owns it, same as before.
     linkedVendorId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
