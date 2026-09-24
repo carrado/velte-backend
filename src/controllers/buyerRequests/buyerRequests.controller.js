@@ -7,6 +7,7 @@ import { AppError } from "../../middleware/errorHandler.js";
 import { matchBuyerRequestToVendors } from "../../services/matchingClient.service.js";
 import { sendSms } from "../../services/sendchamp.service.js";
 import { notifyUser } from "../../services/pushNotification.service.js";
+import { textMatchedVendors } from "../../helpers/vendorRequestSms.js";
 
 // ── POST /api/buyer-requests ────────────────────────────────────────────────
 // Auth-gated (verifyBuyerAuth). Regardless of whether the confirmation SMS
@@ -155,7 +156,7 @@ export async function createRequest(req, res, next) {
       matchedVendorIds,
     });
 
-    // Best-effort, both of these — never let either failure roll back the
+    // Best-effort, all of these — never let any failure roll back the
     // request that was just created.
     sendSms(
       buyer.phone,
@@ -171,6 +172,18 @@ export async function createRequest(req, res, next) {
       description.trim().length > 80
         ? `${description.trim().slice(0, 80)}…`
         : description.trim();
+
+    // Every matched vendor also gets an SMS with a short link to this
+    // request — see helpers/vendorRequestSms.js for why, and its trade-offs.
+    textMatchedVendors({ request, vendorIds: matchedVendorIds }).catch(
+      (err) => {
+        console.error(
+          `[buyerRequests] vendor SMS batch failed for request ${request._id}:`,
+          err?.message ?? err,
+        );
+      },
+    );
+
     for (const vendorId of matchedVendorIds) {
       notifyUser(vendorId, {
         type: "buyer-request",

@@ -74,6 +74,16 @@ const buyerRequestResponseSchema = new mongoose.Schema(
      *  condition, "price is for 20 units". Short on purpose — this is a line
      *  on a comparison row, not a message thread. */
     note: { type: String, default: null, trim: true, maxlength: 200 },
+
+    /** When the BUYER messaged THIS vendor from their requests page
+     *  (2026-09-24) — set by chargeLead on the first click, never cleared.
+     *  The only per-vendor record of who got picked: the request's own
+     *  `fulfilled` status says the buyer contacted SOMEONE, and the wallet
+     *  ledger can't stand in (no row on a cooled-down click, and pre-
+     *  2026-09-03 accept-time charges share the same reference). Drives the
+     *  vendor's "Won" history. Null for everything contacted before this
+     *  field existed — that history simply wasn't recorded. */
+    contactedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

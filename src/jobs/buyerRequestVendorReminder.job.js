@@ -1,6 +1,7 @@
 import BuyerRequest from "../models/BuyerRequest.model.js";
 import BuyerRequestResponse from "../models/BuyerRequestResponse.model.js";
 import { notifyUser } from "../services/pushNotification.service.js";
+import { textMatchedVendors } from "../helpers/vendorRequestSms.js";
 
 // The one real gap left in the Buyer Request quote loop (found 2026-09-14
 // while checking the rest of the flow, which turned out to already be
@@ -102,6 +103,21 @@ export async function sendVendorReminders() {
         remindedVendors += results.filter(
           (r) => r.status === "fulfilled",
         ).length;
+
+        // SMS alongside the push — push is exactly the channel that misses
+        // the vendors this reminder exists for. Same best-effort contract:
+        // a failed text is logged, never retried, and never stops
+        // reminderSentAt below from being set.
+        await textMatchedVendors({
+          request,
+          vendorIds: silent,
+          reminder: true,
+        }).catch((err) => {
+          console.error(
+            `[buyerRequestVendorReminder] SMS failed for request ${request._id}:`,
+            err?.message ?? err,
+          );
+        });
       }
 
       request.reminderSentAt = now;

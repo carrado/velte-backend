@@ -20,41 +20,90 @@ function withoutBuyerPhone(requestObj) {
   return rest;
 }
 
+// How far back a vendor's answered-request history reaches, and a hard cap
+// on it — the page is a working list, not an archive.
+const HISTORY_DAYS = 90;
+const HISTORY_LIMIT = 100;
+
+/** The vendor's own answer, as the frontend reads it — decision, their quote
+ *  when they accepted, and when the buyer messaged THEM (null otherwise). */
+function ownAnswer(response) {
+  const accepted = response?.decision === "accepted";
+  return {
+    myDecision: response?.decision ?? null,
+    myQuote: accepted
+      ? {
+          priceKobo: response.priceKobo ?? null,
+          leadTimeDays: response.leadTimeDays ?? null,
+          note: response.note ?? null,
+        }
+      : null,
+    myContactedAt: accepted ? (response.contactedAt ?? null) : null,
+  };
+}
+
 // ── GET /api/vendor/buyer-requests ──────────────────────────────────────────
 // Only requests this vendor was actually matched to — matching itself
 // already happened at request-creation time via the staffly-ai-backend call,
 // this just filters by the stored result.
+//
+// Two sets, merged (2026-09-24 — the vendor page's history, explicit
+// request): every OPEN request matched to this vendor, as before, PLUS every
+// request they answered in the last HISTORY_DAYS whatever its status now. A
+// request used to vanish from this list the moment it stopped being active —
+// including when the buyer picked THIS vendor and messaged them, the best
+// outcome there is. Unanswered requests that closed are not history (the
+// vendor never engaged), so they still drop off.
 export async function listMatchedRequests(req, res, next) {
   try {
     const vendorId = req.user.userId;
+    const since = new Date(Date.now() - HISTORY_DAYS * 24 * 60 * 60 * 1000);
+
+    const ownResponses = await BuyerRequestResponse.find({
+      vendorId,
+      createdAt: { $gte: since },
+    })
+      .sort({ createdAt: -1 })
+      .limit(HISTORY_LIMIT)
+      .select("requestId decision priceKobo leadTimeDays note contactedAt")
+      .lean();
+    const responseByRequestId = new Map(
+      ownResponses.map((r) => [String(r.requestId), r]),
+    );
+
     const requests = await BuyerRequest.find({
       matchedVendorIds: vendorId,
-      status: "active",
+      $or: [
+        { status: "active" },
+        { _id: { $in: ownResponses.map((r) => r.requestId) } },
+      ],
     })
       .sort({ createdAt: -1 })
       .lean();
 
-    const requestIds = requests.map((r) => r._id);
-    const ownResponses = await BuyerRequestResponse.find({
-      requestId: { $in: requestIds },
-      vendorId,
-    })
-      .select("requestId decision")
-      .lean();
-    const decisionByRequestId = new Map(
-      ownResponses.map((r) => [String(r.requestId), r.decision]),
-    );
+    // An OPEN request answered longer ago than the history window still
+    // needs its decision — look those few up rather than show a request the
+    // vendor already answered as new.
+    const missing = requests
+      .filter((r) => !responseByRequestId.has(String(r._id)))
+      .map((r) => r._id);
+    if (missing.length) {
+      const older = await BuyerRequestResponse.find({
+        requestId: { $in: missing },
+        vendorId,
+      })
+        .select("requestId decision priceKobo leadTimeDays note contactedAt")
+        .lean();
+      for (const r of older) responseByRequestId.set(String(r.requestId), r);
+    }
 
-    const withFlag = requests.map((r) => {
-      const decision = decisionByRequestId.get(String(r._id)) ?? null;
-      return {
-        ...withoutBuyerPhone(r),
-        id: String(r._id), // .lean() drops the `id` virtual — without this
-        // every card link (`/${vendorId}/buyer-requests/${request.id}`) is
-        // .../undefined.
-        myDecision: decision,
-      };
-    });
+    const withFlag = requests.map((r) => ({
+      ...withoutBuyerPhone(r),
+      id: String(r._id), // .lean() drops the `id` virtual — without this
+      // every card link (`/${vendorId}/buyer-requests/${request.id}`) is
+      // .../undefined.
+      ...ownAnswer(responseByRequestId.get(String(r._id))),
+    }));
 
     res.status(200).json({ success: true, data: { requests: withFlag } });
   } catch (err) {
@@ -90,12 +139,14 @@ export async function getRequestDetail(req, res, next) {
     }).lean();
 
     // myDecision lives ON the request object, same shape as
-    // listMatchedRequests below — one consistent BuyerRequest shape for the
+    // listMatchedRequests above — one consistent BuyerRequest shape for the
     // frontend to type against, not two different ones per endpoint.
     const requestObj = withoutBuyerPhone({
       ...request.toObject(),
       id: String(request._id),
-      myDecision: myResponse?.decision ?? null,
+      // Decision, their own quote and whether the buyer messaged THEM —
+      // only this vendor's OWN response, never another vendor's.
+      ...ownAnswer(myResponse),
     });
 
     res.status(200).json({

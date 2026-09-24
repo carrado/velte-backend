@@ -4,6 +4,7 @@ import Product from "../../models/Product.model.js";
 import Store from "../../models/Store.model.js";
 import LeadCooldown from "../../models/LeadCooldown.model.js";
 import BuyerRequest from "../../models/BuyerRequest.model.js";
+import BuyerRequestResponse from "../../models/BuyerRequestResponse.model.js";
 import { debitWalletForLead } from "../wallet/wallet.controller.js";
 import { notifyUser } from "../../services/pushNotification.service.js";
 
@@ -102,6 +103,20 @@ export async function chargeLead(req, res, next) {
       ).catch((err) => {
         console.error(
           `[chargeLead] failed to close request ${requestId}:`,
+          err.message,
+        );
+      });
+      // And record WHICH business they picked — the vendor's "Won" history
+      // reads this (see BuyerRequestResponse.contactedAt). Before the
+      // cooldown check below on purpose: a cooled-down click still means the
+      // buyer chose them. `contactedAt: null` in the filter keeps the FIRST
+      // contact time, so a buyer reopening the chat next week doesn't move it.
+      BuyerRequestResponse.updateOne(
+        { requestId, vendorId, contactedAt: null },
+        { $set: { contactedAt: new Date() } },
+      ).catch((err) => {
+        console.error(
+          `[chargeLead] failed to record contact on ${requestId}/${vendorId}:`,
           err.message,
         );
       });

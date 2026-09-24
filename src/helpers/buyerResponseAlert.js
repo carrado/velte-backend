@@ -1,5 +1,6 @@
 import { sendBuyerResponseEmail } from "./buyerResponseEmail.js";
 import { sendSms } from "../services/sendchamp.service.js";
+import { smsShortLink } from "./shortLinks.js";
 
 // One place that decides HOW a buyer hears that their request was answered
 // (2026-09-03). Extracted on its own for a simple reason: more than one
@@ -29,15 +30,22 @@ function smsNaira(kobo) {
   return `NGN ${Math.round(kobo / 100).toLocaleString("en-NG")}`;
 }
 
-function buildSms({ count, cheapestKobo }) {
-  const who = count === 1 ? "A business has" : `${count} businesses have`;
+function buildSms({ count, cheapestKobo, link }) {
+  const who =
+    count === 1 ? "A business sent an offer" : `${count} businesses sent offers`;
   // The cheapest quote is the one fact worth paying a segment to carry: it
   // is what tells someone whether opening the app right now is worth it.
   const price =
     cheapestKobo != null
       ? ` Best price so far: ${smsNaira(cheapestKobo)}.`
       : "";
-  const msg = `Velte: ${who} answered your request.${price} Open Velte to compare and choose.`;
+  // The link (2026-09-24) opens the buyer's requests page, where the offers
+  // sit side by side and Message starts the chat — the whole next step, one
+  // tap from the text. Without one (link minting failed), the old line.
+  const next = link
+    ? ` Compare and pick one: ${link}`
+    : " Open Velte to compare and choose.";
+  const msg = `Velte: ${who} on your request.${price}${next}`;
   return msg.length > SMS_HARD_CAP ? msg.slice(0, SMS_HARD_CAP) : msg;
 }
 
@@ -77,11 +85,18 @@ export async function notifyBuyerOfResponses({
       const priced = responders
         .map((r) => r.priceKobo)
         .filter((p) => typeof p === "number" && p > 0);
+      // One code per request, so every "offers arrived" text for the same
+      // request reuses it. A failed mint just means the linkless wording.
+      const link = await smsShortLink(
+        `buyer-requests:${request._id}`,
+        "/chat/requests",
+      ).catch(() => null);
       await sendSms(
         buyer.phone,
         buildSms({
           count: responders.length,
           cheapestKobo: priced.length ? Math.min(...priced) : null,
+          link,
         }),
       );
       texted = true;
