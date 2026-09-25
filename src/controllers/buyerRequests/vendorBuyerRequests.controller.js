@@ -1,7 +1,56 @@
 import BuyerRequest from "../../models/BuyerRequest.model.js";
 import BuyerRequestResponse from "../../models/BuyerRequestResponse.model.js";
+import Store from "../../models/Store.model.js";
+import User from "../../models/Users.js";
 import { AppError } from "../../middleware/errorHandler.js";
+import { notifyOwner } from "../../services/pushNotification.service.js";
 import { canAffordLead } from "../wallet/wallet.controller.js";
+
+/** Tells the buyer the moment a vendor accepts (2026-09-24) — in-app + PWA
+ *  push, both free to send. The SMS/email sweep
+ *  (jobs/buyerRequestNotifications.job.js) still batches every 3h on its own
+ *  watermark and is untouched by this: SMS costs money per send, push does
+ *  not, so push is the instant channel and SMS the paid backstop.
+ *
+ *  Named the same way the sweep's describeResponders does — store name,
+ *  business name, account name — so the push, the text and the requests page
+ *  all call the vendor the same thing. Never throws: a failed push must not
+ *  fail an accept that has already been written. */
+async function pushAcceptToBuyer(request, vendorId, quote) {
+  try {
+    const [store, vendor] = await Promise.all([
+      Store.findOne({ vendorId }).select("name").lean(),
+      User.findById(vendorId).select("name company.name").lean(),
+    ]);
+    const who =
+      store?.name || vendor?.company?.name || vendor?.name || "A business";
+    const price =
+      typeof quote?.priceKobo === "number" && quote.priceKobo > 0
+        ? ` — ₦${Math.round(quote.priceKobo / 100).toLocaleString("en-NG")}`
+        : "";
+    const preview =
+      request.description.length > 60
+        ? `${request.description.slice(0, 60)}…`
+        : request.description;
+    await notifyOwner(
+      { ownerId: request.buyerId, ownerType: "buyer" },
+      {
+        type: "buyer-request",
+        title: `${who} sent you an offer${price}`,
+        body: `For your request: ${preview} Tap to compare and pick one.`,
+        url: "/chat/requests",
+        // Per request, so several accepts on one request stack into a single
+        // OS notification rather than a pile — the latest one wins.
+        tag: `buyer-request-${request._id}`,
+      },
+    );
+  } catch (err) {
+    console.error(
+      `[buyerRequests] buyer push failed for request ${request._id}:`,
+      err?.message ?? err,
+    );
+  }
+}
 
 // Strips the buyer's WhatsApp number off a lean/plain BuyerRequest object.
 // ALWAYS, for every vendor, accepted or not (2026-09-03).
@@ -305,6 +354,13 @@ export async function decideOnRequest(req, res, next) {
         $set: { lastResponseAt: new Date() },
       },
     );
+
+    // Fire-and-forget: the vendor's response does not wait on the buyer's
+    // devices. Legacy requests with no account behind them have nobody to
+    // push to — the SMS sweep skips those too.
+    if (decision === "accepted" && request.buyerId) {
+      pushAcceptToBuyer(request, req.user.userId, quote);
+    }
 
     res.status(201).json({
       success: true,
