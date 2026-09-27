@@ -43,10 +43,21 @@ export const register = async (req, res) => {
     } = req.body;
 
     // 🔹 Validate required fields
-    if (!name || !email || !password || !businessName || !username) {
+    //
+    // `phone` is required as of 2026-09-27, per explicit product direction.
+    // It was optional before — `phone: phone || null` below — which left
+    // vendor accounts with no number at all. That was survivable while a
+    // vendor only ever REACHED OUT to buyers; it stopped being survivable
+    // once a vendor could post their own Buyer Request, because the number
+    // that request is answered on is this one (it is also what Store.whatsapp
+    // is populated from, see below).
+    //
+    // The check that it is UNIQUE already exists and is not new here — see
+    // the block further down, which also rejects a number already on a Buyer.
+    if (!name || !email || !password || !businessName || !username || !phone) {
       return res.status(400).json({
         message:
-          "Name, email, password, business name and username are required fields",
+          "Name, email, password, business name, username and phone number are required fields",
       });
     }
 

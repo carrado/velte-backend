@@ -16,10 +16,19 @@ const MATCHING_SERVICE_URL = process.env.STAFFLY_AI_BACKEND_URL;
 const INTERNAL_SERVICE_SECRET = process.env.INTERNAL_SERVICE_SECRET;
 
 /**
- * @param {{ queryText: string, lat?: number, lng?: number, imageUrl?: string }} params
+ * @param {{ queryText: string, lat?: number, lng?: number, imageUrl?: string, excludeVendorId?: string }} params
  * @returns {Promise<string[]>} matched vendor ObjectId strings, deduped
  */
-export async function matchBuyerRequestToVendors({ queryText, lat, lng, imageUrl }) {
+export async function matchBuyerRequestToVendors({
+  queryText,
+  lat,
+  lng,
+  imageUrl,
+  // A vendor's own request is never referred back to them (2026-09-27) —
+  // see the internal matcher's own filter. Absent for a buyer's request,
+  // which can't belong to any vendor.
+  excludeVendorId,
+}) {
   if (!MATCHING_SERVICE_URL || !INTERNAL_SERVICE_SECRET) {
     console.error(
       "[matchingClient] STAFFLY_AI_BACKEND_URL / INTERNAL_SERVICE_SECRET not configured — " +
@@ -35,7 +44,7 @@ export async function matchBuyerRequestToVendors({ queryText, lat, lng, imageUrl
         "Content-Type": "application/json",
         "x-internal-secret": INTERNAL_SERVICE_SECRET,
       },
-      body: JSON.stringify({ queryText, lat, lng, imageUrl }),
+      body: JSON.stringify({ queryText, lat, lng, imageUrl, excludeVendorId }),
     });
 
     if (!res.ok) {

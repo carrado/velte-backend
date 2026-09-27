@@ -11,6 +11,7 @@ import {
   verifyBuyerAuth,
   attachBuyerIfPresent,
 } from "../middleware/buyerAuth.js";
+import { resolveActor } from "../middleware/resolveActor.js";
 
 const router = express.Router();
 
@@ -69,17 +70,20 @@ router.post(
   attachBuyerIfPresent,
   firebaseSignIn,
 );
-// verifyBuyerAuth, not attachBuyerIfPresent (2026-08-29, per explicit product
-// direction). Proving a phone is no longer something a stranger can do: you
-// sign up with Google FIRST, and only then attach a number. The anonymous
-// half of both handlers is gone with it, because the `phoneToken` it minted
-// was only ever accepted by POST /buyer-requests, which now requires a real
-// account too.
+// resolverActor, not verifyBuyerAuth (2026-09-27). Still signed-in-only —
+// the anonymous half of both handlers is gone for good (see above) — but a
+// VENDOR session counts too now: choosing "another number" for a Buyer
+// Request runs through exactly this OTP, and a vendor posting one used to
+// hit a 401 here because only the buyer cookie was accepted.
 //
-// This also removes the last way to spend an SMS without an account —
+// resolveActor never fails a request (it leaves `req.actor` null), so each
+// controller 401s on that itself — same "the route decides what an
+// unauthenticated caller means" split credits.routes.js already uses.
+//
+// This keeps removing the last way to spend an SMS without an account:
 // previously anyone could burn one code per number, rate-limited but free.
-router.post("/request-otp", otpRequestLimiter, verifyBuyerAuth, requestOtp);
-router.post("/verify-otp", otpVerifyLimiter, verifyBuyerAuth, verifyOtp);
+router.post("/request-otp", otpRequestLimiter, resolveActor, requestOtp);
+router.post("/verify-otp", otpVerifyLimiter, resolveActor, verifyOtp);
 router.get("/me", verifyBuyerAuth, me);
 router.post("/logout", logout);
 

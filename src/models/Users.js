@@ -53,6 +53,38 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: null,
   },
+  // ── A request-scoped alternate number (2026-09-27) ────────────────────
+  //
+  // A vendor posting a Buyer Request is offered their signup number (the
+  // WhatsApp they trade under, above) as the default, and may prove a
+  // DIFFERENT number for that request by OTP. Deliberately NOT written to
+  // `phone`: that field is the vendor's business WhatsApp, and overwriting it
+  // because they once bought something for a relative would change the
+  // number customers already reach them on.
+  //
+  // `requestPhone` is only ever set by a successful OTP, so its presence IS
+  // the proof — no separate verified flag, and nothing accepts a number the
+  // client typed. It is CLEARED once a request consumes it (see
+  // buyerRequests.controller.js), so the next request again defaults to the
+  // signup number and asks, rather than silently reusing the alternate.
+  requestPendingPhone: {
+    type: String,
+    default: null,
+  },
+  requestPhone: {
+    type: String,
+    default: null,
+  },
+  requestPhoneOtp: {
+    code: {
+      type: Number,
+      default: null,
+    },
+    expiresAt: {
+      type: Date,
+      default: null,
+    },
+  },
   username: {
     type: String,
     default: null,

@@ -1,6 +1,6 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
-import { verifyBuyerAuth } from "../middleware/buyerAuth.js";
+import { resolveActor } from "../middleware/resolveActor.js";
 import {
   createRequest,
   listMyRequests,
@@ -8,17 +8,36 @@ import {
 
 const router = express.Router();
 
-// verifyBuyerAuth (2026-08-29, per explicit product direction): posting a
-// Buyer Request now requires a real account. It previously also accepted a
-// `phoneToken` — a bare proof of one number from someone with no account —
-// on the reasoning that reaching out was the one thing an anonymous buyer
-// most needed to be able to do.
+// EITHER session, not buyer-only (2026-09-27, explicit product direction).
 //
-// That reasoning is overridden deliberately, and the trade is real: fewer
-// requests will be posted. What is bought is that every request has an
-// account behind it — reachable later, holding its own history, and
-// answerable for what it asked for. Sign up, THEN prove a number.
-router.use(verifyBuyerAuth);
+// Was `verifyBuyerAuth` alone (2026-08-29), which made posting a Buyer
+// Request buyer-only — and that was right while the only person who could
+// want one was a buyer. A VENDOR buys things other than what they sell, and
+// /chat is where they do it: a vendor signed into /chat with their vendor
+// cookie was told to "sign in first", while already being signed in.
+//
+// `resolveActor` is the same either-session resolver credits.routes.js and
+// notifications.routes.js already mount, and it sets `req.actor = { id,
+// type }`. Its own linked-identity rule matters here too: a buyer carrying
+// `Buyer.linkedVendorId` resolves AS the vendor, so a vendor who signed into
+// /chat with Google on their own vendor email posts as themselves rather
+// than as the shadow buyer account Firebase created.
+//
+// The 2026-08-29 decision this replaces is NOT reversed: every request still
+// has a real, verified ACCOUNT behind it (an email-verified User or a
+// Firebase Buyer). What changed is that a vendor account now qualifies. The
+// `phoneToken` path — a bare proof of a number with no account at all —
+// stays gone.
+//
+// Still 401s an anonymous caller: resolveActor never fails a request (it
+// leaves `req.actor` null), so the guard is explicit and lives here, once,
+// rather than in each controller.
+router.use(resolveActor, (req, res, next) => {
+  if (!req.actor) {
+    return res.status(401).json({ success: false, message: "Not authenticated" });
+  }
+  next();
+});
 
 // Named constant, not a magic number — same pattern as wallet.routes.js's
 // initLimiter.

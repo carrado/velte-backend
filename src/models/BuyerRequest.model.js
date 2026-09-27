@@ -19,6 +19,33 @@ const buyerRequestSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    // ── Ownership is polymorphic (2026-09-27) ─────────────────────────────
+    //
+    // A VENDOR can post a request too — a vendor buys things other than what
+    // they sell, and /chat is where they do it. `ownerType` says which
+    // document `buyerId`/`vendorId` points at; `vendorId` is a User.
+    //
+    // Two fields rather than one polymorphic ref, and `ownerType` defaults to
+    // "buyer": every row written before this existed is a buyer's, so there
+    // is nothing to migrate and no read path has to guess.
+    //
+    // The request is still scoped to the actor that posted it and nobody
+    // else: a vendor's own request must never be matched back to them (see
+    // services/matchingClient.service.js's excludeVendorId), and their list
+    // reads only their own — /chat/requests is "requests I posted", while the
+    // dashboard's buyer-requests page stays "requests referred TO me".
+    ownerType: {
+      type: String,
+      enum: ["buyer", "vendor"],
+      default: "buyer",
+      index: true,
+    },
+    vendorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
     // Snapshotted straight onto the request at creation time (2026-08-18),
     // not read live off the Buyer doc — Buyer.model.js no longer carries a
     // name at all (buyers stay anonymous otherwise; see its own comment),

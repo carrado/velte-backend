@@ -48,20 +48,65 @@ export async function createRequest(req, res, next) {
       budget = Math.round(budgetKobo);
     }
 
-    // One way to get here since 2026-08-29: a signed-in buyer, guaranteed by
-    // verifyBuyerAuth on the route. The `phoneToken` path — someone with no
-    // account who had just proved a number for this one request — is gone.
-    const buyer = await Buyer.findById(req.buyer.buyerId);
-    if (!buyer) return next(new AppError("Buyer not found.", 404));
+    // Who is posting (2026-09-27). Two ways in since a VENDOR can post too —
+    // a vendor buys things other than what they sell, and /chat is where they
+    // do it. `req.actor` is resolveActor's `{ id, type }`, set on the route.
+    const actor = req.actor;
+    if (!actor) return next(new AppError("Not authenticated.", 401));
 
-    // Their own PROVEN number. `phoneVerified` is checked rather than
-    // trusting `phone` to be non-null — and the reason changed on 2026-09-03
-    // without the check changing. It used to be that vendors received this
-    // number, so an unproven one was a lead nobody could follow. Vendors never
-    // receive it now; what an unproven number would do instead is point our
-    // own "businesses answered" SMS at a stranger who never asked for it.
-    const buyerPhone = buyer.phoneVerified ? buyer.phone : null;
-    if (!buyerPhone) {
+    let ownerType;
+    let buyerId = null;
+    let vendorId = null;
+    let ownerPhone = null;
+    // Set when the number came from an OTP-proven alternate rather than the
+    // vendor's signup WhatsApp — see the vendor branch below, and the clear
+    // right after the request is created.
+    let consumedRequestPhone = false;
+
+    if (actor.type === "buyer") {
+      const buyer = await Buyer.findById(actor.id);
+      if (!buyer) return next(new AppError("Buyer not found.", 404));
+      ownerType = "buyer";
+      buyerId = buyer._id;
+      // Their own PROVEN number. `phoneVerified` is checked rather than
+      // trusting `phone` to be non-null — and the reason changed on
+      // 2026-09-03 without the check changing. It used to be that vendors
+      // received this number, so an unproven one was a lead nobody could
+      // follow. Vendors never receive it now; what an unproven number would
+      // do instead is point our own "businesses answered" SMS at a stranger
+      // who never asked for it.
+      ownerPhone = buyer.phoneVerified ? buyer.phone : null;
+    } else {
+      const user = await User.findById(actor.id)
+        .select("phone requestPhone")
+        .lean();
+      if (!user) return next(new AppError("Account not found.", 404));
+      ownerType = "vendor";
+      vendorId = user._id;
+      // An ALTERNATE number proven by OTP for this request wins over the
+      // signup one (2026-09-27) — see Users.js's own `requestPhone` comment.
+      // Its presence IS the proof (nothing but a successful verify-otp ever
+      // writes it), so no number from the request body is ever trusted here.
+      //
+      // Falls back to the vendor's OWN signup number — the WhatsApp they
+      // already trade under, and the same value Store.whatsapp is populated
+      // from (controllers/auth/auth.js). Used as-is, without a second OTP
+      // round: it is the number on their own email-verified account, not a
+      // value typed into a chat box, so it is not the third-party-SMS risk
+      // the buyer-side `phoneVerified` requirement exists to stop.
+      const alternate =
+        typeof user.requestPhone === "string" && user.requestPhone.trim()
+          ? user.requestPhone.trim()
+          : null;
+      if (alternate) consumedRequestPhone = true;
+      ownerPhone =
+        alternate ??
+        (typeof user.phone === "string" && user.phone.trim()
+          ? user.phone.trim()
+          : null);
+    }
+
+    if (!ownerPhone) {
       // Returned directly rather than through AppError, which carries only
       // (message, statusCode); the frontend branches on `code`, not on the
       // wording. The CODE is the point: this is the ordinary next step in
@@ -74,6 +119,7 @@ export async function createRequest(req, res, next) {
         code: "phone_required",
       });
     }
+    const buyerPhone = ownerPhone;
 
     // Only ever the location explicitly granted for THIS request — buyers
     // have no saved/remembered location to fall back to (2026-08-18, see
@@ -133,6 +179,12 @@ export async function createRequest(req, res, next) {
             queryText === description.trim() && typeof imageUrl === "string"
               ? imageUrl
               : undefined,
+          // A vendor's own request is never referred back to them
+          // (2026-09-27). Without this their own store matches the very
+          // request they just posted — they would be texted, pushed and
+          // listed as a responder to themselves. Absent for a buyer, whose
+          // request can't belong to any vendor.
+          excludeVendorId: actor.type === "vendor" ? actor.id : undefined,
         }),
       ),
     );
@@ -143,10 +195,11 @@ export async function createRequest(req, res, next) {
     }
 
     const request = await BuyerRequest.create({
-      // Null for an anonymous buyer — the request stands entirely on its own
-      // snapshot (name + phone below), which is where a buyer's details have
-      // always lived anyway. See BuyerRequest.model.js.
-      buyerId: buyer?._id ?? null,
+      // Which document owns this request — see BuyerRequest.model.js's own
+      // ownerType comment. Exactly one of the two ids is ever set.
+      ownerType,
+      buyerId,
+      vendorId,
       buyerName: name.trim(),
       buyerPhone,
       description: description.trim(),
@@ -156,10 +209,27 @@ export async function createRequest(req, res, next) {
       matchedVendorIds,
     });
 
+    // The alternate number was proven for THIS request only — see Users.js's
+    // own `requestPhone` comment. Cleared now so the next request again
+    // defaults to the vendor's signup WhatsApp and asks, rather than
+    // silently reusing the alternate for something unrelated. Best-effort,
+    // like every other side effect here: the request is already created and
+    // must not be rolled back over a failed bookkeeping write.
+    if (consumedRequestPhone) {
+      User.updateOne({ _id: vendorId }, { $set: { requestPhone: null } }).catch(
+        (err) => {
+          console.error(
+            `[buyerRequests] clearing consumed requestPhone failed for vendor ${vendorId}:`,
+            err.message,
+          );
+        },
+      );
+    }
+
     // Best-effort, all of these — never let any failure roll back the
     // request that was just created.
     sendSms(
-      buyer.phone,
+      buyerPhone,
       "Velte: Your request has been received. We'll notify you when vendors respond.",
     ).catch((err) => {
       console.error(
@@ -237,7 +307,24 @@ export async function createRequest(req, res, next) {
 // over WhatsApp, and the store page carries its own contact button.
 export async function listMyRequests(req, res, next) {
   try {
-    const requests = await BuyerRequest.find({ buyerId: req.buyer.buyerId })
+    const actor = req.actor;
+    if (!actor) return next(new AppError("Not authenticated.", 401));
+
+    const requests = await BuyerRequest.find(
+      // Own requests only, whichever kind of account is asking (2026-09-27).
+      // This is "requests I POSTED" and nothing else — the requests referred
+      // TO a vendor from other people's buyers stay on the dashboard's own
+      // page (vendorBuyerRequests.routes.js), which is the other half of the
+      // pair and deliberately not reachable from here.
+      //
+      // Keyed on the id alone, not on `ownerType` too: every row written
+      // before ownership became polymorphic has no `ownerType` field at all
+      // (a schema default only applies to new documents), so filtering on it
+      // would hide a buyer's own older requests from them.
+      actor.type === "vendor"
+        ? { vendorId: actor.id }
+        : { buyerId: actor.id },
+    )
       .sort({ createdAt: -1 })
       // A cap, not pagination — a buyer with more than 50 requests behind
       // them is not a case that exists yet, and an unbounded find is the
