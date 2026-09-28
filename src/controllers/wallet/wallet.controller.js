@@ -700,15 +700,20 @@ export async function getTransactions(req, res, next) {
 // keep with Velte, and making them re-enter a card to spend it is the kind of
 // friction that stops a vendor using their own product.
 //
-// The pack table is the same one a card buys from, at the same naira price --
-// so a credit costs a vendor exactly what it costs a buyer, and the funding
-// source is genuinely just a funding source rather than a second price list.
+// The RATE is the same one a card buys at, for the same naira amount -- so a
+// credit costs a vendor exactly what it costs a buyer, and the funding source
+// is genuinely just a funding source rather than a second price list.
+//
+// Takes a `{ priceNgn, credits }` purchase (was a pack object; the rate is
+// amount-derived since 2026-09-28) rather than re-deriving the credits itself,
+// so the caller — initWalletTopUp, via creditsForAmount — stays the one place
+// that computes them.
 //
 // Debit FIRST, then grant. The reverse would hand out credits a failed debit
 // never paid for; this way the worst case is a debit whose grant failed, which
 // is reversed below and visible in the ledger either way.
-export async function debitWalletForCredits(vendorId, pack, reference) {
-  const amountKobo = pack.priceNgn * 100;
+export async function debitWalletForCredits(vendorId, purchase, reference) {
+  const amountKobo = purchase.priceNgn * 100;
 
   const wallet = await Wallet.findOneAndUpdate(
     { vendorId, balanceKobo: { $gte: amountKobo } },
@@ -730,7 +735,7 @@ export async function debitWalletForCredits(vendorId, pack, reference) {
       reference,
       status: "success",
       channel: "credits",
-      description: `${pack.credits} search credits`,
+      description: `${purchase.credits} search credits`,
     });
   } catch (err) {
     // A duplicate reference means this exact purchase already posted -- the

@@ -2,7 +2,12 @@ import crypto from "crypto";
 
 import Credits from "../../models/Credits.model.js";
 import { AppError } from "../../middleware/errorHandler.js";
-import { CREDIT_PACKS, packFor } from "../../config/creditPacks.js";
+import {
+  MIN_TOPUP_NGN,
+  MAX_TOPUP_NGN,
+  creditsForAmount,
+  packFor,
+} from "../../config/creditPacks.js";
 import {
   VENDOR_CATALOG_GRANTS,
   catalogGrantCode,
@@ -390,15 +395,45 @@ export async function syncVendorCatalogCredits(vendorId) {
 
 // ── GET /api/credits/packs ───────────────────────────────────────────────
 //
-// The price list, from the table that actually charges. Public on purpose —
-// the credits panel needs it before anyone signs in — and it exposes nothing
-// but prices meant to be published.
+// The top-up RATE, from the table that actually charges (2026-09-28 — was the
+// four-pack ladder). Public on purpose — the credits panel needs it before
+// anyone signs in — and it exposes nothing but numbers meant to be published.
 export async function listPacks(_req, res, next) {
   try {
-    return res.json({ success: true, data: { packs: CREDIT_PACKS } });
+    return res.json({
+      success: true,
+      data: {
+        minTopUpNgn: MIN_TOPUP_NGN,
+        maxTopUpNgn: MAX_TOPUP_NGN,
+        creditsAtMinTopUp: creditsForAmount(MIN_TOPUP_NGN),
+      },
+    });
   } catch (err) {
     next(err);
   }
+}
+
+/**
+ * Validates a client-supplied top-up amount and derives the credits it buys.
+ * The amount is a REQUEST the buyer makes; the credit count is never taken
+ * from the request — it is computed here from the rate, the same way every
+ * other price in this file is.
+ */
+function resolveTopUp(body) {
+  const amountNgn = body?.amountNgn;
+  if (!Number.isInteger(amountNgn) || amountNgn < MIN_TOPUP_NGN) {
+    throw new AppError(
+      `The minimum top-up is ₦${MIN_TOPUP_NGN.toLocaleString("en-NG")}.`,
+      400,
+    );
+  }
+  if (amountNgn > MAX_TOPUP_NGN) {
+    throw new AppError(
+      `The most you can top up at once is ₦${MAX_TOPUP_NGN.toLocaleString("en-NG")}.`,
+      400,
+    );
+  }
+  return { amountNgn, credits: creditsForAmount(amountNgn) };
 }
 
 function modelForActorType(type) {
@@ -432,18 +467,17 @@ function callbackUrl() {
 
 // ── POST /api/credits/checkout ───────────────────────────────────────────
 //
-// Body: { packId: "shopper" }
+// Body: { amountNgn: 5000 }
 // 200:  { success, data: { authorizationUrl, reference, amountKobo } }
 //
-// The caller names the PACK. The price and the credit count come from this
-// repo's own table — never from the request — for the same reason plan prices
-// never travelled from the client: a caller that could name the amount could
-// name a smaller one.
+// The caller names an AMOUNT. The credits it buys come from this repo's own
+// rate — never from the request — for the same reason plan prices never
+// travelled from the client: a caller that could name the credit count could
+// name a bigger one.
 export async function initTopUp(req, res, next) {
   try {
     if (!req.actor) throw new AppError("Not authenticated.", 401);
-    const pack = packFor(req.body?.packId);
-    if (!pack) throw new AppError("Unknown credit pack.", 400);
+    const { amountNgn, credits } = resolveTopUp(req.body);
 
     const account = await modelForActorType(req.actor.type)
       .findById(req.actor.id)
@@ -470,7 +504,7 @@ export async function initTopUp(req, res, next) {
     const result = await initializeTransaction({
       email: account.email,
       // initializeTransaction takes NAIRA and converts — see its own comment.
-      amount: pack.priceNgn,
+      amount: amountNgn,
       reference,
       callbackUrl: callbackUrl(),
       metadata: {
@@ -480,11 +514,18 @@ export async function initTopUp(req, res, next) {
         type: "credit_topup",
         ownerId: String(req.actor.id),
         ownerType: req.actor.type,
-        packId: pack.id,
+        // The credits THIS checkout buys, computed above from the amount. The
+        // webhook and the verify path read this rather than recomputing, so
+        // the number that lands is the one quoted at checkout.
+        credits,
         // Recorded so a mismatch between what we meant to charge and what
         // Paystack reports is visible in the webhook rather than silent.
-        amountKobo: pack.priceNgn * 100,
+        amountKobo: amountNgn * 100,
       },
+      // Card OR bank transfer — the buyer picks on Paystack's own page. The
+      // vendor lead-wallet top-up has offered both since 2026-09-03; this
+      // brings the credits checkout to the same set.
+      channels: ["card", "bank_transfer"],
       // No subaccount: credits are Velte's own revenue, not a marketplace
       // payment being split to a vendor.
     });
@@ -507,7 +548,7 @@ export async function initTopUp(req, res, next) {
       data: {
         authorizationUrl,
         reference,
-        amountKobo: pack.priceNgn * 100,
+        amountKobo: amountNgn * 100,
       },
     });
   } catch (err) {
@@ -517,7 +558,7 @@ export async function initTopUp(req, res, next) {
 
 // ── POST /api/credits/wallet-topup ───────────────────────────────
 //
-// Body: { packId: "shopper" }
+// Body: { amountNgn: 5000 }
 // 200:  { success, data: { balance, credits, amountKobo, walletBalanceKobo } }
 //
 // VENDORS ONLY, and the only thing on Velte that spends wallet money on
@@ -526,7 +567,7 @@ export async function initTopUp(req, res, next) {
 // vendor using their own product. Buyers have no wallet, so for them this
 // simply does not exist.
 //
-// Same packs, same naira prices as the card route. The funding source is a
+// Same rate, same naira amount as the card route. The funding source is a
 // funding source, not a second price list -- a credit costs a vendor exactly
 // what it costs a buyer.
 //
@@ -551,24 +592,30 @@ export async function initWalletTopUp(req, res, next) {
         403,
       );
     }
-    const pack = packFor(req.body?.packId);
-    if (!pack) throw new AppError("Unknown credit pack.", 400);
+    const { amountNgn, credits } = resolveTopUp(req.body);
 
     // Ours, random, and carrying nothing about who bought what -- the same
     // discipline as the Paystack reference above. `vcredw` (w for wallet)
     // keeps the two purchase kinds distinguishable in the ledger at a glance.
     const reference = `vcredw_${crypto.randomBytes(12).toString("hex")}`;
 
-    const debit = await debitWalletForCredits(req.actor.id, pack, reference);
+    // The debit helper takes the same `{ priceNgn, credits }` shape a pack
+    // always had, so only the source of those two numbers changed -- not the
+    // helper's own contract.
+    const debit = await debitWalletForCredits(
+      req.actor.id,
+      { priceNgn: amountNgn, credits },
+      reference,
+    );
     if (!debit.debited) {
       if (debit.reason === "already_paid") {
         throw new AppError("That purchase already went through.", 409);
       }
       // Named amounts, because the vendor's next action depends on the gap.
       throw new AppError(
-        `Your Velte wallet doesn't have the ₦${pack.priceNgn.toLocaleString(
+        `Your Velte wallet doesn't have the ₦${amountNgn.toLocaleString(
           "en-NG",
-        )} for this pack. Top the wallet up, or pay with a card.`,
+        )} for this top-up. Top the wallet up, or pay with a card.`,
         402,
       );
     }
@@ -581,7 +628,7 @@ export async function initWalletTopUp(req, res, next) {
         req.actor.id,
         "vendor",
         `topup:${reference}`,
-        pack.credits,
+        credits,
       );
     } catch (err) {
       // The money left the wallet and the credits never arrived. Put it back
@@ -595,14 +642,14 @@ export async function initWalletTopUp(req, res, next) {
     }
 
     console.log(
-      `[credits] +${pack.credits} to vendor ${req.actor.id} from wallet (${reference}), balance ${granted.balance}`,
+      `[credits] +${credits} to vendor ${req.actor.id} from wallet (${reference}), balance ${granted.balance}`,
     );
 
     return res.json({
       success: true,
       data: {
         balance: granted.balance,
-        credits: pack.credits,
+        credits,
         amountKobo: debit.amountKobo,
         // So the panel can redraw the wallet figure it just spent from
         // without a second request.
@@ -631,9 +678,18 @@ export async function initWalletTopUp(req, res, next) {
  * two top-ups for one payment.
  */
 export async function creditFromCharge(meta) {
-  const { ownerId, ownerType, packId, reference } = meta ?? {};
-  const pack = packFor(packId);
-  if (!ownerId || !pack || !reference) {
+  const { ownerId, ownerType, credits, packId, reference } = meta ?? {};
+  // Current checkouts carry the credit count directly, computed at checkout
+  // from the amount (see initTopUp). A transaction opened just before the
+  // amount-input change (2026-09-28) carries a packId instead, so it is
+  // resolved from the RETIRED ladder — the same "leave a trap for the
+  // in-flight case" reasoning the subscription webhook uses for retired
+  // buyer plans. A payment made across that deploy still credits correctly.
+  const amount =
+    Number.isInteger(credits) && credits > 0
+      ? credits
+      : (packFor(packId)?.credits ?? 0);
+  if (!ownerId || !amount || !reference) {
     console.error(
       "[credits] charge.success with unusable metadata — ignored:",
       JSON.stringify(meta),
@@ -644,11 +700,11 @@ export async function creditFromCharge(meta) {
     ownerId,
     ownerType === "vendor" ? "vendor" : "buyer",
     `topup:${reference}`,
-    pack.credits,
+    amount,
   );
   if (granted) {
     console.log(
-      `[credits] +${pack.credits} to ${ownerType} ${ownerId} (${reference}), balance ${balance}`,
+      `[credits] +${amount} to ${ownerType} ${ownerId} (${reference}), balance ${balance}`,
     );
   }
 }
