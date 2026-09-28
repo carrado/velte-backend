@@ -68,6 +68,14 @@ function cookieOptions() {
   };
 }
 
+// Same attributes minus maxAge — res.clearCookie already expires the cookie,
+// and passing maxAge is deprecated (ignored in Express v5).
+function clearCookieOptions() {
+  const options = cookieOptions();
+  delete options.maxAge;
+  return options;
+}
+
 // POST /api/buyer-auth/request-otp — { phone }
 // Generates a fresh code and sends it via Sendchamp.
 //
@@ -289,6 +297,6 @@ export async function me(req, res, next) {
 }
 
 export async function logout(_req, res) {
-  res.clearCookie("buyer_auth_token", cookieOptions());
+  res.clearCookie("buyer_auth_token", clearCookieOptions());
   res.status(200).json({ success: true, data: { message: "Logged out." } });
 }

@@ -73,6 +73,14 @@ function cookieOptions() {
   };
 }
 
+// Same attributes minus maxAge — res.clearCookie already expires the cookie,
+// and passing maxAge is deprecated (ignored in Express v5).
+function clearCookieOptions() {
+  const options = cookieOptions();
+  delete options.maxAge;
+  return options;
+}
+
 // POST /api/buyer-auth/firebase — { idToken }
 // Issues the buyer session cookie. The only thing that does.
 /** A short, unambiguous share code. Base32-ish alphabet with no 0/O/1/I, so a
@@ -315,7 +323,7 @@ export async function firebaseSignIn(req, res, next) {
       // kept as two separate definitions rather than a shared import).
       res.cookie("auth_token", vendorToken, cookieOptions());
     } else if (req.cookies?.auth_token) {
-      res.clearCookie("auth_token", cookieOptions());
+      res.clearCookie("auth_token", clearCookieOptions());
     }
 
     // See this file's own header for the claims and why they are shaped

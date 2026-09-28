@@ -245,6 +245,14 @@ function authCookieOptions() {
   };
 }
 
+// Same attributes minus maxAge — res.clearCookie already expires the cookie,
+// and passing maxAge is deprecated (ignored in Express v5).
+function clearCookieOptions() {
+  const options = authCookieOptions();
+  delete options.maxAge;
+  return options;
+}
+
 // Login controller — vendor-only. Buyers never log in at all (2026-08-18,
 // "nothing buyers again on the system") — a buyer's only touchpoint with
 // identity is the one-time phone+OTP check in buyerAuth.controller.js,
@@ -367,7 +375,7 @@ async function loginAsVendor(user, password, req, res) {
       );
       res.cookie("buyer_auth_token", buyerToken, authCookieOptions());
     } else if (req.cookies?.buyer_auth_token) {
-      res.clearCookie("buyer_auth_token", authCookieOptions());
+      res.clearCookie("buyer_auth_token", clearCookieOptions());
     }
 
     // 🔹 Success response
