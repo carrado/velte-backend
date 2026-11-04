@@ -4,10 +4,16 @@
  * Operational error class — errors we expect and handle gracefully.
  * Non-operational errors (programming bugs, DB crashes) bubble up differently.
  */
-export class AppError extends Error {
-    constructor(message, statusCode) {
+  export class AppError extends Error {
+    /**
+     * @param {object} [extra] Top-level fields merged into the error body —
+     *   e.g. `{ code: "phone_required" }`, `{ blocked: true }`. Clients branch
+     *   on these, so they must sit beside `message`, not nested under it.
+     */
+    constructor(message, statusCode, extra) {
       super(message);
       this.statusCode = statusCode;
+      this.extra = extra;
       this.status = statusCode >= 400 && statusCode < 500 ? "fail" : "error";
       this.isOperational = true;
       Error.captureStackTrace(this, this.constructor);
@@ -48,10 +54,15 @@ export class AppError extends Error {
     }
   
     const isDev = process.env.NODE_ENV === "development";
+
+    if (!err.isOperational) {
+      console.error(`💥 UNHANDLED ERROR on ${req.method} ${req.originalUrl}:`, err);
+    }
   
     // Development — include stack trace
     if (isDev) {
       return res.status(err.statusCode).json({
+        ...err.extra,
         success: false,
         status: err.status,
         message: err.message,
@@ -63,6 +74,7 @@ export class AppError extends Error {
     // Production — only expose operational errors; hide internals
     if (err.isOperational) {
       return res.status(err.statusCode).json({
+        ...err.extra,
         success: false,
         status: err.status,
         message: err.message,
@@ -70,7 +82,6 @@ export class AppError extends Error {
     }
   
     // Programming/unknown error in production — don't leak details
-    console.error("💥 UNHANDLED ERROR:", err);
     return res.status(500).json({
       success: false,
       status: "error",

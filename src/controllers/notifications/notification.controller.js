@@ -1,4 +1,5 @@
 import Notification from '../../models/Notification.model.js';
+import { AppError } from '../../middleware/errorHandler.js';
 
 const PAGE_SIZE = 20;
 
@@ -51,10 +52,10 @@ function toClientShape(n) {
   };
 }
 
-export const getNotifications = async (req, res) => {
+export const getNotifications = async (req, res, next) => {
   try {
     const owner = ownerOf(req);
-    if (!owner) return res.status(401).json({ success: false, message: 'Not authenticated.' });
+    if (!owner) throw new AppError('Not authenticated.', 401);
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const skip = (page - 1) * PAGE_SIZE;
 
@@ -74,15 +75,14 @@ export const getNotifications = async (req, res) => {
       page,
     });
   } catch (error) {
-    console.error('Get notifications error:', error);
-    res.status(500).json({ message: 'Failed to retrieve notifications' });
+    next(error);
   }
 };
 
-export const markRead = async (req, res) => {
+export const markRead = async (req, res, next) => {
   try {
     const owner = ownerOf(req);
-    if (!owner) return res.status(401).json({ success: false, message: 'Not authenticated.' });
+    if (!owner) throw new AppError('Not authenticated.', 401);
     const { id } = req.params;
 
     const notification = await Notification.findOneAndUpdate(
@@ -92,45 +92,42 @@ export const markRead = async (req, res) => {
     );
 
     if (!notification) {
-      return res.status(404).json({ message: 'Notification not found' });
+      throw new AppError('Notification not found', 404);
     }
 
     res.status(200).json({ success: true, notification: toClientShape(notification.toObject()) });
   } catch (error) {
-    console.error('Mark read error:', error);
-    res.status(500).json({ message: 'Failed to update notification' });
+    next(error);
   }
 };
 
-export const markAllRead = async (req, res) => {
+export const markAllRead = async (req, res, next) => {
   try {
     const owner = ownerOf(req);
-    if (!owner) return res.status(401).json({ success: false, message: 'Not authenticated.' });
+    if (!owner) throw new AppError('Not authenticated.', 401);
 
     await Notification.updateMany({ ...owner, isRead: false }, { isRead: true });
 
     res.status(200).json({ success: true, message: 'All notifications marked as read' });
   } catch (error) {
-    console.error('Mark all read error:', error);
-    res.status(500).json({ message: 'Failed to update notifications' });
+    next(error);
   }
 };
 
-export const deleteNotification = async (req, res) => {
+export const deleteNotification = async (req, res, next) => {
   try {
     const owner = ownerOf(req);
-    if (!owner) return res.status(401).json({ success: false, message: 'Not authenticated.' });
+    if (!owner) throw new AppError('Not authenticated.', 401);
     const { id } = req.params;
 
     const notification = await Notification.findOneAndDelete({ _id: id, ...owner });
 
     if (!notification) {
-      return res.status(404).json({ message: 'Notification not found' });
+      throw new AppError('Notification not found', 404);
     }
 
     res.status(200).json({ success: true, message: 'Notification deleted' });
   } catch (error) {
-    console.error('Delete notification error:', error);
-    res.status(500).json({ message: 'Failed to delete notification' });
+    next(error);
   }
 };

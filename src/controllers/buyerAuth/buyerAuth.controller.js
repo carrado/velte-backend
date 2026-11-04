@@ -5,6 +5,7 @@ import Buyer from "../../models/Buyer.model.js";
 import User from "../../models/Users.js";
 import { sendSms } from "../../services/sendchamp.service.js";
 import { AppError } from "../../middleware/errorHandler.js";
+import { clearSessionCookieOptions } from "../../utils/authCookies.js";
 
 const OTP_TTL_MS = 10 * 60 * 1000;
 
@@ -55,25 +56,6 @@ const OTP_TTL_MS = 10 * 60 * 1000;
 
 function generateOtp() {
   return Math.floor(100000 + Math.random() * 900000);
-}
-
-function cookieOptions() {
-  const isProd =
-    process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
-  return {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? "none" : "lax",
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-  };
-}
-
-// Same attributes minus maxAge — res.clearCookie already expires the cookie,
-// and passing maxAge is deprecated (ignored in Express v5).
-function clearCookieOptions() {
-  const options = cookieOptions();
-  delete options.maxAge;
-  return options;
 }
 
 // POST /api/buyer-auth/request-otp — { phone }
@@ -297,6 +279,6 @@ export async function me(req, res, next) {
 }
 
 export async function logout(_req, res) {
-  res.clearCookie("buyer_auth_token", clearCookieOptions());
+  res.clearCookie("buyer_auth_token", clearSessionCookieOptions());
   res.status(200).json({ success: true, data: { message: "Logged out." } });
 }

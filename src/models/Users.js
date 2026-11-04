@@ -1,6 +1,28 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 
+// Where a vendor's sales money is released to. Its own schema rather than an
+// inline nested object (the style everything else here uses) for one reason:
+// `select: false` is only reliable on a single schema-typed path, and these
+// fields should never ride along on an ordinary user read — /auth/me returns
+// the whole document, and a bank account is not something every consumer of a
+// user object needs a copy of. Read it with .select("+payout").
+//
+// `accountName` is never typed by the vendor: it comes back from Paystack's
+// /bank/resolve, so what is stored is what the bank itself says owns the
+// number. `recipientCode` is what a payout is actually sent to.
+const payoutSchema = new mongoose.Schema(
+  {
+    bankCode:      { type: String, default: null },
+    bankName:      { type: String, default: null },
+    accountNumber: { type: String, default: null },
+    accountName:   { type: String, default: null },
+    recipientCode: { type: String, default: null },
+    verifiedAt:    { type: Date,   default: null },
+  },
+  { _id: false },
+);
+
 const userSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -132,6 +154,22 @@ const userSchema = new mongoose.Schema({
     required: false,
     default: 'not-verified'
   },
+  // Phase 1.2 — checks that have actually passed. verificationLevel is
+  // DERIVED from these, never written by a client. Badges ("Verified
+  // vendor") read the derived level, never a self-selected flag.
+  verification: {
+    phoneVerifiedAt: { type: Date, default: null },
+    addressVerifiedAt: { type: Date, default: null },
+    cacUploadedAt: { type: Date, default: null },
+    cacReviewedAt: { type: Date, default: null },
+    ninVerifiedAt: { type: Date, default: null },
+    kycProvider: { type: String, default: null },
+    kycReference: { type: String, default: null },
+  },
+  phoneVerified: {
+    type: Boolean,
+    default: false,
+  },
   onboarding: {
     type: Boolean,
     default: true
@@ -172,7 +210,13 @@ const userSchema = new mongoose.Schema({
   // instantly-movable address is an easy way to game "nearest vendor" results.
   addressChangedAt:   { type: Date, default: null },
   trustScore:         { type: Number, default: 0, min: 0, max: 100 },
+  // Dead field: written by nothing, read by nothing. Settlement is by transfer
+  // out of Velte's balance after an order is confirmed, not by a split at
+  // charge time — see payoutSchema above.
   paystackSubaccount: { type: String, default: null },
+  // Settlement destination. Absent until the vendor completes payout
+  // onboarding, which is what makes their products checkout-able at all.
+  payout:             { type: payoutSchema, default: () => ({}), select: false },
   hiddenFromSearch:   { type: Boolean, default: false },
 
   // ── Referrals ──────────────────────────────────────────────────────────────
@@ -206,6 +250,15 @@ const userSchema = new mongoose.Schema({
 });
 
 userSchema.index({ geo: '2dsphere' });
+
+// 0 email · 1 phone OTP · 2 address · 3 CAC reviewed or NIN. Never stored.
+userSchema.virtual("verificationLevel").get(function () {
+  const v = this.verification || {};
+  if (v.ninVerifiedAt || v.cacReviewedAt) return 3;
+  if (v.addressVerifiedAt) return 2;
+  if (v.phoneVerifiedAt || this.phoneVerified) return 1;
+  return 0;
+});
 
 // Two accounts can't share a phone number — a `unique: true` shorthand on
 // the field itself would break the moment a SECOND user registered with no

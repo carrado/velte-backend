@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Product from "../../models/Product.model.js";
 import ModifierOption from "../../models/ModifierOption.model.js";
 import Category from "../../models/Category.model.js";
@@ -16,6 +17,7 @@ import {
   CATEGORY_OPTIONAL_SECTOR_VALUES,
   isKnownSector,
 } from "../../utils/sectorLabels.js";
+import { productSlugFor } from "../../utils/productSlug.js";
 
 // The old "notify buyers who follow this vendor / saved this product"
 // triggers (notifyFollowersOfNewListing, notifySaversOfPriceChange) are gone
@@ -89,6 +91,7 @@ function formatProduct(doc) {
       ...base,
       manufacturing_date: p.manufacturingDate,
       expiration_date: p.expirationDate,
+      quantity: p.quantity ?? null,
       attributes: (p.attributes ?? []).map((a) => ({
         id: a._id,
         name: a.name,
@@ -190,6 +193,14 @@ function validateProductInput(body, vendorSectors) {
     body.thumbnail_urls.length > 5
   ) {
     fields.thumbnail_urls = "Maximum 5 thumbnail URLs allowed";
+  }
+
+  if (!usesFoodShape(body.sector_value, kind) && kind !== "service") {
+    if (body.quantity !== undefined && body.quantity !== null) {
+      if (!Number.isInteger(body.quantity) || body.quantity < 0) {
+        fields.quantity = "quantity must be a whole number of 0 or more";
+      }
+    }
   }
 
   if (!usesFoodShape(body.sector_value, kind)) {
@@ -386,12 +397,17 @@ export const createProduct = async (req, res) => {
         ? await resolveModifiers(body.modifiers, req.user.userId)
         : [];
 
+    const productId = new mongoose.Types.ObjectId();
+    const productName = body.name.trim();
+
     const product = await Product.create({
+      _id: productId,
       vendorId: req.user.userId,
       sectorValue: body.sector_value,
       kind: isService ? "service" : "product",
       quoteOnRequest: isService ? (body.quote_on_request ?? false) : false,
-      name: body.name.trim(),
+      name: productName,
+      slug: productSlugFor(productName, productId),
       description: body.description ?? null,
       categoryId:
         isService || foodShape || categoryOptional ? null : body.category_id,
@@ -409,6 +425,9 @@ export const createProduct = async (req, res) => {
         manufacturingDate: body.manufacturing_date ?? null,
         expirationDate: body.expiration_date ?? null,
         attributes: body.attributes ?? [],
+        ...(!isService && {
+          quantity: body.quantity ?? null,
+        }),
       }),
 
       ...(foodShape && {
@@ -577,6 +596,7 @@ export const updateProduct = async (req, res) => {
         manufacturing_date: "manufacturingDate",
         expiration_date: "expirationDate",
         attributes: "attributes",
+        ...(product.kind !== "service" ? { quantity: "quantity" } : {}),
       };
       for (const [snake, camel] of Object.entries(retailMap)) {
         if (body[snake] !== undefined) product[camel] = body[snake];

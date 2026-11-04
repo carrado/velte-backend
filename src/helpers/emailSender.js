@@ -218,3 +218,44 @@ export const sendPasswordResetEmail = async (to, name, otp) => {
     throw new Error("Failed to send password reser email");
   }
 };
+export const sendSubscriptionExpiryEmail = async ({
+  to,
+  name,
+  planName,
+  intervalLabel,
+  daysRemaining,
+  expiryDate,
+  renewUrl,
+}) => {
+  try {
+    const templatePath = path.join(
+      process.cwd(),
+      "src",
+      "emailTemplates",
+      "subscriptionExpiry.html"
+    );
+
+    let htmlContent = fs.readFileSync(templatePath, "utf8");
+
+    htmlContent = htmlContent
+      .replace(/{{name}}/g, name || "there")
+      .replace(/{{planName}}/g, planName)
+      .replace(/{{intervalLabel}}/g, intervalLabel)
+      .replace(/{{daysRemaining}}/g, daysRemaining)
+      .replace(/{{expiryDate}}/g, expiryDate)
+      .replace(/{{renewUrl}}/g, renewUrl);
+
+    const msg = {
+      to,
+      from: "no-reply@velte.ng",
+      subject: `Your Velte ${planName} subscription expires in ${daysRemaining}`,
+      html: htmlContent,
+    };
+
+    const { error } = await resend.emails.send(msg);
+    if (error) throw new Error(error.message);
+    console.log(`✅ Subscription expiry email sent to ${to} (${daysRemaining})`);
+  } catch (error) {
+    console.error("❌ Error sending subscription expiry email:", error.message || error);
+  }
+};

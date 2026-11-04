@@ -138,6 +138,54 @@ export function validateWebhookSignature(rawBody, signature) {
 }
 
 
+// ── Bank directory + account resolution (vendor payout onboarding) ────────────
+// Velte settles to vendors by TRANSFER, not by subaccount split: the buyer's
+// money lands in Velte's main balance and is released to the vendor once the
+// order is confirmed (escrow). A subaccount would pay the vendor at the moment
+// of charge, which is the thing escrow exists to prevent — so onboarding
+// collects a bank account and turns it into a transfer recipient instead.
+
+/**
+ * The banks Paystack can pay out to, for the vendor's bank picker.
+ * @returns {Promise<Array<{ name: string, code: string, slug: string }>>}
+ */
+export async function listBanks() {
+  const banks = await paystackFetch("/bank?currency=NGN&country=nigeria");
+
+  // Paystack lists several rows under one `code` — the same institution under
+  // different slugs/gateways, plus soft-deleted ones. Deduping is not cosmetic:
+  // the code is what a transfer recipient is created with, so two rows sharing
+  // one code make the vendor's choice ambiguous (and collide as React keys).
+  // First surviving row per code wins; sorted by name because this renders as
+  // a ~200-entry picker.
+  const byCode = new Map();
+  for (const b of banks) {
+    if (b.is_deleted || b.active === false) continue;
+    if (byCode.has(b.code)) continue;
+    byCode.set(b.code, { name: b.name, code: b.code, slug: b.slug });
+  }
+
+  return [...byCode.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Ask the bank who owns an account number. This is the ONLY source of the
+ * account name — a vendor never types it, so a typo'd number fails here rather
+ * than silently creating a recipient that pays a stranger.
+ *
+ * @param {object} params
+ * @param {string} params.accountNumber - 10-digit NUBAN
+ * @param {string} params.bankCode      - Paystack bank code e.g. "058"
+ * @returns {Promise<{ accountName: string, accountNumber: string }>}
+ */
+export async function resolveAccountNumber({ accountNumber, bankCode }) {
+  const data = await paystackFetch(
+    `/bank/resolve?account_number=${encodeURIComponent(accountNumber)}` +
+      `&bank_code=${encodeURIComponent(bankCode)}`,
+  );
+  return { accountName: data.account_name, accountNumber: data.account_number };
+}
+
 /**
  * Create a Paystack transfer recipient for a bank account.
  * Returns the recipient_code needed to initiate a transfer.

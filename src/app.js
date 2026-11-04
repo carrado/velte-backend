@@ -20,13 +20,19 @@ import productsRoutes from "./routes/products.routes.js";
 import modifiersRoutes from "./routes/modifiers.routes.js";
 import categoriesRoutes from "./routes/categories.routes.js";
 import walletRoutes from "./routes/wallet.routes.js";
+import payoutsRoutes from "./routes/payouts.routes.js";
+import cartRoutes from "./routes/cart.routes.js";
+import vendorOrdersRoutes from "./routes/vendorOrders.routes.js";
 import storeRoutes from "./routes/store.routes.js";
+import hubRoutes from "./routes/hub.routes.js";
 import searchRoutes from "./routes/search.routes.js";
 import notificationsRoutes from "./routes/notifications.routes.js";
 import pushRoutes from "./routes/push.routes.js";
 import referralsRoutes from "./routes/referrals.routes.js";
 import shortlinksRoutes from "./routes/shortlinks.routes.js";
 import shoppingPlanRoutes from "./routes/shoppingPlan.routes.js";
+import platformSubscriptionRoutes from "./routes/platformSubscription.routes.js";
+import trustRoutes from "./routes/trust.routes.js";
 import { startKeepAlive } from "./initializers/keepAlive.js";
 import { startWalletLowBalanceCron } from "./initializers/walletLowBalanceCron.js";
 import { startUnverifiedUsersCleanupCron } from "./initializers/unverifiedUsersCleanupCron.js";
@@ -35,6 +41,9 @@ import { startBuyerRequestExpiryCron } from "./initializers/buyerRequestExpiryCr
 import { startBuyerRequestNotificationsCron } from "./jobs/buyerRequestNotifications.job.js";
 import { startBuyerRequestVendorReminderCron } from "./jobs/buyerRequestVendorReminder.job.js";
 import { startShoppingPlanCron } from "./jobs/shoppingPlan.job.js";
+import { startOrderReleaseCron } from "./jobs/orderRelease.job.js";
+import { startSubscriptionExpiryCron } from "./initializers/subscriptionExpiryCron.js";
+
 
 const app = express();
 
@@ -106,7 +115,11 @@ if (env === "production") {
 // Connect to MongoDB
 mongoose
   .connect(dbUri)
-  .then(() => console.log(`✅ Connected to MongoDB (${env})`))
+  .then(async () => {
+    console.log(`✅ Connected to MongoDB (${env})`);
+    const { ensureReviewIndexes } = await import("./models/Review.model.js");
+    await ensureReviewIndexes();
+  })
   .catch((err) => console.error("❌ MongoDB connection error:", err.message));
 
 // Routes
@@ -116,12 +129,18 @@ app.use("/api/buyer-requests", buyerRequestsRoutes);
 app.use("/api/credits", creditsRoutes);
 app.use("/api/vendor/buyer-requests", vendorBuyerRequestsRoutes);
 app.use("/api/subscription", subscriptionRoutes);
+app.use("/api/platform-subscriptions", platformSubscriptionRoutes);
+app.use("/api/trust", trustRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/products", productsRoutes);
 app.use("/api/modifiers", modifiersRoutes);
 app.use("/api/categories", categoriesRoutes);
 app.use("/api/wallet", walletRoutes);
+app.use("/api/payouts", payoutsRoutes);
+app.use("/api/cart", cartRoutes);
+app.use("/api/vendor/orders", vendorOrdersRoutes);
 app.use("/api/store", storeRoutes);
+app.use("/api/hub", hubRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/push", pushRoutes);
@@ -133,8 +152,6 @@ app.use("/api/shopping-plans", shoppingPlanRoutes);
 app.get("/health", (req, res) => {
   res.json({
     status: "OK",
-    hasToken: !!req.cookies.auth_token,
-    authToken: req.cookies.auth_token || null,
     environment: env,
     database: env === "production" ? "Production DB" : "Staging DB",
     timestamp: new Date().toISOString(),
@@ -197,4 +214,6 @@ app.listen(PORT, () => {
   // a per-plan jitter — see shoppingPlan.job.js's own header for why this
   // lives here rather than as a frontend route/`after()` callback).
   startShoppingPlanCron();
+  startOrderReleaseCron();
+  startSubscriptionExpiryCron();
 });

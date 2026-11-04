@@ -1,21 +1,21 @@
 import User from "../../models/Users.js";
+import { AppError } from "../../middleware/errorHandler.js";
 import { sendPasswordResetEmail, sendVerificationEmail } from "../../helpers/emailSender.js";
 
-export const resendOTP = async (req, res) => {
+export const resendOTP = async (req, res, next) => {
   try {
     const { email } = req.body;
 
     // 🔹 Find user
     const user = await User.findOne({ email });
 
-
-    if (user.accountVerified) {
-      return res.status(400).json({ message: "The user is already verified." });
+    // 404, not 401 — same reasoning as passwordResetOTP below.
+    if (!user) {
+      throw new AppError("Invalid email address", 404);
     }
 
-
-    if (!user) {
-      return res.status(401).json({ message: "Invalid email address" });
+    if (user.accountVerified) {
+      throw new AppError("The user is already verified.", 400);
     }
 
     // 🔹 Generate OTP
@@ -37,13 +37,12 @@ export const resendOTP = async (req, res) => {
       message: "OTP re-sent successfully",
     });
   } catch (error) {
-    console.error("Resend OTP error:", error);
-    res.status(500).json({ message: "Failed to resend OTP" });
+    next(error);
   }
 };
 
 
-export const passwordResetOTP = async (req, res) => {
+export const passwordResetOTP = async (req, res, next) => {
   try {
     const { email } = req.body;
 
@@ -56,7 +55,7 @@ export const passwordResetOTP = async (req, res) => {
       // ANY 401 as "session expired" and force-redirects to /auth/login —
       // harmless today only because this happens to be called from a page
       // already under /auth/*, not because the status code was correct.
-      return res.status(404).json({ message: "Invalid email address" });
+      throw new AppError("Invalid email address", 404);
     }
 
     // 🔹 Generate OTP
@@ -78,8 +77,6 @@ export const passwordResetOTP = async (req, res) => {
       message: "OTP re-sent successfully",
     });
   } catch (error) {
-    console.error("Resend OTP error:", error);
-    res.status(500).json({ message: "Failed to resend OTP" });
+    next(error);
   }
 };
-

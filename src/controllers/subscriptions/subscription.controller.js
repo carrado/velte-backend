@@ -11,6 +11,9 @@ import { AppError } from "../../middleware/errorHandler.js";
 import { validateWebhookSignature } from "../../services/paystack.service.js";
 import { creditWalletFromCharge } from "../wallet/wallet.controller.js";
 import { creditFromCharge } from "../credits/credits.controller.js";
+import { fulfillCartCharge } from "../cart/cart.controller.js";
+import Order from "../../models/Order.model.js";
+import { activateFromCharge } from "./platformSubscription.controller.js";
 
 // ── POST /subscription/webhook ────────────────────────────────────────────────
 
@@ -72,11 +75,40 @@ async function processWebhookEvent(event) {
         });
         break;
       }
-      // Wallet top-ups are the only charge.success source left in this app —
+      if (data.metadata?.type === "platform_subscription") {
+        await activateFromCharge(data);
+        break;
+      }
+      if (data.metadata?.type === "cart_checkout") {
+        await fulfillCartCharge(data);
+        break;
+      }
+      // Wallet top-ups are the only remaining untyped charge.success source —
       // card top-up (our metadata) or a DVA bank-transfer credit (no metadata,
       // identified by customer_code instead). creditWalletFromCharge branches
       // on which shape it is.
       await creditWalletFromCharge(data);
+      break;
+    }
+
+    case "transfer.success":
+    case "transfer.failed":
+    case "transfer.reversed": {
+      const reference = data.reference;
+      if (typeof reference !== "string" || !reference.startsWith("vpay_")) {
+        break;
+      }
+      const order = await Order.findOne({
+        $or: [{ transferReference: reference }, { _id: reference.slice(5) }],
+      });
+      if (!order) break;
+      if (eventType === "transfer.success") {
+        order.settlement = "released";
+        order.releasedAt = new Date();
+      } else {
+        order.settlement = "failed";
+      }
+      await order.save();
       break;
     }
 

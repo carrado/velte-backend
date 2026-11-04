@@ -2,11 +2,20 @@ import Store from "../../models/Store.model.js";
 import Product from "../../models/Product.model.js";
 import Category from "../../models/Category.model.js";
 import User from "../../models/Users.js";
+import Review from "../../models/Review.model.js";
 import { AppError } from "../../middleware/errorHandler.js";
 import { embedAndSaveStore } from "../../services/embedding.service.js";
 import { sectorLabel, mergeBusinessTypeFromLabels } from "../../utils/sectorLabels.js";
 import Wallet from "../../models/Wallet.model.js";
 import { getOrCreateWallet, MIN_LEAD_COST_KOBO } from "../wallet/wallet.controller.js";
+import PlatformSubscription from "../../models/PlatformSubscription.model.js";
+import { isCheckoutEligible } from "../../utils/cartEligibility.js";
+import { resolveTier } from "../../services/tier.service.js";
+import { can } from "../../config/entitlements.js";
+import { ensureProductSlug } from "../../utils/productSlug.js";
+
+const LISTING_PUBLIC_FIELDS =
+  "vendorId name slug kind quoteOnRequest price priceMax currency mainImageUrl thumbnailUrls videoUrl description attributes quantity categoryId delivery";
 
 // The old "notify buyers who follow this vendor" trigger
 // (notifyFollowersOfStoreUpdate) is gone (2026-08-18) along with
@@ -150,7 +159,47 @@ function serializeStore(store) {
     description: store.description,
     sectors: store.sectors,
     whatsapp: store.whatsapp,
+    social: {
+      instagram: store.social?.instagram || null,
+      facebook: store.social?.facebook || null,
+      tiktok: store.social?.tiktok || null,
+      x: store.social?.x || null,
+    },
     gallery: store.gallery,
+  };
+}
+
+function presentPublicListing(p, vendor) {
+  const method = p.delivery?.method;
+  return {
+    id: p._id,
+    name: p.name,
+    slug: p.slug || null,
+    kind: p.kind ?? "product",
+    quoteOnRequest: p.quoteOnRequest ?? false,
+    price: p.price,
+    priceMax: p.priceMax ?? null,
+    currency: p.currency,
+    mainImageUrl: p.mainImageUrl,
+    thumbnailUrls: p.thumbnailUrls || [],
+    videoUrl: p.videoUrl ?? null,
+    description: p.description,
+    quantity: p.quantity ?? null,
+    checkoutEligible: isCheckoutEligible(p, vendor),
+    attributes: (p.attributes || []).map((a) => ({
+      name: a.name,
+      value: a.value,
+    })),
+    // Phase 2 delivery field — product page shows method/areas/note;
+    // partner fees stay at checkout (see docs/delivery-integration-plan.md).
+    delivery: {
+      method:
+        method === "included" || method === "byol" || method === "none"
+          ? method
+          : "none",
+      areas: Array.isArray(p.delivery?.areas) ? p.delivery.areas : [],
+      note: p.delivery?.note ?? null,
+    },
   };
 }
 
@@ -176,7 +225,7 @@ export async function getMyStore(req, res, next) {
 export async function updateMyStore(req, res, next) {
   try {
     const store = await getOrCreateStore(req.user.userId);
-    const { handle, name, description, sectors, whatsapp, gallery } =
+    const { handle, name, description, sectors, whatsapp, gallery, social } =
       req.body ?? {};
 
     // Sectors are no longer edited here — they're canonical on User.sectors
@@ -235,6 +284,33 @@ export async function updateMyStore(req, res, next) {
       // which normalizes defensively at render time too).
       if (digits.startsWith("0")) digits = `234${digits.slice(1)}`;
       store.whatsapp = digits || null;
+    }
+
+    if (social !== undefined) {
+      if (!social || typeof social !== "object") {
+        throw new AppError("Social links must be a set of https URLs.", 400);
+      }
+      const next = { ...(store.social?.toObject?.() ?? store.social ?? {}) };
+      for (const key of ["instagram", "facebook", "tiktok", "x"]) {
+        if (social[key] === undefined) continue;
+        const raw = social[key];
+        if (raw == null || raw === "") {
+          next[key] = null;
+          continue;
+        }
+        let parsed;
+        try {
+          parsed = new URL(String(raw).trim());
+        } catch {
+          throw new AppError("Enter a full https link.", 400);
+        }
+        if (parsed.protocol !== "https:" || parsed.href.length > 200) {
+          throw new AppError("Links must be https and under 200 characters.", 400);
+        }
+        next[key] = parsed.href;
+      }
+      store.social = next;
+      store.markModified("social");
     }
 
     if (gallery !== undefined) {
@@ -449,13 +525,11 @@ export async function getPublicStore(req, res, next) {
     if (!store) throw new AppError("Store not found.", 404);
 
     const [user, products] = await Promise.all([
-      User.findById(store.vendorId).select("avatar area"),
+      User.findById(store.vendorId).select("avatar area +payout"),
       Product.find({ vendorId: store.vendorId, isSuspended: { $ne: true } })
         .sort({ isFeatured: -1, createdAt: -1 })
         .limit(12)
-        .select(
-          "name price priceMax currency mainImageUrl thumbnailUrls videoUrl description kind quoteOnRequest attributes",
-        )
+        .select(LISTING_PUBLIC_FIELDS)
         .lean(),
     ]);
 
@@ -476,23 +550,7 @@ export async function getPublicStore(req, res, next) {
         // store's current sectors instead, so it also reflects any sectors
         // added/removed after signup.
         businessType: mergeBusinessTypeFromLabels(store.sectors) ?? "retail",
-        products: products.map((p) => ({
-          id: p._id,
-          name: p.name,
-          kind: p.kind ?? "product",
-          quoteOnRequest: p.quoteOnRequest ?? false,
-          price: p.price,
-          priceMax: p.priceMax ?? null,
-          currency: p.currency,
-          mainImageUrl: p.mainImageUrl,
-          thumbnailUrls: p.thumbnailUrls || [],
-          videoUrl: p.videoUrl ?? null,
-          description: p.description,
-          attributes: (p.attributes || []).map((a) => ({
-            name: a.name,
-            value: a.value,
-          })),
-        })),
+        products: products.map((p) => presentPublicListing(p, user)),
       },
     });
   } catch (err) {
@@ -529,17 +587,25 @@ export function shuffleInPlace(arr) {
 //     same "no wallet = 0 balance, ineligible" semantics as
 //     retrieval.service.js's own comment on this.
 export async function getVendorEligibilityFilter(extraExcludeIds = []) {
-  const [hiddenVendorIds, fundedVendorIds] = await Promise.all([
+  const [hiddenVendorIds, fundedVendorIds, exemptVendorIds] = await Promise.all([
     User.find({
       $or: [{ hiddenFromSearch: true }, { isBlocked: true }],
     }).distinct("_id"),
     Wallet.find({ balanceKobo: { $gte: MIN_LEAD_COST_KOBO } }).distinct(
       "vendorId",
     ),
+    // Q6: Enterprise vendors stay discoverable even with a dry wallet —
+    // they don't pay the lead fee.
+    PlatformSubscription.find({
+      ownerType: "vendor",
+      plan: "vendor_enterprise",
+      status: { $in: ["trialing", "active", "past_due", "cancelled"] },
+      currentPeriodEnd: { $gt: new Date() },
+    }).distinct("ownerId"),
   ]);
   return {
     $nin: [...hiddenVendorIds, ...extraExcludeIds],
-    $in: fundedVendorIds,
+    $in: [...fundedVendorIds, ...exemptVendorIds],
   };
 }
 
@@ -575,9 +641,7 @@ export async function getMarketplacePreview(req, res, next) {
     })
       .sort({ lastFeaturedAt: 1, createdAt: 1 })
       .limit(MARKETPLACE_PREVIEW_LIMIT)
-      .select(
-        "vendorId name kind quoteOnRequest price priceMax currency mainImageUrl thumbnailUrls description attributes",
-      )
+      .select(LISTING_PUBLIC_FIELDS)
       .lean();
 
     if (products.length > 0) {
@@ -593,18 +657,16 @@ export async function getMarketplacePreview(req, res, next) {
       Store.find({ vendorId: { $in: vendorIds } })
         .select("vendorId name handle whatsapp")
         .lean(),
-      // Avatar only — the card shows a profile photo + name + verified badge
-      // next to each listing, not a plain "by {store}" text byline.
+      // Avatar + payout (select:false) so checkoutEligible can include the
+      // recipient check without leaking account details onto the card JSON.
       User.find({ _id: { $in: vendorIds } })
-        .select("avatar")
+        .select("avatar +payout")
         .lean(),
     ]);
     const storeByVendorId = new Map(
       stores.map((s) => [String(s.vendorId), s]),
     );
-    const avatarByVendorId = new Map(
-      users.map((u) => [String(u._id), u.avatar ?? null]),
-    );
+    const userById = new Map(users.map((u) => [String(u._id), u]));
 
     // A product whose vendor has no store yet (shouldn't happen in practice —
     // getOrCreateStore runs on first dashboard visit — but the byline has
@@ -614,25 +676,14 @@ export async function getMarketplacePreview(req, res, next) {
       .map((p) => {
         const store = storeByVendorId.get(String(p.vendorId));
         if (!store) return null;
+        const vendor = userById.get(String(p.vendorId));
+        const listing = presentPublicListing(p, vendor);
         return {
-          id: p._id,
-          name: p.name,
-          kind: p.kind ?? "product",
-          quoteOnRequest: p.quoteOnRequest ?? false,
-          price: p.price,
-          priceMax: p.priceMax ?? null,
-          currency: p.currency,
-          mainImageUrl: p.mainImageUrl,
-          thumbnailUrls: p.thumbnailUrls || [],
-          description: p.description,
-          attributes: (p.attributes || []).map((a) => ({
-            name: a.name,
-            value: a.value,
-          })),
+          ...listing,
           vendorId: p.vendorId,
           storeName: store.name,
           storeHandle: store.handle,
-          storeAvatar: avatarByVendorId.get(String(p.vendorId)) ?? null,
+          storeAvatar: vendor?.avatar ?? null,
           whatsapp: store.whatsapp,
         };
       })
@@ -851,9 +902,7 @@ export async function getMarketplaceBrowse(req, res, next) {
       isSuspended: { $ne: true },
       vendorId: vendorFilter,
     })
-      .select(
-        "vendorId name kind quoteOnRequest price priceMax currency mainImageUrl thumbnailUrls description attributes categoryId",
-      )
+      .select(LISTING_PUBLIC_FIELDS)
       .lean();
 
     shuffleInPlace(products);
@@ -864,45 +913,192 @@ export async function getMarketplaceBrowse(req, res, next) {
         .select("vendorId name handle whatsapp")
         .lean(),
       User.find({ _id: { $in: vendorIds } })
-        .select("avatar")
+        .select("avatar +payout")
         .lean(),
     ]);
     const storeByVendorId = new Map(stores.map((s) => [String(s.vendorId), s]));
-    const avatarByVendorId = new Map(
-      users.map((u) => [String(u._id), u.avatar ?? null]),
-    );
+    const userById = new Map(users.map((u) => [String(u._id), u]));
 
     // Same "no store yet = drop it" rule as getMarketplacePreview.
     const items = products
       .map((p) => {
         const store = storeByVendorId.get(String(p.vendorId));
         if (!store) return null;
+        const vendor = userById.get(String(p.vendorId));
+        const listing = presentPublicListing(p, vendor);
         return {
-          id: p._id,
-          name: p.name,
-          kind: p.kind ?? "product",
-          quoteOnRequest: p.quoteOnRequest ?? false,
-          price: p.price,
-          priceMax: p.priceMax ?? null,
-          currency: p.currency,
-          mainImageUrl: p.mainImageUrl,
-          thumbnailUrls: p.thumbnailUrls || [],
-          description: p.description,
-          attributes: (p.attributes || []).map((a) => ({
-            name: a.name,
-            value: a.value,
-          })),
+          ...listing,
           categoryId: p.categoryId ?? null,
           vendorId: p.vendorId,
           storeName: store.name,
           storeHandle: store.handle,
-          storeAvatar: avatarByVendorId.get(String(p.vendorId)) ?? null,
+          storeAvatar: vendor?.avatar ?? null,
           whatsapp: store.whatsapp,
         };
       })
       .filter(Boolean);
 
     res.json({ success: true, data: items });
+  } catch (err) {
+    next(err);
+  }
+}
+
+function verifiedOf(user) {
+  const v = user?.verification || {};
+  return Boolean(v.ninVerifiedAt || v.cacReviewedAt);
+}
+
+function ratingSummary(rows) {
+  const distribution = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  let total = 0;
+  let sum = 0;
+  for (const row of rows) {
+    const rating = Number(row._id);
+    const count = row.count || 0;
+    if (rating >= 1 && rating <= 5) {
+      distribution[rating] = count;
+      total += count;
+      sum += rating * count;
+    }
+  }
+  return {
+    avg: total > 0 ? Math.round((sum / total) * 10) / 10 : null,
+    count: total,
+    distribution,
+  };
+}
+
+async function buildPublicProductPayload(product, req) {
+  await ensureProductSlug(product);
+
+  const store = await Store.findOne({ vendorId: product.vendorId });
+  if (!store) throw new AppError("Store not found.", 404);
+
+  const [user, productRatingRows, vendorRatings] = await Promise.all([
+    User.findById(store.vendorId).select(
+      "avatar state country verification hiddenFromSearch isBlocked +payout",
+    ),
+    Review.aggregate([
+      { $match: { kind: "product", productId: product._id } },
+      { $group: { _id: "$rating", count: { $sum: 1 } } },
+    ]),
+    Review.aggregate([
+      {
+        $match: {
+          vendorId: store.vendorId,
+          $or: [{ kind: "vendor" }, { kind: { $exists: false } }],
+        },
+      },
+      { $group: { _id: "$rating", count: { $sum: 1 } } },
+    ]),
+  ]);
+
+  if (!user || user.hiddenFromSearch || user.isBlocked) {
+    throw new AppError("Product not found.", 404);
+  }
+
+  const signedIn = Boolean(req.actor?.id);
+  const tier = await resolveTier(req.actor);
+  // Contact vendor: Buyer Premium or Vendor Enterprise only — Basic stays gated.
+  const canContact = can(tier, "hub_social_contact");
+  const productReviews = ratingSummary(productRatingRows);
+  const vendorReviews = ratingSummary(vendorRatings);
+
+  const state = user.state?.trim() || null;
+  const country = user.country?.trim() || "Nigeria";
+
+  return {
+    product: presentPublicListing(product, user),
+    store: {
+      handle: store.handle,
+      name: store.name,
+      description: store.description || null,
+      sectors: store.sectors || [],
+      vendorId: String(store.vendorId),
+      avatar: user.avatar ?? null,
+      verified: verifiedOf(user),
+      // State + country only — never neighbourhood/street (area).
+      state,
+      country,
+      locationLabel:
+        state && country
+          ? `${state}, ${country}`
+          : state || country || null,
+      ratingAvg: vendorReviews.avg,
+      ratingCount: vendorReviews.count,
+      whatsapp: canContact ? store.whatsapp || null : null,
+    },
+    reviews: {
+      product: productReviews,
+      vendor: vendorReviews,
+    },
+    viewer: {
+      signedIn,
+      premium: canContact,
+      tier,
+    },
+  };
+}
+
+// ── GET /api/store/products/by-slug/:slug ────────────────────────────────────
+// Public product detail for /{slug}. resolveActor optional (never 401s).
+// Contact/order need a signed-in viewer — WhatsApp is stripped for guests.
+export async function getPublicProductBySlug(req, res, next) {
+  try {
+    const slug = String(req.params.slug || "")
+      .trim()
+      .toLowerCase();
+    if (!slug) throw new AppError("Product not found.", 404);
+
+    let product = await Product.findOne({
+      slug,
+      isSuspended: { $ne: true },
+    })
+      .select(LISTING_PUBLIC_FIELDS)
+      .lean();
+
+    // Legacy rows may still be addressed by ObjectId while slug backfill
+    // catches up — only accept a 24-hex id so random words don't hit findById.
+    if (!product && /^[a-f0-9]{24}$/i.test(slug)) {
+      product = await Product.findOne({
+        _id: slug,
+        isSuspended: { $ne: true },
+      })
+        .select(LISTING_PUBLIC_FIELDS)
+        .lean();
+    }
+
+    if (!product) throw new AppError("Product not found.", 404);
+
+    const data = await buildPublicProductPayload(product, req);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── GET /api/store/by-handle/:handle/products/:productId ─────────────────────
+// Kept for old /store/:handle/:id links — returns the same payload (incl.
+// slug) so the frontend can redirect to /{slug}.
+export async function getPublicProduct(req, res, next) {
+  try {
+    const handle = String(req.params.handle).toLowerCase();
+    const productId = String(req.params.productId);
+    const store = await Store.findOne({ handle });
+    if (!store) throw new AppError("Store not found.", 404);
+
+    const product = await Product.findOne({
+      _id: productId,
+      vendorId: store.vendorId,
+      isSuspended: { $ne: true },
+    })
+      .select(LISTING_PUBLIC_FIELDS)
+      .lean();
+    if (!product) throw new AppError("Product not found.", 404);
+
+    const data = await buildPublicProductPayload(product, req);
+    res.json({ success: true, data });
   } catch (err) {
     next(err);
   }

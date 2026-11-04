@@ -110,6 +110,18 @@ const buyerSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Buyer Premium prerequisite (Q9). The raw NIN is never stored.
+    premiumProfile: {
+      addressLine: { type: String, default: null, trim: true, maxlength: 200 },
+      area: { type: String, default: null, trim: true, maxlength: 80 },
+      state: { type: String, default: null, trim: true, maxlength: 40 },
+      savedAt: { type: Date, default: null },
+    },
+    verification: {
+      ninVerifiedAt: { type: Date, default: null },
+      kycProvider: { type: String, default: null },
+      kycReference: { type: String, default: null },
+    },
     // The Firebase Auth `uid` — the join key for sign-in, never the email
     // (which a person can change on their Google account). Firebase's uid,
     // not Google's own subject id, because it stays the same for this person
@@ -163,6 +175,15 @@ const buyerSchema = new mongoose.Schema(
     notificationPrefs: {
       pushEnabled: { type: Boolean, default: true },
       smsEnabled: { type: Boolean, default: true },
+      // Vendor Hub promotions (broadcasts / boosted adverts). Defaults OFF:
+      // a broadcast only ever reaches buyers who opted in (platform plan
+      // Phase 4), and unlike the smsEnabled stopgap above there is no
+      // pre-existing audience to backfill — undefined on old documents reads
+      // as falsy, which is exactly the safe default for marketing messages.
+      // The opt-in toggle ships with the notification-preferences UI.
+      promoEnabled: { type: Boolean, default: false },
+      // Empty means every sector, once promoEnabled is on. Premium only.
+      promoSectors: { type: [String], default: [] },
     },
     // NOTE: the plan fields (`plan`, `planExpiresAt`, `planCycle`,
     // `lastPlanReference`) lived here until 2026-08-31 and are gone with the

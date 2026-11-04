@@ -68,6 +68,17 @@ const productSchema = new mongoose.Schema(
 
     // ── shared fields ───────────────────────────────────────────────────────
     name: { type: String, required: true, trim: true, maxlength: 120 },
+    /** Public URL identity for /{slug}. Set on create (and backfilled for
+     *  legacy rows). Stable once written — renaming the product does not
+     *  rewrite it, so shared links keep working. */
+    slug: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      maxlength: 90,
+      default: null,
+      index: { unique: true, sparse: true },
+    },
     description: { type: String, maxlength: 1000, default: null },
     // Services, dishes, and category-optional sectors (e.g. real estate)
     // carry no category — discovered by meaning (description + sector)
@@ -100,6 +111,26 @@ const productSchema = new mongoose.Schema(
     manufacturingDate: { type: Date, default: null },
     expirationDate: { type: Date, default: null },
     attributes: { type: [attributeSchema], default: [] },
+    // Units on the shelf. Cart checkout decrements this when Paystack
+    // confirms the charge. Null means the vendor has not set a count yet,
+    // which is the same as "not checkout-able" — a listing with no stock
+    // figure cannot be sold in-app (WhatsApp handoff still works). Food
+    // dishes keep using dailyLimit instead; this field is for retail goods.
+    quantity: { type: Number, default: null, min: 0 },
+
+    // Phase 1.3 — who is responsible for getting this to the buyer.
+    // `included`: vendor delivers in `areas`. `none`: no vendor delivery
+    // (show logistics vendors at checkout). `byol`: buyer brings a courier;
+    // checkout issues a pickup code the vendor enters on handover.
+    delivery: {
+      method: {
+        type: String,
+        enum: ["included", "none", "byol"],
+        default: "none",
+      },
+      areas: { type: [String], default: [] },
+      note: { type: String, default: null, maxlength: 280 },
+    },
 
     // ── food-only ───────────────────────────────────────────────────────────
     isCurrentlyAvailable: { type: Boolean, default: true },

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Subscription Expiry Notice - Velte</title>
+    <style>
+      body {
+        font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif;
+        background-color: #f8fafc;
+        margin: 0;
+        padding: 24px 16px;
+        color: #1e293b;
+        -webkit-font-smoothing: antialiased;
+      }
+      .container {
+        max-width: 600px;
+        margin: 0 auto;
+        background-color: #ffffff;
+        border-radius: 16px;
+        overflow: hidden;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+      }
+      .header {
+        background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+        padding: 32px 24px;
+        text-align: center;
+        color: #ffffff;
+      }
+      .header h1 {
+        margin: 0;
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+      .header p {
+        margin: 6px 0 0 0;
+        font-size: 14px;
+        opacity: 0.92;
+      }
+      .body {
+        padding: 36px 32px;
+      }
+      .greeting {
+        font-size: 16px;
+        font-weight: 600;
+        color: #0f172a;
+        margin-bottom: 12px;
+      }
+      .intro-text {
+        font-size: 15px;
+        line-height: 1.6;
+        color: #475569;
+        margin-bottom: 24px;
+      }
+      .details-card {
+        background-color: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 20px 24px;
+        margin-bottom: 28px;
+      }
+      .detail-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid #f1f5f9;
+        font-size: 14px;
+      }
+      .detail-row:last-child {
+        border-bottom: none;
+        padding-bottom: 0;
+      }
+      .detail-label {
+        color: #64748b;
+        font-weight: 500;
+      }
+      .detail-value {
+        color: #0f172a;
+        font-weight: 700;
+        text-align: right;
+      }
+      .cta-wrapper {
+        text-align: center;
+        margin: 32px 0 24px 0;
+      }
+      .cta-button {
+        display: inline-block;
+        background-color: #ea580c;
+        color: #ffffff !important;
+        text-decoration: none;
+        font-weight: 700;
+        font-size: 15px;
+        padding: 14px 32px;
+        border-radius: 9999px;
+        box-shadow: 0 4px 12px rgba(234, 88, 12, 0.25);
+      }
+      .benefits-notice {
+        font-size: 13px;
+        line-height: 1.5;
+        color: #64748b;
+        background-color: #fff7ed;
+        border-left: 3px solid #f97316;
+        padding: 12px 16px;
+        border-radius: 4px;
+        margin-bottom: 24px;
+      }
+      .footer {
+        padding: 20px 32px;
+        background-color: #f8fafc;
+        border-top: 1px solid #e2e8f0;
+        text-align: center;
+        font-size: 12px;
+        color: #94a3b8;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>Subscription Expiry Reminder</h1>
+        <p>Keep your Velte benefits active without interruption</p>
+      </div>
+      <div class="body">
+        <div class="greeting">Hi {{name}},</div>
+        <p class="intro-text">
+          This is a friendly reminder that your <strong>{{planName}} ({{intervalLabel}})</strong> subscription on Velte is expiring in <strong>{{daysRemaining}}</strong>.
+        </p>
+
+        <div class="details-card">
+          <div class="detail-row">
+            <span class="detail-label">Plan</span>
+            <span class="detail-value">{{planName}}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Billing Cycle</span>
+            <span class="detail-value">{{intervalLabel}}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Time Remaining</span>
+            <span class="detail-value" style="color: #ea580c;">{{daysRemaining}}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Expiration Date</span>
+            <span class="detail-value">{{expiryDate}}</span>
+          </div>
+        </div>
+
+        <div class="benefits-notice">
+          <strong>Don't lose your plan privileges:</strong> Renew before {{expiryDate}} to retain continuous access to all your premium features.
+        </div>
+
+        <div class="cta-wrapper">
+          <a href="{{renewUrl}}" class="cta-button">Renew Subscription Now</a>
+        </div>
+      </div>
+      <div class="footer">
+        <p>&copy; Velte Technologies. Matched by meaning, proximity, and trust.</p>
+        <p>If you have already renewed, you can safely disregard this message.</p>
+      </div>
+    </div>
+  </body>
+</html>
+

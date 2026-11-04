@@ -26,6 +26,12 @@ import Buyer from "../../models/Buyer.model.js";
 import Wallet from "../../models/Wallet.model.js";
 import User from "../../models/Users.js";
 import GuestIpUsage from "../../models/GuestIpUsage.model.js";
+import { allowancePolicyFor } from "../../services/tier.service.js";
+import {
+  allowanceChargeOps,
+  refundOps,
+  summarizeAllowance,
+} from "../../utils/allowance.js";
 
 // Credit spending for any signed-in account (2026-08-31).
 //
@@ -78,30 +84,56 @@ async function rowFor(ownerId, ownerType) {
  * validCost above) and to own the syncVendorCatalogCredits/rowFor
  * bootstrapping themselves if their owner type needs it — this function is
  * just the atomic `$gte`-filtered debit, nothing else.
+ *
+ * `policy` (from allowancePolicyFor) spends the free allowance first and the
+ * balance for the rest, still in one conditional update. Omitted — as the
+ * shopping-plan job does — it is a balance-only debit.
  */
-export async function consumeCreditsAtomic(ownerId, ownerType, cost) {
+export async function consumeCreditsAtomic(ownerId, ownerType, cost, policy = null) {
   await rowFor(ownerId, ownerType);
+  const spendable = policy?.eligible ? policy : null;
+  const now = new Date();
 
-  // The `$gte` sits in the FILTER, so the affordability check and the debit
-  // are one document-level operation. Two searches landing together cannot
-  // both spend the last credit, and the balance can never go negative.
-  const updated = await Credits.findOneAndUpdate(
-    { ownerId, ownerType, balance: { $gte: cost } },
-    // spentSinceTopUp moves in lockstep with totalSpent — see its own
-    // comment on the model for why it's a second counter rather than the
-    // same one.
-    { $inc: { balance: -cost, totalSpent: cost, spentSinceTopUp: cost } },
-    { new: true },
-  ).lean();
-
-  if (updated) {
-    return { allowed: true, balance: updated.balance, cost };
+  let updated;
+  if (spendable) {
+    const { filterExpr, pipeline } = allowanceChargeOps(spendable, cost, now);
+    updated = await Credits.findOneAndUpdate(
+      { ownerId, ownerType, $expr: filterExpr },
+      pipeline,
+      { new: true },
+    ).lean();
+  } else {
+    // The `$gte` sits in the FILTER, so the affordability check and the debit
+    // are one document-level operation. Two searches landing together cannot
+    // both spend the last credit, and the balance can never go negative.
+    updated = await Credits.findOneAndUpdate(
+      { ownerId, ownerType, balance: { $gte: cost } },
+      // spentSinceTopUp moves in lockstep with totalSpent — see its own
+      // comment on the model for why it's a second counter rather than the
+      // same one.
+      {
+        $inc: { balance: -cost, totalSpent: cost, spentSinceTopUp: cost },
+        $set: { lastCharge: { fromAllowance: 0, fromBalance: cost, at: now } },
+      },
+      { new: true },
+    ).lean();
   }
 
-  const current = await Credits.findOne({ ownerId, ownerType })
-    .lean()
-    .catch(() => null);
-  return { allowed: false, balance: current?.balance ?? 0, cost };
+  const row =
+    updated ??
+    (await Credits.findOne({ ownerId, ownerType })
+      .lean()
+      .catch(() => null));
+  const allowance = summarizeAllowance(row, policy, now);
+  const balance = row?.balance ?? 0;
+  return {
+    allowed: Boolean(updated),
+    balance,
+    cost,
+    allowance,
+    available: balance + (allowance?.remaining ?? 0),
+    fromAllowance: updated?.lastCharge?.fromAllowance ?? 0,
+  };
 }
 
 // ── POST /api/credits/consume ────────────────────────────────────────────
@@ -129,7 +161,8 @@ export async function consumeCredits(req, res, next) {
     // A no-op (one indexed lookup) for every vendor already on the top tier.
     if (ownerType === "vendor") await syncVendorCatalogCredits(ownerId);
 
-    const result = await consumeCreditsAtomic(ownerId, ownerType, cost);
+    const policy = await allowancePolicyFor(req.actor);
+    const result = await consumeCreditsAtomic(ownerId, ownerType, cost, policy);
     return res.json({
       success: true,
       data: {
@@ -173,28 +206,30 @@ export async function refundCredits(req, res, next) {
     // and totalSpent's own filter is the one that actually guards against
     // manufacturing credits, so spentSinceTopUp is left to float (floored at
     // 0) rather than gating this on a figure that only feeds a UI meter.
+    //
+    // A charge that was paid from the free allowance is refunded TO the
+    // allowance (see utils/allowance.js refundOps), never into `balance`.
+    const policy = await allowancePolicyFor(req.actor);
+    const { filterExpr, pipeline } = refundOps(
+      policy?.eligible ? policy : null,
+      cost,
+    );
     const updated = await Credits.findOneAndUpdate(
-      { ownerId, ownerType, totalSpent: { $gte: cost } },
-      [
-        {
-          $set: {
-            balance: { $add: ["$balance", cost] },
-            totalSpent: { $subtract: ["$totalSpent", cost] },
-            spentSinceTopUp: {
-              $max: [
-                0,
-                { $subtract: [{ $ifNull: ["$spentSinceTopUp", 0] }, cost] },
-              ],
-            },
-          },
-        },
-      ],
+      { ownerId, ownerType, $expr: filterExpr },
+      pipeline,
       { new: true },
     ).lean();
 
+    const allowance = summarizeAllowance(updated, policy);
+    const balance = updated?.balance ?? 0;
     return res.json({
       success: true,
-      data: { balance: updated?.balance ?? 0, refunded: Boolean(updated) },
+      data: {
+        balance,
+        refunded: Boolean(updated),
+        allowance,
+        available: balance + (allowance?.remaining ?? 0),
+      },
     });
   } catch (err) {
     next(err);
@@ -204,7 +239,7 @@ export async function refundCredits(req, res, next) {
 // Shared by getCredits and verifyCreditTopUp (2026-09-16) — both answer "what
 // does this account's balance look like right now", the read simply happens
 // to be the last step of a top-up verification instead of the whole request.
-async function readBalance(ownerId, ownerType) {
+async function readBalance(ownerId, ownerType, policy = null) {
   // What backfills every vendor who had a catalogue before this existed —
   // the gauge is the first thing that reads a balance, so there is no
   // migration to run and no vendor who has to search before being paid.
@@ -227,8 +262,10 @@ async function readBalance(ownerId, ownerType) {
     walletBalanceKobo = wallet?.balanceKobo ?? 0;
   }
 
+  const allowance = summarizeAllowance(row, policy);
+  const balance = row?.balance ?? 0;
   return {
-    balance: row?.balance ?? 0,
+    balance,
     ownerType,
     totalGranted: row?.totalGranted ?? 0,
     // Lifetime — for support, never what the meter reads. See
@@ -236,6 +273,8 @@ async function readBalance(ownerId, ownerType) {
     totalSpent: row?.totalSpent ?? 0,
     spentSinceTopUp: row?.spentSinceTopUp ?? 0,
     walletBalanceKobo,
+    allowance,
+    available: balance + (allowance?.remaining ?? 0),
   };
 }
 
@@ -247,7 +286,8 @@ export async function getCredits(req, res, next) {
   try {
     if (!req.actor) throw new AppError("Not authenticated.", 401);
     const { id: ownerId, type: ownerType } = req.actor;
-    const data = await readBalance(ownerId, ownerType);
+    const policy = await allowancePolicyFor(req.actor);
+    const data = await readBalance(ownerId, ownerType, policy);
     return res.json({ success: true, data });
   } catch (err) {
     next(err);

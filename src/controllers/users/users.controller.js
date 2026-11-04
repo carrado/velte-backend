@@ -1,24 +1,25 @@
 import User from "../../models/Users.js";
+import { AppError } from "../../middleware/errorHandler.js";
 
-export const patchUser = async (req, res) => {
+export const patchUser = async (req, res, next) => {
   try {
     const requestingUserId = req.user.userId;
     const { id } = req.params;
 
     if (requestingUserId.toString() !== id) {
-      return res.status(403).json({ success: false, message: "Forbidden" });
+      throw new AppError("Forbidden", 403);
     }
 
     const { onboarding } = req.body;
 
     if (onboarding === undefined) {
-      return res.status(400).json({ success: false, message: "No updatable fields provided" });
+      throw new AppError("No updatable fields provided", 400);
     }
 
     const user = await User.findById(id);
 
     if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
+      throw new AppError("User not found", 404);
     }
 
     // onboarding is a one-way flag: only allow setting it to false
@@ -35,7 +36,6 @@ export const patchUser = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Patch user error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    next(error);
   }
 };

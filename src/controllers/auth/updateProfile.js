@@ -1,16 +1,17 @@
 import User from "../../models/Users.js";
+import { AppError } from "../../middleware/errorHandler.js";
 
 // Mirrored on the frontend (src/services/settings.ts, ADDRESS_CHANGE_COOLDOWN_MS)
 // so the UI can compute the same "locked until" window without another round trip.
 const ADDRESS_CHANGE_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-export const updateProfile = async (req, res) => {
+export const updateProfile = async (req, res, next) => {
   try {
     const { avatar, name, businessName, email, phone, area, state, location } = req.body;
     const user = await User.findById(req.user.userId);
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      throw new AppError("User not found", 404);
     }
 
     if (avatar !== undefined) user.avatar = avatar;
@@ -31,9 +32,7 @@ export const updateProfile = async (req, res) => {
             _id: { $ne: user._id },
           });
           if (taken) {
-            return res
-              .status(409)
-              .json({ message: "Phone number is already in use" });
+            throw new AppError("Phone number is already in use", 409);
           }
         }
         user.phone = normalizedPhone;
@@ -49,7 +48,7 @@ export const updateProfile = async (req, res) => {
         lat < -90 || lat > 90 ||
         lng < -180 || lng > 180
       ) {
-        return res.status(400).json({ message: "location must be { lat, lng } within valid range" });
+        throw new AppError("location must be { lat, lng } within valid range", 400);
       }
       newGeo = { type: "Point", coordinates: [lng, lat] };
     }
@@ -96,7 +95,7 @@ export const updateProfile = async (req, res) => {
       if (normalized !== user.email) {
         const taken = await User.findOne({ email: normalized, _id: { $ne: user._id } });
         if (taken) {
-          return res.status(409).json({ message: "Email is already in use" });
+          throw new AppError("Email is already in use", 409);
         }
         user.email = normalized;
       }
@@ -127,7 +126,6 @@ export const updateProfile = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Update profile error:", error);
-    res.status(500).json({ message: "Failed to update profile" });
+    next(error);
   }
 };

@@ -1,28 +1,30 @@
 // middlewares/authMiddleware.js
 import jwt from "jsonwebtoken";
 import User from "../models/Users.js";
+import { AppError } from "./errorHandler.js";
+import { clearSessionCookieOptions } from "../utils/authCookies.js";
 
 export const verifyAuth = async (req, res, next) => {
   const token = req.cookies.auth_token;
   if (!token) {
-    return res.status(401).json({ message: "Not authenticated" });
+    return next(new AppError("Not authenticated", 401));
   }
 
   let decoded;
   try {
     decoded = jwt.verify(token, process.env.JWT_SECRET);
   } catch {
-    return res.status(401).json({ message: "Session expired. Please log in again." });
+    return next(new AppError("Session expired. Please log in again.", 401));
   }
 
   let user;
   try {
     user = await User.findById(decoded.userId).select("isBlocked blockReason").lean();
-    if (!user) {
-      return res.status(401).json({ message: "Account not found. Please log in again." });
-    }
-  } catch {
-    return res.status(500).json({ message: "Something went wrong." });
+  } catch (err) {
+    return next(err);
+  }
+  if (!user) {
+    return next(new AppError("Account not found. Please log in again.", 401));
   }
 
   // Catches a block that happened mid-session (not just at login) — the
@@ -30,17 +32,14 @@ export const verifyAuth = async (req, res, next) => {
   // this has to be re-checked on every authenticated request, not just once
   // at login time.
   if (user.isBlocked) {
-    // Mirrors the clearCookie options used in auth.js's own logout() so this
-    // actually removes the cookie (mismatched options silently no-op).
-    res.clearCookie("auth_token", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-    });
-    return res.status(423).json({
-      blocked: true,
-      message: user.blockReason || "Your account has been blocked. Please contact support.",
-    });
+    res.clearCookie("auth_token", clearSessionCookieOptions());
+    return next(
+      new AppError(
+        user.blockReason || "Your account has been blocked. Please contact support.",
+        423,
+        { blocked: true },
+      ),
+    );
   }
 
   req.user = decoded;

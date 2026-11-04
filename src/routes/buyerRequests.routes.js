@@ -1,6 +1,7 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
 import { resolveActor } from "../middleware/resolveActor.js";
+import { requireEntitlement } from "../services/tier.service.js";
 import {
   createRequest,
   listMyRequests,
@@ -62,6 +63,11 @@ const createRequestLimiter = rateLimit({
 // Before "/" so the literal segment can't be swallowed by a future
 // parameterised route added above it.
 router.get("/mine", listMyRequests);
-router.post("/", createRequestLimiter, createRequest);
+router.post(
+  "/",
+  createRequestLimiter,
+  requireEntitlement("create_request"),
+  createRequest,
+);
 
 export default router;

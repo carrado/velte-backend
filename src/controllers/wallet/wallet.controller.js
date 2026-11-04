@@ -13,6 +13,7 @@ import {
 import { LOW_BALANCE_KOBO } from "../../jobs/walletLowBalance.job.js";
 import { notifyUser } from "../../services/pushNotification.service.js";
 import { leadCost, MIN_LEAD_COST_KOBO } from "../../utils/leadPricing.js";
+import { isLeadFeeExempt } from "../../services/tier.service.js";
 
 // Every direct balance credit must clear this immediately, not wait for the
 // cron's point-in-time sample — a wallet that dips below the threshold,
@@ -805,6 +806,10 @@ export async function debitWalletForLead(
   // in; the atomic update below already returns null for a missing wallet or
   // an insufficient balance, which is the same answer that pre-read gave, for
   // one query instead of two (three, when the tier aggregate ran).
+  if (await isLeadFeeExempt(vendorId)) {
+    return { debited: false, reason: "exempt" };
+  }
+
   const amountKobo = leadCost();
 
   const wallet = await Wallet.findOneAndUpdate(
@@ -868,6 +873,7 @@ export async function debitWalletForLead(
 // lead is a question about money that is actually there, the same distinction
 // debitWalletForLead's own `$gte` filter draws.
 export async function canAffordLead(vendorId) {
+  if (await isLeadFeeExempt(vendorId)) return true;
   const wallet = await Wallet.findOne({ vendorId })
     .select("balanceKobo")
     .lean();

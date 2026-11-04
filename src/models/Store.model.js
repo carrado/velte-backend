@@ -40,6 +40,15 @@ const storeSchema = new mongoose.Schema(
     // WhatsApp number for the buyer handoff CTA (digits only, intl format).
     whatsapp: { type: String, default: null },
 
+    // Other channels a Premium buyer may open from a Hub card. Empty until
+    // the vendor saves a link. Each value is an https URL or null.
+    social: {
+      instagram: { type: String, default: null },
+      facebook: { type: String, default: null },
+      tiktok: { type: String, default: null },
+      x: { type: String, default: null },
+    },
+
     // Showcase photos (Cloudinary URLs).
     gallery: { type: [String], default: [] },
 
@@ -49,6 +58,23 @@ const storeSchema = new mongoose.Schema(
     // whoever's waited longest always surfaces next, guaranteeing every
     // vendor rotates through instead of trusting pure randomness.
     lastFeaturedAt: { type: Date, default: null, index: true },
+
+    // Phase 1.5 — extra branches / service areas. Proximity matching uses
+    // the nearest of these plus User.geo. Empty means "the vendor pin only".
+    locations: {
+      type: [
+        {
+          label: { type: String, default: null, maxlength: 80 },
+          area: { type: String, default: null },
+          state: { type: String, default: null },
+          geo: {
+            type: { type: String, enum: ["Point"] },
+            coordinates: { type: [Number], default: undefined },
+          },
+        },
+      ],
+      default: [],
+    },
 
     // ── Connected catalog (spec §16.1) ──────────────────────────────────────
     // The vendor's own website, mirrored into Velte. One source per store.

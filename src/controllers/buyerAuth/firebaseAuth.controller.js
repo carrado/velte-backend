@@ -9,6 +9,10 @@ import {
 import crypto from "crypto";
 import { AppError } from "../../middleware/errorHandler.js";
 import {
+  sessionCookieOptions,
+  clearSessionCookieOptions,
+} from "../../utils/authCookies.js";
+import {
   findVerifiedVendorByEmail,
   linkVerifiedAccounts,
 } from "../../services/identityLink.service.js";
@@ -59,27 +63,6 @@ const FIREBASE_JWKS = createRemoteJWKSet(
     "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
   ),
 );
-
-// Duplicated from buyerAuth.controller.js rather than shared, deliberately
-// kept identical — if one changes, change both.
-function cookieOptions() {
-  const isProd =
-    process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
-  return {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? "none" : "lax",
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-  };
-}
-
-// Same attributes minus maxAge — res.clearCookie already expires the cookie,
-// and passing maxAge is deprecated (ignored in Express v5).
-function clearCookieOptions() {
-  const options = cookieOptions();
-  delete options.maxAge;
-  return options;
-}
 
 // POST /api/buyer-auth/firebase — { idToken }
 // Issues the buyer session cookie. The only thing that does.
@@ -318,12 +301,9 @@ export async function firebaseSignIn(req, res, next) {
         process.env.JWT_SECRET,
         { expiresIn: SESSION_TTL },
       );
-      // This file's own cookieOptions() — identical shape to auth.js's
-      // authCookieOptions() (see that function's own comment on why they're
-      // kept as two separate definitions rather than a shared import).
-      res.cookie("auth_token", vendorToken, cookieOptions());
+      res.cookie("auth_token", vendorToken, sessionCookieOptions());
     } else if (req.cookies?.auth_token) {
-      res.clearCookie("auth_token", clearCookieOptions());
+      res.clearCookie("auth_token", clearSessionCookieOptions());
     }
 
     // See this file's own header for the claims and why they are shaped
@@ -333,7 +313,7 @@ export async function firebaseSignIn(req, res, next) {
       process.env.JWT_SECRET,
       { expiresIn: SESSION_TTL },
     );
-    res.cookie("buyer_auth_token", token, cookieOptions());
+    res.cookie("buyer_auth_token", token, sessionCookieOptions());
 
     res.status(200).json({ success: true, data: { buyer } });
   } catch (err) {

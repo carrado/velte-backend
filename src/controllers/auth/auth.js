@@ -5,6 +5,11 @@ import User from "../../models/Users.js";
 // comment has the mirror check on the buyer-signup side.
 import Buyer from "../../models/Buyer.model.js";
 import { sendVerificationEmail } from "../../helpers/emailSender.js";
+import { AppError } from "../../middleware/errorHandler.js";
+import {
+  sessionCookieOptions,
+  clearSessionCookieOptions,
+} from "../../utils/authCookies.js";
 import {
   prepareReferralForSignup,
   recordPendingReferral,
@@ -22,7 +27,7 @@ import {
 const MAX_SECTORS = 5;
 
 
-export const register = async (req, res) => {
+export const register = async (req, res, next) => {
   try {
     const {
       name,
@@ -55,10 +60,10 @@ export const register = async (req, res) => {
     // The check that it is UNIQUE already exists and is not new here — see
     // the block further down, which also rejects a number already on a Buyer.
     if (!name || !email || !password || !businessName || !username || !phone) {
-      return res.status(400).json({
-        message:
-          "Name, email, password, business name, username and phone number are required fields",
-      });
+      throw new AppError(
+        "Name, email, password, business name, username and phone number are required fields",
+        400,
+      );
     }
 
     if (
@@ -67,9 +72,10 @@ export const register = async (req, res) => {
       sectors.length > MAX_SECTORS ||
       !sectors.every(isKnownSector)
     ) {
-      return res.status(400).json({
-        message: `sectors must be an array of 1-${MAX_SECTORS} known sector values`,
-      });
+      throw new AppError(
+        `sectors must be an array of 1-${MAX_SECTORS} known sector values`,
+        400,
+      );
     }
 
     let geo;
@@ -81,7 +87,7 @@ export const register = async (req, res) => {
         lat < -90 || lat > 90 ||
         lng < -180 || lng > 180
       ) {
-        return res.status(400).json({ message: "location must be { lat, lng } within valid range" });
+        throw new AppError("location must be { lat, lng } within valid range", 400);
       }
       geo = { type: "Point", coordinates: [lng, lat] };
     } else if (address || state) {
@@ -102,9 +108,7 @@ export const register = async (req, res) => {
     if (existingUser) {
       if (existingUser.accountVerified) {
         // ✅ User already verified — block registration
-        return res.status(400).json({
-          message: "User with this email already exists and is verified.",
-        });
+        throw new AppError("User with this email already exists and is verified.", 400);
       } else {
         // 🔁 User exists but not verified — resend OTP
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -140,9 +144,7 @@ export const register = async (req, res) => {
         Buyer.exists({ phone }),
       ]);
       if (phoneTaken || phoneOwnedByBuyer) {
-        return res.status(409).json({
-          message: "An account with this phone number already exists.",
-        });
+        throw new AppError("An account with this phone number already exists.", 409);
       }
     }
 
@@ -218,40 +220,12 @@ export const register = async (req, res) => {
         "Account created successfully. Please check your email for the 6-digit verification code.",
     });
   } catch (error) {
-    console.error("Registration error:", error);
-    res.status(500).json({
-      success: false,
-      message: "An error occurred during registration.",
-      error: error.message,
-    });
+    next(error);
   }
 };
 
 
 
-
-// Session cookie shared by both branches of login() below — same options
-// buyer_auth_token uses (buyerAuth.controller.js's cookieOptions), kept
-// separate on purpose: this signs auth_token specifically, that one signs
-// buyer_auth_token, and neither should accidentally drift from the other.
-function authCookieOptions() {
-  const isProd =
-    process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
-  return {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? "none" : "lax",
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-  };
-}
-
-// Same attributes minus maxAge — res.clearCookie already expires the cookie,
-// and passing maxAge is deprecated (ignored in Express v5).
-function clearCookieOptions() {
-  const options = authCookieOptions();
-  delete options.maxAge;
-  return options;
-}
 
 // Login controller — vendor-only. Buyers never log in at all (2026-08-18,
 // "nothing buyers again on the system") — a buyer's only touchpoint with
@@ -261,148 +235,135 @@ function clearCookieOptions() {
 // `identifier` is an email or a username; `email` is still accepted as an
 // alias — nothing currently sends it, but no reason to hard-break an old
 // client that might.
-export const login = async (req, res) => {
+export const login = async (req, res, next) => {
   try {
     const { identifier, email, password } = req.body;
     const idRaw = (identifier ?? email ?? "").trim();
     if (!idRaw || !password) {
-      return res
-        .status(400)
-        .json({ message: "Email/username and password are required" });
+      throw new AppError("Email/username and password are required", 400);
     }
     const idLower = idRaw.toLowerCase();
 
     const user = await User.findOne({
       $or: [{ email: idLower }, { username: idRaw }],
     });
-    if (user) return loginAsVendor(user, password, req, res);
+    if (!user) throw new AppError("Invalid credentials", 401);
 
-    return res.status(401).json({ message: "Invalid credentials" });
+    await loginAsVendor(user, password, req, res);
   } catch (error) {
-    console.error("Login error:", error);
-    res.status(500).json({ message: "Internal server error" });
+    next(error);
   }
 };
 
-// The pre-existing vendor login body, unchanged in substance — just
-// extracted so login() above can call it from the vendor branch while still
-// falling through to the buyer branch when `user` doesn't exist at all
-// (can't `return` a 401 for a bad password here and expect the caller to
-// keep going, so a wrong VENDOR password still short-circuits inside here,
-// exactly as before).
+// Throws AppError for every refusal; login() above forwards it.
 async function loginAsVendor(user, password, req, res) {
-  try {
-    if (!(await user.comparePassword(password))) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
-
-    // 🔹 Reject blocked accounts (set from the super admin panel). 423 Locked,
-    // not 403 — the existing 403 branch here means "unverified email" and the
-    // frontend's Next.js BFF layer only forwards {status, message} through
-    // generic error plumbing, so status is the only reliable signal it can
-    // branch on to show the blocked-account modal instead of the verify flow.
-    if (user.isBlocked) {
-      return res.status(423).json({
-        blocked: true,
-        message: user.blockReason || "Your account has been blocked. Please contact support.",
-      });
-    }
-
-    // 🔹 Check if user is verified
-    if (!user.accountVerified) {
-      // Generate new OTP
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
-      try {
-        // Send verification email first
-        await sendVerificationEmail(user.email, user.name, otp);
-
-        // Update user OTP details
-        user.emailOtp = {
-          code: otp,
-          expiresAt: new Date(Date.now() + 10 * 60 * 1000), // valid for 10 mins
-        };
-
-        await user.save();
-
-        return res.status(403).json({
-          success: false,
-          // The identifier the vendor typed may have been their USERNAME,
-          // not their email — the frontend's /auth/verify redirect needs
-          // the real email regardless of which one was entered.
-          email: user.email,
-          message:
-            "Your account is not verified. A new verification code has been sent to your email.",
-        });
-      } catch (emailError) {
-        console.error("Email send error:", emailError);
-        return res.status(500).json({
-          message:
-            "Unable to send verification email at the moment. Please try again later.",
-        });
-      }
-    }
-
-    // 🔹 If verified, generate JWT token
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, {
-      expiresIn: "7d",
-    });
-
-    // 🔹 Set token in HttpOnly cookie
-    res.cookie("auth_token", token, authCookieOptions());
-
-    // ── Pair (or clear) this browser's BUYER cookie (2026-09-16) ────────
-    //
-    // Symmetric to firebaseAuth.controller.js's own vendor-pairing half —
-    // see identityLink.service.js's header for the full reasoning (both
-    // sides must have independently proven control of the email before a
-    // link is trusted). A vendor logging in whose email also belongs to a
-    // real buyer gets that buyer's `buyer_auth_token` set alongside
-    // `auth_token`, so /chat shows THEIR OWN history rather than nothing.
-    // No match, but a `buyer_auth_token` is already sitting in this
-    // browser, means it belongs to someone else entirely — cleared rather
-    // than left to leak into this vendor's view of /chat.
-    const linkedBuyer = await findBuyerByEmail(user.email);
-    if (linkedBuyer) {
-      await linkVerifiedAccounts({
-        buyerId: linkedBuyer._id,
-        vendorId: user._id,
-      });
-      const buyerToken = jwt.sign(
-        { buyerId: linkedBuyer._id, type: "buyer" },
-        process.env.JWT_SECRET,
-        { expiresIn: "7d" },
-      );
-      res.cookie("buyer_auth_token", buyerToken, authCookieOptions());
-    } else if (req.cookies?.buyer_auth_token) {
-      res.clearCookie("buyer_auth_token", clearCookieOptions());
-    }
-
-    // 🔹 Success response
-    res.status(200).json({
-      success: true,
-      accountType: "vendor",
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        country: user.country,
-        avatar: user.avatar,
-        company: {
-          name: user.company?.name,
-          location: user.company?.location,
-          services: user.company?.services || [],
-        },
-        accountVerified: user.accountVerified,
-        username: user.username,
-        onboarding: user.onboarding,
-      },
-      message: "Login successful",
-    });
-  } catch (error) {
-    console.error("Login error:", error);
-    res.status(500).json({ message: "Internal server error" });
+  if (!(await user.comparePassword(password))) {
+    throw new AppError("Invalid credentials", 401);
   }
+
+  // 🔹 Reject blocked accounts (set from the super admin panel). 423 Locked,
+  // not 403 — the existing 403 branch here means "unverified email" and the
+  // frontend's Next.js BFF layer only forwards {status, message} through
+  // generic error plumbing, so status is the only reliable signal it can
+  // branch on to show the blocked-account modal instead of the verify flow.
+  if (user.isBlocked) {
+    throw new AppError(
+      user.blockReason || "Your account has been blocked. Please contact support.",
+      423,
+      { blocked: true },
+    );
+  }
+
+  // 🔹 Check if user is verified
+  if (!user.accountVerified) {
+    // Generate new OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    try {
+      // Send verification email first
+      await sendVerificationEmail(user.email, user.name, otp);
+
+      // Update user OTP details
+      user.emailOtp = {
+        code: otp,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000), // valid for 10 mins
+      };
+
+      await user.save();
+    } catch (emailError) {
+      console.error("Email send error:", emailError);
+      throw new AppError(
+        "Unable to send verification email at the moment. Please try again later.",
+        500,
+      );
+    }
+
+    // The identifier the vendor typed may have been their USERNAME, not
+    // their email — the frontend's /auth/verify redirect needs the real
+    // email regardless of which one was entered.
+    throw new AppError(
+      "Your account is not verified. A new verification code has been sent to your email.",
+      403,
+      { email: user.email },
+    );
+  }
+
+  // 🔹 If verified, generate JWT token
+  const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, {
+    expiresIn: "7d",
+  });
+
+  // 🔹 Set token in HttpOnly cookie
+  res.cookie("auth_token", token, sessionCookieOptions());
+
+  // ── Pair (or clear) this browser's BUYER cookie (2026-09-16) ────────
+  //
+  // Symmetric to firebaseAuth.controller.js's own vendor-pairing half —
+  // see identityLink.service.js's header for the full reasoning (both
+  // sides must have independently proven control of the email before a
+  // link is trusted). A vendor logging in whose email also belongs to a
+  // real buyer gets that buyer's `buyer_auth_token` set alongside
+  // `auth_token`, so /chat shows THEIR OWN history rather than nothing.
+  // No match, but a `buyer_auth_token` is already sitting in this
+  // browser, means it belongs to someone else entirely — cleared rather
+  // than left to leak into this vendor's view of /chat.
+  const linkedBuyer = await findBuyerByEmail(user.email);
+  if (linkedBuyer) {
+    await linkVerifiedAccounts({
+      buyerId: linkedBuyer._id,
+      vendorId: user._id,
+    });
+    const buyerToken = jwt.sign(
+      { buyerId: linkedBuyer._id, type: "buyer" },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" },
+    );
+    res.cookie("buyer_auth_token", buyerToken, sessionCookieOptions());
+  } else if (req.cookies?.buyer_auth_token) {
+    res.clearCookie("buyer_auth_token", clearSessionCookieOptions());
+  }
+
+  // 🔹 Success response
+  res.status(200).json({
+    success: true,
+    accountType: "vendor",
+    user: {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      country: user.country,
+      avatar: user.avatar,
+      company: {
+        name: user.company?.name,
+        location: user.company?.location,
+        services: user.company?.services || [],
+      },
+      accountVerified: user.accountVerified,
+      username: user.username,
+      onboarding: user.onboarding,
+    },
+    message: "Login successful",
+  });
 }
 
 
@@ -411,24 +372,13 @@ async function loginAsVendor(user, password, req, res) {
 
 
 
-export const logout = async (req, res) => {
-  try {
-    res.clearCookie("auth_token", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-    });
+export const logout = (req, res) => {
+  res.clearCookie("auth_token", clearSessionCookieOptions());
 
-    return res.status(200).json({
-      success: true,
-      message: "Logout successful",
-    });
-  } catch (error) {
-    console.error("Logout error:", error);
-    return res.status(500).json({
-      message: "Internal server error",
-    });
-  }
+  return res.status(200).json({
+    success: true,
+    message: "Logout successful",
+  });
 };
 
 
@@ -439,34 +389,34 @@ export const logout = async (req, res) => {
 
 
 
-export const verifyEmail = async (req, res) => {
+export const verifyEmail = async (req, res, next) => {
   try {
     const { email, otp } = req.body;
 
     if (!email || !otp) {
-      return res.status(400).json({ message: "Email and OTP are required" });
+      throw new AppError("Email and OTP are required", 400);
     }
 
     // Find the user by email
     const user = await User.findOne({ email });
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      throw new AppError("User not found", 404);
     }
 
     if (user.accountVerified) {
-      return res.status(400).json({ message: "The user is already verified." });
+      throw new AppError("The user is already verified.", 400);
     }
 
     // Check if OTP exists and matches
     if (!user.emailOtp || user.emailOtp.code !== Number(otp)) {
-      return res.status(400).json({ message: "Invalid OTP" });
+      throw new AppError("Invalid OTP", 400);
     }
 
     // Check if OTP is expired
     const now = new Date();
     if (user.emailOtp.expiresAt < now) {
-      return res.status(400).json({ message: "OTP has expired" });
+      throw new AppError("OTP has expired", 400);
     }
 
     // Mark user as verified
@@ -497,10 +447,9 @@ export const verifyEmail = async (req, res) => {
       console.error("[referral] credit-on-verify failed:", err.message);
     }
 
-    res.status(201).json({ message: "Account verified successfully" });
+    res.status(201).json({ success: true, message: "Account verified successfully" });
   } catch (err) {
-    console.error("Email verification error:", err);
-    res.status(500).json({ message: "Something went wrong" });
+    next(err);
   }
 };
 
@@ -510,66 +459,45 @@ export const verifyEmail = async (req, res) => {
 
 
 
-export const deleteAccount = async (req, res) => {
+export const deleteAccount = async (req, res, next) => {
   try {
     const userId = req.user.userId;
     const { password } = req.body; // Get password from request body
 
     if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication required",
-      });
+      throw new AppError("Authentication required", 401);
     }
 
     if (!password) {
-      return res.status(400).json({
-        success: false,
-        message: "Password is required for account deletion",
-      });
+      throw new AppError("Password is required for account deletion", 400);
     }
 
     const user = await User.findById(userId);
 
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
+      throw new AppError("User not found", 404);
     }
 
-    // Verify password
+    // Verify password. 403, not 401 — the frontend treats any 401 as an
+    // expired session and force-redirects to login, which would log the
+    // vendor out for a typo.
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: "Incorrect password",
-      });
+      throw new AppError("Incorrect password", 403);
     }
 
     // Set accountStatus to false (soft delete)
     user.activeStatus = false;
     await user.save();
 
-    // Clear the auth cookie
-    res.clearCookie("auth_token", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      domain: process.env.NODE_ENV === "production" ? ".velte.ng" : "localhost",
-    });
+    res.clearCookie("auth_token", clearSessionCookieOptions());
 
     res.status(200).json({
       success: true,
       message: "Account deactivated successfully.",
     });
   } catch (error) {
-    console.error("Delete account error:", error);
-    res.status(500).json({
-      success: false,
-      message: "An error occurred while deactivating your account",
-      error: error.message,
-    });
+    next(error);
   }
 };
 
@@ -580,38 +508,35 @@ export const deleteAccount = async (req, res) => {
 
 
 
-export const verifyPasswordOTP = async (req, res) => {
+export const verifyPasswordOTP = async (req, res, next) => {
   try {
     const { email, otp } = req.body;
 
     if (!email || !otp) {
-      return res.status(400).json({ message: "Email and OTP are required" });
+      throw new AppError("Email and OTP are required", 400);
     }
 
     // Find the user by email
     const user = await User.findOne({ email });
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      throw new AppError("User not found", 404);
     }
 
     // Check if OTP exists and matches
     if (!user.emailOtp || user.emailOtp.code !== Number(otp)) {
-      return res.status(400).json({ message: "Invalid OTP" });
+      throw new AppError("Invalid OTP", 400);
     }
 
     // Check if OTP is expired
     const now = new Date();
     if (user.emailOtp.expiresAt < now) {
-      return res.status(400).json({ message: "OTP has expired" });
+      throw new AppError("OTP has expired", 400);
     }
 
-    await user.save();
-
-    res.status(201).json({ message: "OTP verified successfully" });
+    res.status(201).json({ success: true, message: "OTP verified successfully" });
   } catch (err) {
-    console.error("Email verification error:", err);
-    res.status(500).json({ message: "Something went wrong" });
+    next(err);
   }
 };
 
@@ -620,58 +545,42 @@ export const verifyPasswordOTP = async (req, res) => {
 
 
 
-export const resetPassword = async (req, res) => {
+export const resetPassword = async (req, res, next) => {
   try {
     const { email, otp, password } = req.body;
 
     // 🔹 Validate required fields
     if (!email || !otp || !password) {
-      return res.status(400).json({
-        message: "Email, OTP, and new password are required",
-      });
+      throw new AppError("Email, OTP, and new password are required", 400);
     }
 
     // 🔹 Validate new password length
     if (password.length < 8) {
-      return res.status(400).json({
-        message: "Password must be at least 8 characters long",
-      });
+      throw new AppError("Password must be at least 8 characters long", 400);
     }
 
     // 🔹 Find the user by email
     const user = await User.findOne({ email });
 
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
+      throw new AppError("User not found", 404);
     }
 
     // 🔹 Check if OTP exists and matches
     if (!user.emailOtp || user.emailOtp.code !== Number(otp)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid OTP",
-      });
+      throw new AppError("Invalid OTP", 400);
     }
 
     // 🔹 Check if OTP is expired
     const now = Date.now();
     if (user.emailOtp.expiresAt < now) {
-      return res.status(400).json({
-        success: false,
-        message: "OTP has expired. Please request a new one.",
-      });
+      throw new AppError("OTP has expired. Please request a new one.", 400);
     }
 
     // 🔹 Check if new password is same as old password
     const isSamePassword = await user.comparePassword(password);
     if (isSamePassword) {
-      return res.status(400).json({
-        success: false,
-        message: "Unable to reset password. Please try again.",
-      });
+      throw new AppError("Unable to reset password. Please try again.", 400);
     }
 
     // 🔹 Update password
@@ -690,20 +599,6 @@ export const resetPassword = async (req, res) => {
         "Password reset successful. You can now login with your new password.",
     });
   } catch (error) {
-    console.error("Password reset error:", error);
-
-    // Handle specific errors
-    if (error.name === "ValidationError") {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid input data",
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      message: "An error occurred while resetting password",
-      error: process.env.NODE_ENV === "development" ? error.message : undefined,
-    });
+    next(error);
   }
 };

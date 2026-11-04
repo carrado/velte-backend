@@ -1,10 +1,13 @@
 import express from "express";
 import { verifyAuth } from "../middleware/auth.js";
+import { resolveActor } from "../middleware/resolveActor.js";
 import {
   getMyStore,
   updateMyStore,
   connectCatalog,
   getPublicStore,
+  getPublicProduct,
+  getPublicProductBySlug,
   getStoreByVendorId,
   getMarketplacePreview,
   getVendorsPreview,
@@ -20,6 +23,21 @@ const router = express.Router();
 
 // Public — powers the /store/:handle page, no session required.
 router.get("/by-handle/:handle", getPublicStore);
+
+// Public product detail by slug — powers /{slug} on the frontend.
+router.get(
+  "/products/by-slug/:slug",
+  resolveActor,
+  getPublicProductBySlug,
+);
+
+// Legacy /store/:handle/:productId — same payload so the frontend can
+// redirect to /{slug}.
+router.get(
+  "/by-handle/:handle/products/:productId",
+  resolveActor,
+  getPublicProduct,
+);
 
 // Public — feeds the /store/:handle page's "Other vendors you may like"
 // section.

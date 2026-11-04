@@ -22,17 +22,32 @@ import Buyer from "../models/Buyer.model.js";
 // ever calls this) is what turns `vendorError` back into the 403/404 its
 // own callers have always seen — that behavior moved to the frontend, not
 // removed.
-export const profile = async (req, res) => {
-  let vendor = null;
-  let vendorError = null;
-  const vendorToken = req.cookies?.auth_token;
-  if (vendorToken) {
-    try {
-      const decoded = jwt.verify(vendorToken, process.env.JWT_SECRET);
+function isJwtError(err) {
+  return (
+    err?.name === "TokenExpiredError" ||
+    err?.name === "JsonWebTokenError" ||
+    err?.name === "NotBeforeError"
+  );
+}
+
+export const profile = async (req, res, next) => {
+  try {
+    let vendor = null;
+    let vendorError = null;
+    const vendorToken = req.cookies?.auth_token;
+    if (vendorToken) {
+      let decoded = null;
+      try {
+        decoded = jwt.verify(vendorToken, process.env.JWT_SECRET);
+      } catch (err) {
+        // Expired or forged is "no vendor". A database failure is not —
+        // swallowing it here made a signed-in person look logged out.
+        if (!isJwtError(err)) throw err;
+      }
       // Same check resolveActor.js's own vendor branch uses — the vendor
       // JWT carries `userId` and no `type` claim, which is what stops a
       // buyer token being replayed here.
-      if (decoded.userId && decoded.type !== "buyer") {
+      if (decoded?.userId && decoded.type !== "buyer") {
         const user = await User.findById(decoded.userId).select(
           "-password -emailOtp -changePasswordOtp",
         );
@@ -48,26 +63,27 @@ export const profile = async (req, res) => {
           vendor = user;
         }
       }
-    } catch {
-      // Expired or forged — treated as no vendor session, not an error.
     }
-  }
 
-  let buyer = null;
-  const buyerToken = req.cookies?.buyer_auth_token;
-  if (buyerToken) {
-    try {
-      const decoded = jwt.verify(buyerToken, process.env.JWT_SECRET);
-      if (decoded.type === "buyer" && decoded.buyerId) {
+    let buyer = null;
+    const buyerToken = req.cookies?.buyer_auth_token;
+    if (buyerToken) {
+      let decoded = null;
+      try {
+        decoded = jwt.verify(buyerToken, process.env.JWT_SECRET);
+      } catch (err) {
+        if (!isJwtError(err)) throw err;
+      }
+      if (decoded?.type === "buyer" && decoded.buyerId) {
         buyer = await Buyer.findById(decoded.buyerId);
       }
-    } catch {
-      // Same treatment.
     }
-  }
 
-  return res.status(200).json({
-    success: true,
-    data: { vendor, buyer, vendorError },
-  });
+    return res.status(200).json({
+      success: true,
+      data: { vendor, buyer, vendorError },
+    });
+  } catch (err) {
+    next(err);
+  }
 };

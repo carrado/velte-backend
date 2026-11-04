@@ -16,10 +16,11 @@ import mongoose from "mongoose";
 // controllers/wallet) — this row exists for them only if they are also acting
 // as a buyer with their own balance.
 //
-// NO PERIOD KEY, deliberately, and that is the whole design. There is nothing
-// to roll over: a granted credit is spent or it isn't, and it never expires.
-// Anything that looks like a monthly reset creeping back in here is the plan
-// system returning by the back door.
+// `balance` has no period and never expires: a credit that was bought or
+// granted is spent or it isn't. The free allowance (2026-10-15, Phase 0.3 of
+// the platform plan) is a SEPARATE bucket in `allowance` below. It resets and
+// is never added to `balance`, so a reset can never take away a credit
+// someone paid for.
 const creditsSchema = new mongoose.Schema(
   {
     // Buyer._id or User._id. Not a `ref`: it points at two different
@@ -66,6 +67,27 @@ const creditsSchema = new mongoose.Schema(
      *  the meter immediately show most of X+Y as already "used", because it
      *  was reading totalSpent — every credit ever spent, forever. */
     spentSinceTopUp: { type: Number, default: 0, min: 0 },
+
+    /** The free allowance's current period (config/entitlements.js
+     *  ALLOWANCES). `used` counts only when `periodStart` is inside the
+     *  current period; an older period reads as untouched, so nothing has
+     *  to run at midnight to reset anyone. */
+    allowance: {
+      periodStart: { type: Date, default: null },
+      used: { type: Number, default: 0, min: 0 },
+    },
+
+    /** Lifetime free credits spent: what the allowance has cost us. */
+    totalFreeSpent: { type: Number, default: 0, min: 0 },
+
+    /** How the most recent charge was split across the two buckets, so a
+     *  refund puts credits back where they came from. Refunding a free
+     *  charge into `balance` would turn free credits into purchased ones. */
+    lastCharge: {
+      fromAllowance: { type: Number, default: 0 },
+      fromBalance: { type: Number, default: 0 },
+      at: { type: Date, default: null },
+    },
   },
   { timestamps: true },
 );

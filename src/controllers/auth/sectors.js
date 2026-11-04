@@ -1,4 +1,5 @@
 import User from "../../models/Users.js";
+import { AppError } from "../../middleware/errorHandler.js";
 import { getOrCreateStore } from "../store/store.controller.js";
 import { embedAndSaveStore } from "../../services/embedding.service.js";
 import { sectorLabel, isKnownSector } from "../../utils/sectorLabels.js";
@@ -10,7 +11,7 @@ const MAX_SECTORS = 5;
 // editor's Sectors card (which used to write Store.sectors directly; now it
 // calls this instead, so User.sectors stays the one canonical list and
 // Store.sectors is just its derived display-label cache).
-export const updateSectors = async (req, res) => {
+export const updateSectors = async (req, res, next) => {
   try {
     const { sectors } = req.body;
 
@@ -20,9 +21,10 @@ export const updateSectors = async (req, res) => {
       sectors.length > MAX_SECTORS ||
       !sectors.every(isKnownSector)
     ) {
-      return res.status(400).json({
-        message: `sectors must be an array of 1-${MAX_SECTORS} known sector values`,
-      });
+      throw new AppError(
+        `sectors must be an array of 1-${MAX_SECTORS} known sector values`,
+        400,
+      );
     }
 
     const user = await User.findByIdAndUpdate(
@@ -32,7 +34,7 @@ export const updateSectors = async (req, res) => {
     ).select("-password -emailOtp -changePasswordOtp");
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      throw new AppError("User not found", 404);
     }
 
     try {
@@ -48,21 +50,20 @@ export const updateSectors = async (req, res) => {
 
     res.status(200).json({ success: true, user });
   } catch (error) {
-    console.error("Update sectors error:", error);
-    res.status(500).json({ message: "Failed to update sectors" });
+    next(error);
   }
 };
 
-export const updateFoodSettings = async (req, res) => {
+export const updateFoodSettings = async (req, res, next) => {
   try {
     const { estimatedPrepMins, autoAccept } = req.body;
 
     if (estimatedPrepMins !== undefined && (typeof estimatedPrepMins !== 'number' || estimatedPrepMins < 0)) {
-      return res.status(400).json({ message: "estimatedPrepMins must be a non-negative number" });
+      throw new AppError("estimatedPrepMins must be a non-negative number", 400);
     }
 
     if (autoAccept !== undefined && typeof autoAccept !== 'boolean') {
-      return res.status(400).json({ message: "autoAccept must be a boolean" });
+      throw new AppError("autoAccept must be a boolean", 400);
     }
 
     const update = {};
@@ -76,7 +77,7 @@ export const updateFoodSettings = async (req, res) => {
     ).select("-password -emailOtp -changePasswordOtp");
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      throw new AppError("User not found", 404);
     }
 
     res.status(200).json({
@@ -84,7 +85,6 @@ export const updateFoodSettings = async (req, res) => {
       foodSettings: user.preferences.foodSettings,
     });
   } catch (error) {
-    console.error("Update food settings error:", error);
-    res.status(500).json({ message: "Failed to update food settings" });
+    next(error);
   }
 };
