@@ -27,7 +27,7 @@ const hubListingBoostSchema = new mongoose.Schema(
     },
     days: { type: Number, required: true, min: 1 },
     startsAt: { type: Date, default: Date.now },
-    endsAt: { type: Date, required: true, index: true },
+    endsAt: { type: Date, required: true },
     costKobo: { type: Number, default: 0 },
     /** Snapshot of the buyer-pool estimate at confirm time. */
     estimatedReachMin: { type: Number, default: null },
@@ -38,5 +38,9 @@ const hubListingBoostSchema = new mongoose.Schema(
 
 hubListingBoostSchema.index({ status: 1, endsAt: 1 });
 hubListingBoostSchema.index({ vendorId: 1, productId: 1, status: 1 });
+// TTL Auto-Purge: MongoDB automatically removes expired records from disk.
+// Set to 3 days (259,200s) after endsAt so vendors can see recent completion in "My Boosts",
+// after which MongoDB permanently deletes the document.
+hubListingBoostSchema.index({ endsAt: 1 }, { expireAfterSeconds: 3 * 24 * 60 * 60 });
 
 export default mongoose.model("HubListingBoost", hubListingBoostSchema);

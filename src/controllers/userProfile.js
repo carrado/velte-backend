@@ -1,6 +1,8 @@
 import jwt from "jsonwebtoken";
 import User from "../models/Users.js";
 import Buyer from "../models/Buyer.model.js";
+import PlatformSubscription from "../models/PlatformSubscription.model.js";
+import { resolveTier } from "../services/tier.service.js";
 
 // GET /auth/me — "the single auth API" (2026-09-16). Used to be vendor-only,
 // gated by verifyAuth (see routes/auth.js's own comment on why that's gone
@@ -60,7 +62,24 @@ export const profile = async (req, res, next) => {
             email: user.email,
           };
         } else {
-          vendor = user;
+          const tier = await resolveTier({ id: user._id, type: "vendor" });
+          const sub = await PlatformSubscription.findOne({
+            ownerId: user._id,
+            ownerType: "vendor",
+            status: { $in: ["trialing", "active", "past_due", "cancelled"] },
+            currentPeriodEnd: { $gt: new Date() },
+          })
+            .lean()
+            .catch(() => null);
+
+          vendor = {
+            ...user.toObject(),
+            tier,
+            plan: tier,
+            isEnterprise: tier === "vendor_enterprise",
+            enterprise: tier === "vendor_enterprise",
+            subscription: sub || null,
+          };
         }
       }
     }
@@ -75,7 +94,27 @@ export const profile = async (req, res, next) => {
         if (!isJwtError(err)) throw err;
       }
       if (decoded?.type === "buyer" && decoded.buyerId) {
-        buyer = await Buyer.findById(decoded.buyerId);
+        const rawBuyer = await Buyer.findById(decoded.buyerId);
+        if (rawBuyer) {
+          const tier = await resolveTier({ id: rawBuyer._id, type: "buyer" });
+          const sub = await PlatformSubscription.findOne({
+            ownerId: rawBuyer._id,
+            ownerType: "buyer",
+            status: { $in: ["trialing", "active", "past_due", "cancelled"] },
+            currentPeriodEnd: { $gt: new Date() },
+          })
+            .lean()
+            .catch(() => null);
+
+          buyer = {
+            ...rawBuyer.toObject(),
+            tier,
+            plan: tier,
+            isPremium: tier === "buyer_premium",
+            premium: tier === "buyer_premium",
+            subscription: sub || null,
+          };
+        }
       }
     }
 

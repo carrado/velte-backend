@@ -4,7 +4,6 @@ import { resolveActor } from "../middleware/resolveActor.js";
 import { asBuyerAudience } from "../middleware/buyerAudience.js";
 import { requireEntitlement } from "../services/tier.service.js";
 import {
-  getHubFeed,
   getHubContext,
   getHubHome,
   getHubVendors,
@@ -19,6 +18,7 @@ import {
   cancelBroadcast,
   consumeAiPosterSlot,
   refundAiPosterSlot,
+  getHubAnalytics,
 } from "../controllers/hub/hub.controller.js";
 import {
   addFavourite,
@@ -30,11 +30,6 @@ import {
 } from "../controllers/hub/buyerHub.controller.js";
 
 const router = express.Router();
-
-// The Hub timeline — products, labelled sponsored pins, sent broadcasts,
-// vendor directory. Signed-up buyers and vendors. Guests are refused in
-// the controller.
-router.get("/feed", resolveActor, getHubFeed);
 
 // Vendor dashboard publish UI's single context call (tier, prices, caps,
 // counts, wallet balance). No entitlement gate — both tiers may view; the
@@ -112,6 +107,9 @@ router.post(
   requireEntitlement("vendor_broadcast"),
   cancelBroadcast,
 );
+
+// Enterprise Hub Exclusives: Analytics & Insights
+router.get("/analytics", resolveActor, requireEntitlement("analytics_insights"), getHubAnalytics);
 
 // Buyer actions on the Hub. asBuyerAudience keeps a linked vendor session
 // on the buyer tier. Premium is enforced in the controller.

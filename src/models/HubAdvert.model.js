@@ -59,7 +59,7 @@ const hubAdvertSchema = new mongoose.Schema(
     boosted: { type: Boolean, default: false },
 
     startsAt: { type: Date, default: Date.now },
-    endsAt: { type: Date, required: true, index: true },
+    endsAt: { type: Date, required: true },
 
     costKobo: { type: Number, required: true },
     enterpriseFree: { type: Boolean, default: false },
@@ -74,5 +74,7 @@ const hubAdvertSchema = new mongoose.Schema(
 );
 
 hubAdvertSchema.index({ status: 1, endsAt: 1 });
+// TTL Auto-Purge: MongoDB automatically deletes expired adverts 3 days after endsAt
+hubAdvertSchema.index({ endsAt: 1 }, { expireAfterSeconds: 3 * 24 * 60 * 60 });
 
 export default mongoose.model("HubAdvert", hubAdvertSchema);

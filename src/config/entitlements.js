@@ -65,6 +65,7 @@ export const CAPABILITIES = {
   boost_advert: VENDORS,
   vendor_broadcast: VENDORS,
   analytics_insights: ["vendor_enterprise"],
+  community_forum: ["buyer_premium", "vendor_enterprise"],
   // Buyer Premium + Vendor Enterprise. Basic buyers/vendors stay gated.
   hub_social_contact: ["buyer_premium", "vendor_enterprise"],
   buyer_place_advert: ["buyer_premium"],
