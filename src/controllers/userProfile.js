@@ -72,13 +72,31 @@ export const profile = async (req, res, next) => {
             .lean()
             .catch(() => null);
 
+          const rawVendor = user.toObject();
+          delete rawVendor.password;
+          delete rawVendor.requestPhoneOtp;
+          delete rawVendor.requestPendingPhone;
+          delete rawVendor.requestPhone;
+          delete rawVendor.paystackSubaccount;
+          delete rawVendor.blockReason;
+          delete rawVendor.__v;
+          if (rawVendor.verification) {
+            delete rawVendor.verification.kycReference;
+          }
+
           vendor = {
-            ...user.toObject(),
+            ...rawVendor,
             tier,
-            plan: tier,
-            isEnterprise: tier === "vendor_enterprise",
-            enterprise: tier === "vendor_enterprise",
-            subscription: sub || null,
+            subscription: sub
+              ? {
+                  _id: sub._id,
+                  plan: sub.plan,
+                  status: sub.status,
+                  interval: sub.interval,
+                  currentPeriodEnd: sub.currentPeriodEnd,
+                  trialEndsAt: sub.trialEndsAt ?? null,
+                }
+              : null,
           };
         }
       }
@@ -106,13 +124,23 @@ export const profile = async (req, res, next) => {
             .lean()
             .catch(() => null);
 
+          const cleanBuyer = rawBuyer.toObject();
+          delete cleanBuyer.__v;
+          delete cleanBuyer.blockReason;
+
           buyer = {
-            ...rawBuyer.toObject(),
+            ...cleanBuyer,
             tier,
-            plan: tier,
-            isPremium: tier === "buyer_premium",
-            premium: tier === "buyer_premium",
-            subscription: sub || null,
+            subscription: sub
+              ? {
+                  _id: sub._id,
+                  plan: sub.plan,
+                  status: sub.status,
+                  interval: sub.interval,
+                  currentPeriodEnd: sub.currentPeriodEnd,
+                  trialEndsAt: sub.trialEndsAt ?? null,
+                }
+              : null,
           };
         }
       }

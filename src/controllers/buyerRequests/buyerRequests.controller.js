@@ -352,10 +352,10 @@ export async function listMyRequests(req, res, next) {
     // must show the vendor without a link, not drop them from the list.
     const [vendors, stores] = await Promise.all([
       User.find({ _id: { $in: vendorIds } })
-        .select("name company.name avatar area state")
+        .select("name company.name avatar area state tier")
         .lean(),
       Store.find({ vendorId: { $in: vendorIds } })
-        .select("vendorId handle name")
+        .select("vendorId handle name tier")
         .lean(),
     ]);
 
@@ -372,6 +372,8 @@ export async function listMyRequests(req, res, next) {
       if (!vendor) continue;
       const store = storeByVendorId.get(vendorId);
       const key = String(response.requestId);
+      const vendorTier = vendor.tier || store?.tier || "vendor_free";
+      const isEnterprise = vendorTier === "vendor_enterprise";
       const list = respondersByRequestId.get(key) ?? [];
       list.push({
         vendorId,
@@ -380,6 +382,9 @@ export async function listMyRequests(req, res, next) {
         storeHandle: store?.handle ?? null,
         area: vendor.area ?? null,
         state: vendor.state ?? null,
+        tier: vendorTier,
+        isEnterprise,
+        enterprise: isEnterprise,
         respondedAt: response.createdAt,
         // The quote (2026-09-03). Null throughout for a vendor who accepted
         // without naming terms — the comparison ranks whoever quoted and

@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { AppError } from "../../middleware/errorHandler.js";
 import Product from "../../models/Product.model.js";
 import Store from "../../models/Store.model.js";
+import User from "../../models/Users.js";
 import LeadCooldown from "../../models/LeadCooldown.model.js";
 import BuyerRequest from "../../models/BuyerRequest.model.js";
 import BuyerRequestResponse from "../../models/BuyerRequestResponse.model.js";
@@ -145,7 +146,15 @@ export async function chargeLead(req, res, next) {
     // either way, and the cooldown decides whether to BILL, not whether to
     // connect them. Withholding it there would break the second click in a
     // 15-minute window for no reason.
-    const store = await Store.findOne({ vendorId }).select("whatsapp").lean();
+    // Enterprise policy: only Enterprise vendors can receive messages / leads.
+    const [vendorUser, store] = await Promise.all([
+      User.findById(vendorId).select("tier").lean(),
+      Store.findOne({ vendorId }).select("whatsapp tier").lean(),
+    ]);
+    const vendorTier = vendorUser?.tier || store?.tier || "vendor_free";
+    if (vendorTier !== "vendor_enterprise") {
+      throw new AppError("Only Enterprise vendors can receive messages.", 403);
+    }
     const whatsapp = store?.whatsapp ?? null;
 
     if (await isWithinCooldown(vendorId, buyerId)) {
@@ -172,8 +181,8 @@ export async function chargeLead(req, res, next) {
       leadSource === "buyer_request" && typeof requestId === "string" && requestId
         ? `buyer_request_${requestId}_${vendorId}`
         : `lead_${vendorId}_${Date.now()}_${crypto
-            .randomBytes(4)
-            .toString("hex")}`;
+          .randomBytes(4)
+          .toString("hex")}`;
 
     // Best-effort: the wallet ledger should read like "WhatsApp lead —
     // white sneakers", never a raw ObjectId — if the lookup fails (bad id,

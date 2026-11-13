@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 
 import HubAdvert from "../../models/HubAdvert.model.js";
+import HubAdvertEvent from "../../models/HubAdvertEvent.model.js";
 import HubBroadcast from "../../models/HubBroadcast.model.js";
 import HubListingBoost from "../../models/HubListingBoost.model.js";
 import HubAiPosterUsage from "../../models/HubAiPosterUsage.model.js";
@@ -686,6 +687,56 @@ export async function cancelAdvert(req, res, next) {
   }
 }
 
+/**
+ * Records a viewer impression ("view") or interaction ("click") on a Hub advert
+ * with per-actor-per-day deduplication.
+ */
+export async function trackAdvertEngagement(req, res, next) {
+  try {
+    const { id } = req.params;
+    const kind = req.body?.kind === "click" ? "click" : "view";
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid advert ID" });
+    }
+
+    const actorId =
+      req.actor?.id ||
+      req.user?._id ||
+      req.buyer?._id ||
+      req.cookies?.auth_token ||
+      req.cookies?.buyer_auth_token ||
+      req.headers["x-forwarded-for"] ||
+      req.ip ||
+      "anonymous";
+    const actorKey = String(actorId).slice(0, 64);
+    const day = new Date().toISOString().slice(0, 10);
+
+    let recorded = false;
+    try {
+      await HubAdvertEvent.create({
+        advertId: id,
+        actorKey,
+        kind,
+        day,
+      });
+      recorded = true;
+    } catch (err) {
+      // Duplicate key (E11000) = already counted today for this viewer
+      if (err?.code !== 11000) throw err;
+    }
+
+    if (recorded) {
+      const field = kind === "click" ? "clicks" : "views";
+      await HubAdvert.updateOne({ _id: id }, { $inc: { [field]: 1 } });
+    }
+
+    res.json({ success: true, data: { recorded, kind } });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // ── Vendor: broadcasts (drafts this slice; send + fan-out next) ──────────
 
 export async function createBroadcast(req, res, next) {
@@ -1262,10 +1313,10 @@ export async function getHubHome(req, res, next) {
     ];
     const [timelineStores, timelineUsers] = await Promise.all([
       Store.find({ vendorId: { $in: timelineVendorIds } })
-        .select("vendorId name handle avatar description sectors locations whatsapp social")
+        .select("vendorId name handle avatar description sectors locations whatsapp social tier")
         .lean(),
       User.find({ _id: { $in: timelineVendorIds } })
-        .select("avatar verification area state +payout")
+        .select("avatar verification area state tier +payout")
         .lean(),
     ]);
     const timelineStoreByVendor = new Map(
@@ -1431,20 +1482,25 @@ export async function getHubHome(req, res, next) {
     const identityOf = (id) => {
       const store = timelineStoreByVendor.get(String(id));
       const user = timelineUserById.get(String(id));
+      const vendorTier = user?.tier || store?.tier || "vendor_free";
+      const isEnt = vendorTier === "vendor_enterprise";
       return {
         vendorId: String(id),
         storeName: store?.name ?? null,
         storeHandle: store?.handle ?? null,
         avatar: store?.avatar ?? user?.avatar ?? null,
         verified: verifiedOf(user),
+        tier: vendorTier,
+        isEnterprise: isEnt,
+        enterprise: isEnt,
         ratingAvg: ratingByVendor.get(String(id))
           ? Math.round(ratingByVendor.get(String(id)).avg * 10) / 10
           : null,
         ratingCount: ratingByVendor.get(String(id))?.count ?? 0,
         sectors: store?.sectors || [],
-        place: placeOf(store, user),
-        // The number is the vendor's channel. Premium is who may open it.
-        whatsapp: premium ? store?.whatsapp || null : null,
+        place: null, // Removed store's location from listing
+        // Messaging is only permitted for enterprise vendors.
+        whatsapp: (premium && isEnt) ? store?.whatsapp || null : null,
         social: socialOf(store, premium),
         ...cardEvidence(id, verifiedOf(user)),
       };

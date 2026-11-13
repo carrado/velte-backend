@@ -655,12 +655,12 @@ export async function getMarketplacePreview(req, res, next) {
     const vendorIds = [...new Set(products.map((p) => String(p.vendorId)))];
     const [stores, users] = await Promise.all([
       Store.find({ vendorId: { $in: vendorIds } })
-        .select("vendorId name handle whatsapp")
+        .select("vendorId name handle whatsapp tier")
         .lean(),
       // Avatar + payout (select:false) so checkoutEligible can include the
       // recipient check without leaking account details onto the card JSON.
       User.find({ _id: { $in: vendorIds } })
-        .select("avatar +payout")
+        .select("avatar tier +payout")
         .lean(),
     ]);
     const storeByVendorId = new Map(
@@ -678,13 +678,18 @@ export async function getMarketplacePreview(req, res, next) {
         if (!store) return null;
         const vendor = userById.get(String(p.vendorId));
         const listing = presentPublicListing(p, vendor);
+        const vendorTier = vendor?.tier || store.tier || "vendor_free";
+        const isEnt = vendorTier === "vendor_enterprise";
         return {
           ...listing,
           vendorId: p.vendorId,
           storeName: store.name,
           storeHandle: store.handle,
           storeAvatar: vendor?.avatar ?? null,
-          whatsapp: store.whatsapp,
+          tier: vendorTier,
+          isEnterprise: isEnt,
+          enterprise: isEnt,
+          whatsapp: isEnt ? store.whatsapp : null,
         };
       })
       .filter(Boolean);
@@ -732,22 +737,30 @@ export async function getVendorsPreview(req, res, next) {
     const users = await User.find({
       _id: { $in: stores.map((s) => s.vendorId) },
     })
-      .select("avatar")
+      .select("avatar tier")
       .lean();
-    const avatarByVendorId = new Map(
-      users.map((u) => [String(u._id), u.avatar ?? null]),
+    const userByVendorId = new Map(
+      users.map((u) => [String(u._id), u]),
     );
 
-    const items = stores.map((s) => ({
-      vendorId: s.vendorId,
-      name: s.name,
-      handle: s.handle,
-      description: s.description || null,
-      sectors: s.sectors || [],
-      whatsapp: s.whatsapp,
-      gallery: s.gallery || [],
-      avatar: avatarByVendorId.get(String(s.vendorId)) ?? null,
-    }));
+    const items = stores.map((s) => {
+      const u = userByVendorId.get(String(s.vendorId));
+      const vendorTier = u?.tier || s.tier || "vendor_free";
+      const isEnt = vendorTier === "vendor_enterprise";
+      return {
+        vendorId: s.vendorId,
+        name: s.name,
+        handle: s.handle,
+        description: s.description || null,
+        sectors: s.sectors || [],
+        tier: vendorTier,
+        isEnterprise: isEnt,
+        enterprise: isEnt,
+        whatsapp: isEnt ? s.whatsapp : null,
+        gallery: s.gallery || [],
+        avatar: u?.avatar ?? null,
+      };
+    });
 
     res.json({ success: true, data: items });
   } catch (err) {
@@ -774,22 +787,30 @@ export async function getVendorsBrowse(req, res, next) {
     const users = await User.find({
       _id: { $in: stores.map((s) => s.vendorId) },
     })
-      .select("avatar")
+      .select("avatar tier")
       .lean();
-    const avatarByVendorId = new Map(
-      users.map((u) => [String(u._id), u.avatar ?? null]),
+    const userByVendorId = new Map(
+      users.map((u) => [String(u._id), u]),
     );
 
-    const items = stores.map((s) => ({
-      vendorId: s.vendorId,
-      name: s.name,
-      handle: s.handle,
-      description: s.description || null,
-      sectors: s.sectors || [],
-      whatsapp: s.whatsapp,
-      gallery: s.gallery || [],
-      avatar: avatarByVendorId.get(String(s.vendorId)) ?? null,
-    }));
+    const items = stores.map((s) => {
+      const u = userByVendorId.get(String(s.vendorId));
+      const vendorTier = u?.tier || s.tier || "vendor_free";
+      const isEnt = vendorTier === "vendor_enterprise";
+      return {
+        vendorId: s.vendorId,
+        name: s.name,
+        handle: s.handle,
+        description: s.description || null,
+        sectors: s.sectors || [],
+        tier: vendorTier,
+        isEnterprise: isEnt,
+        enterprise: isEnt,
+        whatsapp: isEnt ? s.whatsapp : null,
+        gallery: s.gallery || [],
+        avatar: u?.avatar ?? null,
+      };
+    });
 
     res.json({ success: true, data: items });
   } catch (err) {
@@ -910,10 +931,10 @@ export async function getMarketplaceBrowse(req, res, next) {
     const vendorIds = [...new Set(products.map((p) => String(p.vendorId)))];
     const [stores, users] = await Promise.all([
       Store.find({ vendorId: { $in: vendorIds } })
-        .select("vendorId name handle whatsapp")
+        .select("vendorId name handle whatsapp tier")
         .lean(),
       User.find({ _id: { $in: vendorIds } })
-        .select("avatar +payout")
+        .select("avatar tier +payout")
         .lean(),
     ]);
     const storeByVendorId = new Map(stores.map((s) => [String(s.vendorId), s]));
@@ -926,6 +947,8 @@ export async function getMarketplaceBrowse(req, res, next) {
         if (!store) return null;
         const vendor = userById.get(String(p.vendorId));
         const listing = presentPublicListing(p, vendor);
+        const vendorTier = vendor?.tier || store.tier || "vendor_free";
+        const isEnt = vendorTier === "vendor_enterprise";
         return {
           ...listing,
           categoryId: p.categoryId ?? null,
@@ -933,7 +956,10 @@ export async function getMarketplaceBrowse(req, res, next) {
           storeName: store.name,
           storeHandle: store.handle,
           storeAvatar: vendor?.avatar ?? null,
-          whatsapp: store.whatsapp,
+          tier: vendorTier,
+          isEnterprise: isEnt,
+          enterprise: isEnt,
+          whatsapp: isEnt ? store.whatsapp : null,
         };
       })
       .filter(Boolean);
@@ -1008,6 +1034,9 @@ async function buildPublicProductPayload(product, req) {
   const state = user.state?.trim() || null;
   const country = user.country?.trim() || "Nigeria";
 
+  const vendorTier = user?.tier || store?.tier || "vendor_free";
+  const isEnterprise = vendorTier === "vendor_enterprise";
+
   return {
     product: presentPublicListing(product, user),
     store: {
@@ -1018,6 +1047,9 @@ async function buildPublicProductPayload(product, req) {
       vendorId: String(store.vendorId),
       avatar: user.avatar ?? null,
       verified: verifiedOf(user),
+      tier: vendorTier,
+      isEnterprise,
+      enterprise: isEnterprise,
       // State + country only — never neighbourhood/street (area).
       state,
       country,
@@ -1027,7 +1059,7 @@ async function buildPublicProductPayload(product, req) {
           : state || country || null,
       ratingAvg: vendorReviews.avg,
       ratingCount: vendorReviews.count,
-      whatsapp: canContact ? store.whatsapp || null : null,
+      whatsapp: (canContact && isEnterprise) ? store.whatsapp || null : null,
     },
     reviews: {
       product: productReviews,

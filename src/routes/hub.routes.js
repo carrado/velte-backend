@@ -10,6 +10,7 @@ import {
   createAdvert,
   createListingBoost,
   listMyAdverts,
+  trackAdvertEngagement,
   listMyListingBoosts,
   cancelListingBoost,
   cancelAdvert,
@@ -59,6 +60,7 @@ router.get(
   requireEntitlement("place_advert"),
   listMyAdverts,
 );
+router.post("/adverts/:id/track", resolveActor, trackAdvertEngagement);
 router.post(
   "/adverts",
   resolveActor,
