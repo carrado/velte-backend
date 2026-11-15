@@ -17,6 +17,7 @@ import BuyerRequestResponse from "../../models/BuyerRequestResponse.model.js";
 import FavouriteVendor from "../../models/FavouriteVendor.model.js";
 import BuyerBroadcast from "../../models/BuyerBroadcast.model.js";
 import Buyer from "../../models/Buyer.model.js";
+import PlatformSubscription from "../../models/PlatformSubscription.model.js";
 import { AppError } from "../../middleware/errorHandler.js";
 import { resolveTier } from "../../services/tier.service.js";
 import { getVendorEligibilityFilter } from "../store/store.controller.js";
@@ -241,7 +242,7 @@ function ownImages(cover, extras = []) {
 }
 
 const PRODUCT_LISTING_SELECT =
-  "vendorId name slug kind quoteOnRequest price priceMax currency mainImageUrl thumbnailUrls description attributes quantity createdAt";
+  "vendorId name slug kind quoteOnRequest price priceMax currency mainImageUrl thumbnailUrls description attributes quantity createdAt sectorValue categoryId";
 
 // The listing the Hub card opens — same fields /chat's sheet needs. Price
 // and stock stay the product's own values; checkoutEligible is computed
@@ -263,6 +264,8 @@ function listingOf(product, user) {
       .filter((row) => row?.name && row?.value)
       .map((row) => ({ name: row.name, value: row.value })),
     checkoutEligible: isCheckoutEligible(product, user),
+    sectorValue: product.sectorValue || null,
+    categoryId: product.categoryId || null,
   };
 }
 
@@ -295,11 +298,17 @@ const REAL_BUYER = {
 
 async function buyerReachPool() {
   const monthAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000);
-  const [all, recent] = await Promise.all([
+  const dayAgo = new Date(Date.now() - 24 * 3600 * 1000);
+  const [all, recent, premium, today] = await Promise.all([
     Buyer.countDocuments(REAL_BUYER),
     Buyer.countDocuments({ ...REAL_BUYER, lastLoginAt: { $gte: monthAgo } }),
+    Buyer.countDocuments({
+      ...REAL_BUYER,
+      "premiumProfile.savedAt": { $ne: null },
+    }),
+    Buyer.countDocuments({ ...REAL_BUYER, updatedAt: { $gte: dayAgo } }),
   ]);
-  return { all, recent };
+  return { all, recent, premium, today };
 }
 
 /**
@@ -737,12 +746,22 @@ export async function trackAdvertEngagement(req, res, next) {
   }
 }
 
-// ── Vendor: broadcasts (drafts this slice; send + fan-out next) ──────────
+// ── Vendor: broadcasts ──────────────────────────────────────────────
 
 export async function createBroadcast(req, res, next) {
   try {
     const vendorId = assertVendorActor(req);
-    const { message, imageUrl, advertId } = req.body || {};
+    const {
+      message,
+      imageUrl,
+      advertId,
+      productId,
+      format,
+      targetAudience,
+      ctaType,
+      sendNow,
+    } = req.body || {};
+
     if (!message || !String(message).trim()) {
       throw new AppError("A message is required.", 400, {
         code: "message_required",
@@ -767,17 +786,163 @@ export async function createBroadcast(req, res, next) {
       advertRef = advert._id;
     }
 
+    let productRef = null;
+    if (productId) {
+      const product = await Product.findOne({ _id: productId, vendorId })
+        .select("_id")
+        .lean();
+      if (!product) {
+        throw new AppError("That listing is not yours.", 403, {
+          code: "not_your_product",
+        });
+      }
+      productRef = product._id;
+    }
+
+    const tier = await resolveTier(req.actor);
+    const isEnterprise = tier === "vendor_enterprise";
+    const cap = isEnterprise
+      ? HUB_BROADCAST_CAP_ENTERPRISE_PER_24H
+      : HUB_BROADCAST_CAP_BASIC_PER_24H;
+    const past24h = new Date(Date.now() - 24 * 3600 * 1000);
+
+    const shouldSend = Boolean(sendNow);
+    const broadcastId = new mongoose.Types.ObjectId();
+
+    let audienceCount = null;
+    let costKobo = null;
+
+    if (shouldSend) {
+      const sentPast24h = await HubBroadcast.countDocuments({
+        vendorId,
+        status: "sent",
+        sentAt: { $gte: past24h },
+      });
+      if (sentPast24h >= cap) {
+        throw new AppError(
+          `You have reached your 24-hour broadcast limit (${cap} send${cap > 1 ? "s" : ""} per 24 hours).`,
+          400,
+          { code: "broadcast_cap_reached", cap, sentPast24h },
+        );
+      }
+
+      costKobo = HUB_BROADCAST_COST_KOBO;
+      await debitWalletForHub({
+        vendorId,
+        amountKobo: costKobo,
+        reference: `hub_broadcast_${broadcastId}`,
+        description: "Hub broadcast dispatch",
+        insufficientMessage:
+          "Insufficient wallet balance — top up ₦1,000 to dispatch this broadcast.",
+        channel: "hub_broadcast",
+      });
+
+      const pool = await buyerReachPool();
+      let reach = pool.all;
+      if (targetAudience === "premium_only") {
+        reach = pool.premium;
+      } else if (targetAudience === "nearby") {
+        reach = pool.recent > 0 ? pool.recent : pool.all;
+      }
+      audienceCount = reach;
+    }
+
     const broadcast = await HubBroadcast.create({
+      _id: broadcastId,
       vendorId,
       message: String(message).trim(),
       imageUrl: imageUrl ?? null,
       advertId: advertRef,
-      status: "draft",
+      productId: productRef,
+      format: format || (advertRef ? "advert" : productRef ? "product" : "custom"),
+      targetAudience: targetAudience || "all_online",
+      ctaType: ctaType || "chat",
+      status: shouldSend ? "sent" : "draft",
+      audienceCount,
+      costKobo,
+      enterpriseFree: false,
+      sentAt: shouldSend ? new Date() : null,
     });
 
     res.status(201).json({
       success: true,
-      data: { id: String(broadcast._id), status: broadcast.status },
+      data: {
+        id: String(broadcast._id),
+        status: broadcast.status,
+        audienceCount: broadcast.audienceCount,
+        sentAt: broadcast.sentAt,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function sendBroadcast(req, res, next) {
+  try {
+    const vendorId = assertVendorActor(req);
+    const broadcast = await HubBroadcast.findOne({
+      _id: req.params.id,
+      vendorId,
+      status: "draft",
+    });
+    if (!broadcast) {
+      throw new AppError("Draft not found.", 404, { code: "not_found" });
+    }
+
+    const tier = await resolveTier(req.actor);
+    const isEnterprise = tier === "vendor_enterprise";
+    const cap = isEnterprise
+      ? HUB_BROADCAST_CAP_ENTERPRISE_PER_24H
+      : HUB_BROADCAST_CAP_BASIC_PER_24H;
+    const past24h = new Date(Date.now() - 24 * 3600 * 1000);
+
+    const sentPast24h = await HubBroadcast.countDocuments({
+      vendorId,
+      status: "sent",
+      sentAt: { $gte: past24h },
+    });
+    if (sentPast24h >= cap) {
+      throw new AppError(
+        `You have reached your 24-hour broadcast limit (${cap} send${cap > 1 ? "s" : ""} per 24 hours).`,
+        400,
+        { code: "broadcast_cap_reached", cap, sentPast24h },
+      );
+    }
+
+    const costKobo = HUB_BROADCAST_COST_KOBO;
+    await debitWalletForHub({
+      vendorId,
+      amountKobo: costKobo,
+      reference: `hub_broadcast_${broadcast._id}`,
+      description: "Hub broadcast dispatch",
+      insufficientMessage:
+        "Insufficient wallet balance — top up ₦1,000 to dispatch this broadcast.",
+      channel: "hub_broadcast",
+    });
+
+    const pool = await buyerReachPool();
+    let reach = pool.all;
+    if (broadcast.targetAudience === "premium_only") {
+      reach = pool.premium;
+    } else if (broadcast.targetAudience === "nearby") {
+      reach = pool.recent > 0 ? pool.recent : pool.all;
+    }
+
+    broadcast.status = "sent";
+    broadcast.sentAt = new Date();
+    broadcast.costKobo = costKobo;
+    broadcast.audienceCount = reach;
+    await broadcast.save();
+
+    res.json({
+      success: true,
+      data: {
+        id: String(broadcast._id),
+        status: broadcast.status,
+        audienceCount: reach,
+        sentAt: broadcast.sentAt,
+      },
     });
   } catch (err) {
     next(err);
@@ -827,7 +992,8 @@ export async function getHubContext(req, res, next) {
     const tier = await resolveTier(req.actor);
     const enterprise = tier === "vendor_enterprise";
     const now = new Date();
-    const [wallet, activeAdverts, draftBroadcasts, reachPool, aiPoster] =
+    const past24h = new Date(now.getTime() - 24 * 3600 * 1000);
+    const [wallet, activeAdverts, draftBroadcasts, sentBroadcastsPast24h, reachPool, aiPoster] =
       await Promise.all([
         Wallet.findOne({ vendorId }).select("balanceKobo").lean(),
         HubAdvert.countDocuments({
@@ -836,9 +1002,18 @@ export async function getHubContext(req, res, next) {
           endsAt: { $gt: now },
         }),
         HubBroadcast.countDocuments({ vendorId, status: "draft" }),
+        HubBroadcast.countDocuments({
+          vendorId,
+          status: "sent",
+          sentAt: { $gte: past24h },
+        }),
         buyerReachPool(),
         readAiPosterUsage(vendorId, enterprise),
       ]);
+    const sendsPerDay = enterprise
+      ? HUB_BROADCAST_CAP_ENTERPRISE_PER_24H
+      : HUB_BROADCAST_CAP_BASIC_PER_24H;
+    const sendsRemaining = Math.max(0, sendsPerDay - sentBroadcastsPast24h);
     res.json({
       success: true,
       data: {
@@ -859,9 +1034,15 @@ export async function getHubContext(req, res, next) {
         maxActiveAdverts: HUB_MAX_ACTIVE_ADVERTS_PER_VENDOR,
         activeAdverts,
         draftBroadcasts,
-        sendsPerDay: enterprise
-          ? HUB_BROADCAST_CAP_ENTERPRISE_PER_24H
-          : HUB_BROADCAST_CAP_BASIC_PER_24H,
+        sendsPerDay,
+        sentBroadcastsPast24h,
+        sendsRemaining,
+        reachPool: {
+          all: reachPool.all,
+          recent: reachPool.recent,
+          premium: reachPool.premium,
+          today: reachPool.today,
+        },
         walletBalanceKobo: wallet?.balanceKobo ?? 0,
         aiPosterLimit: aiPoster.limit,
         aiPosterUsed: aiPoster.used,
@@ -1119,9 +1300,11 @@ export async function getHubHome(req, res, next) {
         .limit(12)
         .lean(),
       HubBroadcast.find({ status: "sent" })
-        .select("vendorId message imageUrl sentAt")
+        .select(
+          "vendorId message imageUrl sentAt productId advertId format targetAudience ctaType",
+        )
         .sort({ sentAt: -1 })
-        .limit(8)
+        .limit(12)
         .lean(),
       HubListingBoost.find({ status: "active", endsAt: { $gt: now } })
         .select("productId vendorId")
@@ -1162,9 +1345,14 @@ export async function getHubHome(req, res, next) {
     );
     const missingAdvertProductIds = [
       ...new Set(
-        visibleAdverts
-          .map((advert) => (advert.productId ? String(advert.productId) : null))
-          .filter((id) => id && !listingById.has(id)),
+        [
+          ...visibleAdverts.map((advert) =>
+            advert.productId ? String(advert.productId) : null,
+          ),
+          ...visibleBroadcasts.map((broadcast) =>
+            broadcast.productId ? String(broadcast.productId) : null,
+          ),
+        ].filter((id) => id && !listingById.has(id)),
       ),
     ];
     if (missingAdvertProductIds.length) {
@@ -1185,21 +1373,162 @@ export async function getHubHome(req, res, next) {
     const sponsoredIds = [
       ...new Set(visibleAdverts.map((a) => String(a.vendorId))),
     ];
-    const sponsoredStores = sponsoredIds.length
-      ? await Store.find({
-        vendorId: { $in: sponsoredIds, $nin: hiddenIds },
-      })
-        .select("vendorId name handle description sectors gallery avatar locations whatsapp social")
-        .lean()
-      : [];
-    const fill = await Store.find({
-      vendorId: { $nin: [...hiddenIds, ...sponsoredIds] },
+
+    const advertBuyerIds = [
+      ...new Set(
+        visibleAdverts
+          .map((a) => a.placedByBuyerId)
+          .filter(Boolean)
+          .map((id) => String(id)),
+      ),
+    ];
+    const [buyerDocs, buyerUserDocs] = await Promise.all([
+      advertBuyerIds.length
+        ? Buyer.find({ _id: { $in: advertBuyerIds } })
+            .select("name avatar")
+            .lean()
+        : [],
+      advertBuyerIds.length
+        ? User.find({ _id: { $in: advertBuyerIds } })
+            .select("name avatar company")
+            .lean()
+        : [],
+    ]);
+    const advertBuyerMap = new Map();
+    for (const b of buyerDocs) {
+      advertBuyerMap.set(String(b._id), {
+        name: b.name || "Verified Buyer",
+        avatar: b.avatar || null,
+      });
+    }
+    for (const u of buyerUserDocs) {
+      advertBuyerMap.set(String(u._id), {
+        name: u.company?.name || u.name || "Verified Buyer",
+        avatar: u.avatar || null,
+      });
+    }
+
+    // Featured vendors: rank eligible stores by performance metrics
+    // (orders completed, sales volume, ratings, and active catalog depth),
+    // accepting the top 6 performers.
+    const allStores = await Store.find({
+      vendorId: { $nin: hiddenIds },
     })
-      .select("vendorId name handle description sectors gallery avatar locations whatsapp social")
-      .sort({ lastFeaturedAt: 1, name: 1 })
-      .limit(12)
+      .select("vendorId name handle description sectors gallery avatar locations whatsapp social tier")
       .lean();
-    const featuredStores = [...sponsoredStores, ...fill].slice(0, 12);
+
+    const allStoreVendorIds = allStores.map((s) => s.vendorId).filter(Boolean);
+
+    const [vendorOrderStats, vendorReviewStats, vendorProductStats] = await Promise.all([
+      allStoreVendorIds.length
+        ? Order.aggregate([
+          {
+            $match: {
+              vendorId: { $in: allStoreVendorIds },
+              status: { $in: ["paid", "accepted", "dispatched", "delivered", "confirmed", "received"] },
+            },
+          },
+          {
+            $group: {
+              _id: "$vendorId",
+              salesKobo: { $sum: { $ifNull: ["$totalKobo", "$subtotalKobo", 0] } },
+              ordersCount: { $sum: 1 },
+            },
+          },
+        ])
+        : [],
+      allStoreVendorIds.length
+        ? Review.aggregate([
+          {
+            $match: {
+              vendorId: { $in: allStoreVendorIds },
+              $or: [{ kind: "vendor" }, { kind: { $exists: false } }],
+            },
+          },
+          {
+            $group: {
+              _id: "$vendorId",
+              avgRating: { $avg: "$rating" },
+              reviewCount: { $sum: 1 },
+            },
+          },
+        ])
+        : [],
+      allStoreVendorIds.length
+        ? Product.aggregate([
+          {
+            $match: {
+              vendorId: { $in: allStoreVendorIds },
+              isSuspended: { $ne: true },
+            },
+          },
+          {
+            $group: {
+              _id: "$vendorId",
+              productCount: { $sum: 1 },
+            },
+          },
+        ])
+        : [],
+    ]);
+
+    const salesByVendor = new Map();
+    const ordersCountByVendor = new Map();
+    for (const row of vendorOrderStats) {
+      salesByVendor.set(String(row._id), row.salesKobo || 0);
+      ordersCountByVendor.set(String(row._id), row.ordersCount || 0);
+    }
+
+    const reviewStatsByVendor = new Map();
+    for (const row of vendorReviewStats) {
+      reviewStatsByVendor.set(String(row._id), {
+        avgRating: row.avgRating || 0,
+        reviewCount: row.reviewCount || 0,
+      });
+    }
+
+    const productCountByVendor = new Map();
+    for (const row of vendorProductStats) {
+      productCountByVendor.set(String(row._id), row.productCount || 0);
+    }
+
+    const storesWithScore = allStores.map((s) => {
+      const vId = String(s.vendorId);
+      const isSponsored = sponsoredIds.includes(vId);
+      const sales = salesByVendor.get(vId) || 0;
+      const orders = ordersCountByVendor.get(vId) || 0;
+      const rStats = reviewStatsByVendor.get(vId) || { avgRating: 0, reviewCount: 0 };
+      const products = productCountByVendor.get(vId) || 0;
+
+      const score =
+        (isSponsored ? 100000 : 0) +
+        orders * 1000 +
+        (sales / 10000) +
+        rStats.avgRating * rStats.reviewCount * 50 +
+        products * 10;
+
+      return {
+        store: s,
+        isSponsored,
+        score,
+        sales,
+        orders,
+        products,
+      };
+    });
+
+    storesWithScore.sort((a, b) => {
+      if (a.isSponsored && !b.isSponsored) return -1;
+      if (!a.isSponsored && b.isSponsored) return 1;
+      return (
+        b.score - a.score ||
+        b.orders - a.orders ||
+        b.sales - a.sales ||
+        b.products - a.products
+      );
+    });
+
+    const featuredStores = storesWithScore.slice(0, 6).map((item) => item.store);
     const featuredVendorIds = featuredStores.map((s) => s.vendorId);
     const rateIds = [
       ...new Map(
@@ -1311,14 +1640,30 @@ export async function getHubHome(req, res, next) {
         ),
       ),
     ];
-    const [timelineStores, timelineUsers] = await Promise.all([
+    const allVendorIds = [
+      ...new Set([...featuredVendorIds, ...timelineVendorIds].map(String)),
+    ];
+    const [timelineStores, timelineUsers, vendorSubscriptions] = await Promise.all([
       Store.find({ vendorId: { $in: timelineVendorIds } })
         .select("vendorId name handle avatar description sectors locations whatsapp social tier")
         .lean(),
       User.find({ _id: { $in: timelineVendorIds } })
         .select("avatar verification area state tier +payout")
         .lean(),
+      PlatformSubscription.find({
+        ownerId: { $in: allVendorIds },
+        ownerType: "vendor",
+        status: { $in: ["trialing", "active", "past_due", "cancelled"] },
+        currentPeriodEnd: { $gt: new Date() },
+      })
+        .select("ownerId plan")
+        .lean(),
     ]);
+    const enterpriseVendorIds = new Set(
+      (vendorSubscriptions || [])
+        .filter((s) => s.plan === "vendor_enterprise")
+        .map((s) => String(s.ownerId)),
+    );
     const timelineStoreByVendor = new Map(
       timelineStores.map((s) => [String(s.vendorId), s]),
     );
@@ -1482,8 +1827,11 @@ export async function getHubHome(req, res, next) {
     const identityOf = (id) => {
       const store = timelineStoreByVendor.get(String(id));
       const user = timelineUserById.get(String(id));
-      const vendorTier = user?.tier || store?.tier || "vendor_free";
-      const isEnt = vendorTier === "vendor_enterprise";
+      const hasEnterpriseSub = enterpriseVendorIds.has(String(id));
+      const vendorTier = hasEnterpriseSub
+        ? "vendor_enterprise"
+        : user?.tier || store?.tier || "vendor_basic";
+      const isEnt = hasEnterpriseSub || vendorTier === "vendor_enterprise";
       return {
         vendorId: String(id),
         storeName: store?.name ?? null,
@@ -1523,20 +1871,31 @@ export async function getHubHome(req, res, next) {
     );
 
     let timeline = [
-      ...timelineProducts.map((p) => ({
-        id: `product-${p._id}`,
-        kind: "product",
-        at: p.createdAt,
-        title: p.name,
-        body: p.description || null,
-        ...identityOf(p.vendorId),
-        // Product cards show product ratings, not the vendor's.
-        ...productRatingOf(p._id),
-        sponsored: boostedProductIds.has(String(p._id)),
-        imageUrl: p.mainImageUrl || null,
-        images: ownImages(p.mainImageUrl, p.thumbnailUrls),
-        listing: listingOf(p, timelineUserById.get(String(p.vendorId))),
-      })),
+      ...timelineProducts.map((p) => {
+        const idObj = identityOf(p.vendorId);
+        const itemSectors = [...(idObj.sectors || [])];
+        if (p.sectorValue && !itemSectors.includes(p.sectorValue)) {
+          itemSectors.unshift(p.sectorValue);
+        }
+        if (p.categoryId && !itemSectors.includes(p.categoryId)) {
+          itemSectors.unshift(p.categoryId);
+        }
+        return {
+          id: `product-${p._id}`,
+          kind: "product",
+          at: p.createdAt,
+          title: p.name,
+          body: p.description || null,
+          ...idObj,
+          sectors: itemSectors,
+          // Product cards show product ratings, not the vendor's.
+          ...productRatingOf(p._id),
+          sponsored: boostedProductIds.has(String(p._id)),
+          imageUrl: p.mainImageUrl || null,
+          images: ownImages(p.mainImageUrl, p.thumbnailUrls),
+          listing: listingOf(p, timelineUserById.get(String(p.vendorId))),
+        };
+      }),
       ...visibleAdverts.map((a) => {
         const listing = a.productId
           ? listingOf(
@@ -1544,13 +1903,25 @@ export async function getHubHome(req, res, next) {
             timelineUserById.get(String(a.vendorId)),
           )
           : null;
+        const idObj = identityOf(a.vendorId);
+        const itemSectors = [...(idObj.sectors || [])];
+        if (listing?.sectorValue && !itemSectors.includes(listing.sectorValue)) {
+          itemSectors.unshift(listing.sectorValue);
+        }
+        if (listing?.categoryId && !itemSectors.includes(listing.categoryId)) {
+          itemSectors.unshift(listing.categoryId);
+        }
+        if (/solar|panel|inverter|generator/i.test(`${a.headline} ${a.blurb}`)) {
+          itemSectors.unshift("solar_inverter_systems", "electronics_technology");
+        }
         return {
           id: `advert-${a._id}`,
           kind: "promotion",
           at: a.createdAt,
           title: a.headline,
           body: a.blurb || null,
-          ...identityOf(a.vendorId),
+          ...idObj,
+          sectors: itemSectors,
           // A product-tied advert uses that listing's product rating.
           ...(listing ? productRatingOf(a.productId) : {}),
           // Only this post is the paid placement. A live advert must not
@@ -1558,23 +1929,39 @@ export async function getHubHome(req, res, next) {
           sponsored: true,
           advertId: String(a._id),
           placedByBuyer: Boolean(a.placedByBuyerId),
+          buyerName: a.placedByBuyerId
+            ? advertBuyerMap.get(String(a.placedByBuyerId))?.name || "Verified Buyer"
+            : null,
+          buyerAvatar: a.placedByBuyerId
+            ? advertBuyerMap.get(String(a.placedByBuyerId))?.avatar || null
+            : null,
           imageUrl: a.imageUrl || null,
           images: ownImages(a.imageUrl),
           listing,
         };
       }),
-      ...visibleBroadcasts.map((b) => ({
-        id: `broadcast-${b._id}`,
-        kind: "update",
-        at: b.sentAt,
-        title: b.message,
-        body: null,
-        ...identityOf(b.vendorId),
-        sponsored: false,
-        imageUrl: b.imageUrl || null,
-        images: ownImages(b.imageUrl),
-        listing: null,
-      })),
+      ...visibleBroadcasts.map((b) => {
+        const prod = b.productId ? listingById.get(String(b.productId)) : null;
+        const advert = b.advertId
+          ? visibleAdverts.find((a) => String(a._id) === String(b.advertId))
+          : null;
+        const banner = b.imageUrl || prod?.mainImageUrl || advert?.imageUrl || null;
+        return {
+          id: `broadcast-${b._id}`,
+          kind: "update",
+          at: b.sentAt,
+          title: b.message,
+          body: null,
+          ...identityOf(b.vendorId),
+          sponsored: false,
+          imageUrl: banner,
+          images: ownImages(banner),
+          listing: prod
+            ? listingOf(prod, timelineUserById.get(String(b.vendorId)))
+            : null,
+          ctaType: b.ctaType || (b.productId ? "product" : "chat"),
+        };
+      }),
     ]
       .sort((a, b) => new Date(b.at) - new Date(a.at))
       .slice(0, 16);
@@ -1582,6 +1969,11 @@ export async function getHubHome(req, res, next) {
     let featured = featuredStores.map((s) => {
       const user = featuredUserById.get(String(s.vendorId));
       const rating = ratingByVendor.get(String(s.vendorId));
+      const hasEnterpriseSub = enterpriseVendorIds.has(String(s.vendorId));
+      const vendorTier = hasEnterpriseSub
+        ? "vendor_enterprise"
+        : user?.tier || s.tier || "vendor_basic";
+      const isEnt = hasEnterpriseSub || vendorTier === "vendor_enterprise";
       return {
         vendorId: String(s.vendorId),
         name: s.name,
@@ -1589,9 +1981,13 @@ export async function getHubHome(req, res, next) {
         description: s.description || null,
         sectors: s.sectors || [],
         place: placeOf(s, user),
+        state: (Array.isArray(s?.locations) ? s.locations[0]?.state : null) || user?.state || null,
         avatar: s.avatar ?? user?.avatar ?? null,
         imageUrl: s.gallery?.[0] ?? coverByVendor.get(String(s.vendorId)) ?? null,
         verified: verifiedOf(user),
+        tier: vendorTier,
+        isEnterprise: isEnt,
+        enterprise: isEnt,
         sponsored: storewideSponsored.has(String(s.vendorId)),
         ratingAvg: rating ? Math.round(rating.avg * 10) / 10 : null,
         ratingCount: rating?.count ?? 0,

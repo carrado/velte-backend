@@ -16,6 +16,7 @@ import {
   cancelAdvert,
   createBroadcast,
   listMyBroadcasts,
+  sendBroadcast,
   cancelBroadcast,
   consumeAiPosterSlot,
   refundAiPosterSlot,
@@ -102,6 +103,12 @@ router.post(
   resolveActor,
   requireEntitlement("vendor_broadcast"),
   createBroadcast,
+);
+router.post(
+  "/broadcasts/:id/send",
+  resolveActor,
+  requireEntitlement("vendor_broadcast"),
+  sendBroadcast,
 );
 router.post(
   "/broadcasts/:id/cancel",

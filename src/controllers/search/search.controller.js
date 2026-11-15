@@ -6,6 +6,7 @@ import User from "../../models/Users.js";
 import LeadCooldown from "../../models/LeadCooldown.model.js";
 import BuyerRequest from "../../models/BuyerRequest.model.js";
 import BuyerRequestResponse from "../../models/BuyerRequestResponse.model.js";
+import PlatformSubscription from "../../models/PlatformSubscription.model.js";
 import { debitWalletForLead } from "../wallet/wallet.controller.js";
 import { notifyUser } from "../../services/pushNotification.service.js";
 
@@ -147,12 +148,23 @@ export async function chargeLead(req, res, next) {
     // connect them. Withholding it there would break the second click in a
     // 15-minute window for no reason.
     // Enterprise policy: only Enterprise vendors can receive messages / leads.
-    const [vendorUser, store] = await Promise.all([
+    const [vendorUser, store, sub] = await Promise.all([
       User.findById(vendorId).select("tier").lean(),
       Store.findOne({ vendorId }).select("whatsapp tier").lean(),
+      PlatformSubscription.findOne({
+        ownerId: vendorId,
+        ownerType: "vendor",
+        status: { $in: ["trialing", "active", "past_due", "cancelled"] },
+        currentPeriodEnd: { $gt: new Date() },
+      })
+        .select("plan")
+        .lean(),
     ]);
-    const vendorTier = vendorUser?.tier || store?.tier || "vendor_free";
-    if (vendorTier !== "vendor_enterprise") {
+    const isEnt =
+      sub?.plan === "vendor_enterprise" ||
+      vendorUser?.tier === "vendor_enterprise" ||
+      store?.tier === "vendor_enterprise";
+    if (!isEnt) {
       throw new AppError("Only Enterprise vendors can receive messages.", 403);
     }
     const whatsapp = store?.whatsapp ?? null;

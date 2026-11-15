@@ -32,6 +32,27 @@ const hubBroadcastSchema = new mongoose.Schema(
       ref: "HubAdvert",
       default: null,
     },
+    /** Product path: the broadcast tied to a product listing. null = standalone. */
+    productId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Product",
+      default: null,
+    },
+    format: {
+      type: String,
+      enum: ["custom", "advert", "product"],
+      default: "custom",
+    },
+    targetAudience: {
+      type: String,
+      enum: ["all_online", "premium_only", "nearby"],
+      default: "all_online",
+    },
+    ctaType: {
+      type: String,
+      enum: ["chat", "store", "product"],
+      default: "chat",
+    },
 
     status: {
       type: String,

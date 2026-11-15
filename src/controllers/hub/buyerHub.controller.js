@@ -225,7 +225,7 @@ export async function updateBroadcastPrefs(req, res, next) {
         .filter((value) => typeof value === "string")
         .map((value) => value.trim())
         .filter(Boolean)
-        .slice(0, 12);
+        .slice(0, 50);
     }
     await Buyer.updateOne({ _id: req.actor.id }, { $set: update });
     const buyer = await Buyer.findById(req.actor.id)
