@@ -9,6 +9,9 @@ import Product from "../../models/Product.model.js";
 import User from "../../models/Users.js";
 import Buyer from "../../models/Buyer.model.js";
 import PlatformSubscription from "../../models/PlatformSubscription.model.js";
+import Credits from "../../models/Credits.model.js";
+import { notifyUser } from "../../services/pushNotification.service.js";
+import { sendBuyerSponsoredAdvertEmail } from "../../helpers/emailSender.js";
 import { AppError } from "../../middleware/errorHandler.js";
 import { resolveTier } from "../../services/tier.service.js";
 import { can } from "../../config/entitlements.js";
@@ -106,14 +109,153 @@ export async function placeBuyerAdvert(req, res, next) {
       enterpriseFree: false,
       pinned: true,
     });
+
+    // Award the buyer promotional credits / token bounty for this gig (idempotent grant)
+    try {
+      await Credits.findOneAndUpdate(
+        { ownerId: req.actor.id, ownerType: "buyer" },
+        {
+          $inc: { balance: 25, totalEarned: 25 },
+          $addToSet: { grants: `promo_advert:${advert._id}` },
+        },
+        { upsert: true, new: true },
+      );
+    } catch (creditErr) {
+      console.warn("⚠️ Failed to credit promotion gig points to buyer:", creditErr.message || creditErr);
+    }
+
+    // ── Vendor Notifications: In-App, Push & Email ──
+    const [vendorUser, buyerDoc] = await Promise.all([
+      User.findById(vendorId).select("email username name").lean(),
+      Buyer.findById(req.actor.id).select("name avatar").lean(),
+    ]);
+
+    const buyerName = buyerDoc?.name || req.actor?.name || "A Premium Buyer";
+    const vendorName = vendorUser?.name || store?.name || "Vendor";
+
+    // 1 & 2: In-app notification + Web Push Notification via notifyUser
+    try {
+      await notifyUser(String(vendorId), {
+        title: "🎉 Premium Buyer Sponsored Your Listing!",
+        body: `${buyerName} placed a sponsored advert for "${headline}" on Velte Hub!`,
+        url: `/hub`,
+        tag: `buyer_advert_${advert._id}`,
+        type: "hub_advert",
+        metadata: {
+          advertId: String(advert._id),
+          buyerId: String(req.actor.id),
+          buyerName,
+          headline,
+        },
+      });
+    } catch (pushErr) {
+      console.warn("⚠️ Failed to deliver push/in-app notification to vendor:", pushErr.message || pushErr);
+    }
+
+    // 3: Email Notification via Resend
+    if (vendorUser?.email) {
+      try {
+        await sendBuyerSponsoredAdvertEmail({
+          to: vendorUser.email,
+          vendorName,
+          buyerName,
+          headline,
+          blurb,
+          imageUrl,
+          listingTitle: headline,
+          hubUrl: `${process.env.CLIENT_URL || "https://velte.ng"}/hub`,
+        });
+      } catch (mailErr) {
+        console.warn("⚠️ Failed to send buyer-sponsored advert email to vendor:", mailErr.message || mailErr);
+      }
+    }
+
     res.status(201).json({
       success: true,
       data: {
         id: String(advert._id),
         endsAt: advert.endsAt,
-        // Null until BUYER_ADVERT_COMMISSION_KOBO is set. No figure is shown.
         commissionKobo: BUYER_ADVERT_COMMISSION_KOBO,
       },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listMyBuyerAdverts(req, res, next) {
+  try {
+    if (!req.actor?.id) {
+      throw new AppError("Sign in to view your sponsored adverts.", 401);
+    }
+    const candidateIds = [req.actor.id];
+    if (req.actor.type === "buyer") {
+      const b = await Buyer.findById(req.actor.id).select("linkedVendorId").lean();
+      if (b?.linkedVendorId) candidateIds.push(String(b.linkedVendorId));
+    } else if (req.actor.type === "vendor") {
+      const b = await Buyer.findOne({ linkedVendorId: req.actor.id }).select("_id").lean();
+      if (b?._id) candidateIds.push(String(b._id));
+    }
+    const adverts = await HubAdvert.find({ placedByBuyerId: { $in: candidateIds } })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+
+    const vendorIds = [
+      ...new Set(adverts.map((a) => a.vendorId).filter(Boolean).map(String)),
+    ];
+    const [stores, users] = await Promise.all([
+      vendorIds.length
+        ? Store.find({ vendorId: { $in: vendorIds } })
+          .select("vendorId name handle avatar")
+          .lean()
+        : [],
+      vendorIds.length
+        ? User.find({ _id: { $in: vendorIds } })
+          .select("name avatar company verification verificationStatus isVerified")
+          .lean()
+        : [],
+    ]);
+    const storeMap = new Map(stores.map((s) => [String(s.vendorId), s]));
+    const userMap = new Map(users.map((u) => [String(u._id), u]));
+
+    const now = new Date();
+    res.json({
+      success: true,
+      data: adverts.map((a) => {
+        const store = storeMap.get(String(a.vendorId));
+        const user = userMap.get(String(a.vendorId));
+        const isLive = a.status === "active" && new Date(a.endsAt) > now;
+        const v = user?.verification || {};
+        const isVerified = Boolean(
+          v.ninVerifiedAt ||
+          v.cacReviewedAt ||
+          v.status === "verified" ||
+          user?.verificationStatus === "verified" ||
+          user?.isVerified
+        );
+        return {
+          id: String(a._id),
+          vendorId: String(a.vendorId),
+          vendorName: store?.name || user?.name || "Vendor",
+          vendorHandle: store?.handle || null,
+          vendorAvatar: store?.avatar || user?.avatar || null,
+          verified: isVerified,
+          vendorVerified: isVerified,
+          headline: a.headline,
+          blurb: a.blurb || null,
+          imageUrl: a.imageUrl,
+          status: isLive
+            ? "active"
+            : a.status === "cancelled"
+              ? "cancelled"
+              : "expired",
+          views: a.views || 0,
+          clicks: a.clicks || 0,
+          endsAt: a.endsAt,
+          createdAt: a.createdAt,
+        };
+      }),
     });
   } catch (err) {
     next(err);
@@ -179,14 +321,14 @@ export async function createBuyerBroadcast(req, res, next) {
       .lean();
     const live = referred.length
       ? await PlatformSubscription.find({
-          ownerId: { $in: referred.map((row) => row._id) },
-          ownerType: "buyer",
-          plan: "buyer_premium",
-          status: { $in: LIVE },
-          currentPeriodEnd: { $gt: new Date() },
-        })
-          .select("ownerId")
-          .lean()
+        ownerId: { $in: referred.map((row) => row._id) },
+        ownerType: "buyer",
+        plan: "buyer_premium",
+        status: { $in: LIVE },
+        currentPeriodEnd: { $gt: new Date() },
+      })
+        .select("ownerId")
+        .lean()
       : [];
     const row = await BuyerBroadcast.create({
       buyerId: req.actor.id,

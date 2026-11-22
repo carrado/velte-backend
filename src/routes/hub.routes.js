@@ -26,6 +26,7 @@ import {
   addFavourite,
   boostAdvert,
   createBuyerBroadcast,
+  listMyBuyerAdverts,
   placeBuyerAdvert,
   removeFavourite,
   updateBroadcastPrefs,
@@ -122,6 +123,7 @@ router.get("/analytics", resolveActor, requireEntitlement("analytics_insights"),
 
 // Buyer actions on the Hub. asBuyerAudience keeps a linked vendor session
 // on the buyer tier. Premium is enforced in the controller.
+router.get("/buyer-adverts/mine", resolveActor, asBuyerAudience, listMyBuyerAdverts);
 router.post("/buyer-adverts", resolveActor, asBuyerAudience, placeBuyerAdvert);
 router.post("/adverts/:id/boost", resolveActor, asBuyerAudience, boostAdvert);
 router.post("/buyer-broadcasts", resolveActor, asBuyerAudience, createBuyerBroadcast);

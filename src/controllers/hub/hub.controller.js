@@ -668,9 +668,36 @@ export async function listMyAdverts(req, res, next) {
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();
+
+    const buyerIds = [
+      ...new Set(
+        adverts
+          .map((a) => a.placedByBuyerId)
+          .filter(Boolean)
+          .map((id) => String(id)),
+      ),
+    ];
+    const buyers = buyerIds.length
+      ? await Buyer.find({ _id: { $in: buyerIds } })
+          .select("name avatar")
+          .lean()
+      : [];
+    const buyerMap = new Map(buyers.map((b) => [String(b._id), b]));
+
     res.json({
       success: true,
-      data: adverts.map((a) => ({ ...a, id: String(a._id) })),
+      data: adverts.map((a) => {
+        const buyer = a.placedByBuyerId
+          ? buyerMap.get(String(a.placedByBuyerId))
+          : null;
+        return {
+          ...a,
+          id: String(a._id),
+          placedByBuyer: Boolean(a.placedByBuyerId),
+          buyerName: buyer?.name || (a.placedByBuyerId ? "Verified Buyer" : null),
+          buyerAvatar: buyer?.avatar || null,
+        };
+      }),
     });
   } catch (err) {
     next(err);

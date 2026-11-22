@@ -27,8 +27,78 @@ import {
 const MAX_SECTORS = 5;
 
 
+export const registerBuyer = async (req, res, next) => {
+  try {
+    const { name, email, password } = req.body;
+
+    if (!name || !email || !password) {
+      throw new AppError("Name, email, and password are required fields", 400);
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Check if email already belongs to a verified vendor
+    const existingVendor = await User.findOne({ email: normalizedEmail });
+    if (existingVendor && existingVendor.accountVerified) {
+      throw new AppError("An account with this email already exists as a vendor.", 400);
+    }
+
+    let buyer = await Buyer.findOne({ email: normalizedEmail }).select("+password");
+    if (buyer && buyer.accountVerified) {
+      throw new AppError("An account with this email already exists.", 400);
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    if (buyer) {
+      buyer.name = name.trim();
+      buyer.password = password;
+      buyer.emailOtp = {
+        code: Number(otp),
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      };
+      await buyer.save();
+    } else {
+      buyer = new Buyer({
+        name: name.trim(),
+        email: normalizedEmail,
+        password,
+        accountVerified: false,
+        emailOtp: {
+          code: Number(otp),
+          expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+        },
+      });
+      await buyer.save();
+    }
+
+    try {
+      await sendVerificationEmail(buyer.email, buyer.name, otp);
+    } catch (emailError) {
+      console.error("[registerBuyer] email send error:", emailError);
+      if (process.env.NODE_ENV === "production") {
+        throw new AppError(
+          "Unable to send verification email at the moment. Please try again later.",
+          500,
+        );
+      }
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: "Account created! A verification code has been sent to your email.",
+      email: buyer.email,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const register = async (req, res, next) => {
   try {
+    if (req.body.role === "buyer") {
+      return await registerBuyer(req, res, next);
+    }
     const {
       name,
       email,
@@ -247,13 +317,80 @@ export const login = async (req, res, next) => {
     const user = await User.findOne({
       $or: [{ email: idLower }, { username: idRaw }],
     });
-    if (!user) throw new AppError("Invalid credentials", 401);
+    if (user) {
+      return await loginAsVendor(user, password, req, res);
+    }
 
-    await loginAsVendor(user, password, req, res);
+    const buyer = await Buyer.findOne({ email: idLower }).select("+password");
+    if (buyer && buyer.password) {
+      return await loginAsBuyer(buyer, password, req, res);
+    }
+
+    throw new AppError("Invalid credentials", 401);
   } catch (error) {
     next(error);
   }
 };
+
+async function loginAsBuyer(buyer, password, req, res) {
+  if (!(await buyer.comparePassword(password))) {
+    throw new AppError("Invalid credentials", 401);
+  }
+
+  if (!buyer.accountVerified) {
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    try {
+      await sendVerificationEmail(buyer.email, buyer.name || "Buyer", otp);
+      buyer.emailOtp = {
+        code: Number(otp),
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      };
+      await buyer.save();
+    } catch (emailError) {
+      console.error("[loginAsBuyer] email send error:", emailError);
+      throw new AppError(
+        "Unable to send verification email at the moment. Please try again later.",
+        500,
+      );
+    }
+
+    throw new AppError(
+      "Your account is not verified. A new verification code has been sent to your email.",
+      403,
+      { email: buyer.email },
+    );
+  }
+
+  const token = jwt.sign(
+    { buyerId: buyer._id, type: "buyer" },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" },
+  );
+
+  res.cookie("buyer_auth_token", token, sessionCookieOptions());
+
+  if (buyer.linkedVendorId) {
+    const vendorToken = jwt.sign(
+      { userId: buyer.linkedVendorId },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" },
+    );
+    res.cookie("auth_token", vendorToken, sessionCookieOptions());
+  }
+
+  return res.status(200).json({
+    success: true,
+    accountType: "buyer",
+    buyer: {
+      id: buyer._id,
+      name: buyer.name,
+      email: buyer.email,
+      avatar: buyer.avatar,
+      phone: buyer.phone,
+    },
+    message: "Login successful",
+  });
+}
 
 // Throws AppError for every refusal; login() above forwards it.
 async function loginAsVendor(user, password, req, res) {
@@ -397,57 +534,70 @@ export const verifyEmail = async (req, res, next) => {
       throw new AppError("Email and OTP are required", 400);
     }
 
+    const normalizedEmail = email.toLowerCase().trim();
+
     // Find the user by email
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: normalizedEmail });
 
-    if (!user) {
-      throw new AppError("User not found", 404);
+    if (user) {
+      if (user.accountVerified) {
+        throw new AppError("The user is already verified.", 400);
+      }
+
+      // Check if OTP exists and matches
+      if (!user.emailOtp || user.emailOtp.code !== Number(otp)) {
+        throw new AppError("Invalid OTP", 400);
+      }
+
+      // Check if OTP is expired
+      const now = new Date();
+      if (user.emailOtp.expiresAt < now) {
+        throw new AppError("OTP has expired", 400);
+      }
+
+      // Mark user as verified
+      user.accountVerified = true;
+
+      // Remove OTP after verification (optional)
+      user.emailOtp = undefined;
+
+      await user.save();
+
+      try {
+        await creditPendingReferral(user);
+      } catch (err) {
+        console.error("[referral] credit-on-verify failed:", err.message);
+      }
+
+      return res.status(201).json({ success: true, message: "Account verified successfully" });
     }
 
-    if (user.accountVerified) {
-      throw new AppError("The user is already verified.", 400);
+    // Check if buyer exists by email
+    const buyer = await Buyer.findOne({ email: normalizedEmail });
+
+    if (buyer) {
+      if (buyer.accountVerified) {
+        throw new AppError("The account is already verified.", 400);
+      }
+
+      if (!buyer.emailOtp || buyer.emailOtp.code !== Number(otp)) {
+        throw new AppError("Invalid OTP", 400);
+      }
+
+      const now = new Date();
+      if (buyer.emailOtp.expiresAt < now) {
+        throw new AppError("OTP has expired", 400);
+      }
+
+      buyer.accountVerified = true;
+      buyer.emailOtp = undefined;
+
+      await buyer.save();
+
+      return res.status(201).json({ success: true, message: "Account verified successfully" });
     }
 
-    // Check if OTP exists and matches
-    if (!user.emailOtp || user.emailOtp.code !== Number(otp)) {
-      throw new AppError("Invalid OTP", 400);
-    }
-
-    // Check if OTP is expired
-    const now = new Date();
-    if (user.emailOtp.expiresAt < now) {
-      throw new AppError("OTP has expired", 400);
-    }
-
-    // Mark user as verified
-    user.accountVerified = true;
-
-    // Remove OTP after verification (optional)
-    user.emailOtp = undefined;
-
-    await user.save();
-
-    // Verified email is ONE of two gates for a referral payout now, not the
-    // whole thing — creditPendingReferral (referral.service.js) also
-    // requires the referee to have posted REFERRAL_CREDIT_MIN_PRODUCTS real
-    // listings before it actually credits anything (added 2026-08-10 after a
-    // real leakage: email verification alone let a drained-wallet vendor
-    // refer a fresh account and collect the bonus with zero real listings
-    // behind it). This call is almost always a no-op in practice — a
-    // brand-new account has 0 products at verification time — the real
-    // trigger is product.controller.js's createProduct, called again on
-    // every product this user ever posts. Kept here too (harmless,
-    // idempotent) in case verification is ever reordered to happen after
-    // some products already exist. Wrapped separately so a
-    // referral-crediting failure never blocks the verification response
-    // itself.
-    try {
-      await creditPendingReferral(user);
-    } catch (err) {
-      console.error("[referral] credit-on-verify failed:", err.message);
-    }
-
-    res.status(201).json({ success: true, message: "Account verified successfully" });
+    throw new AppError("User not found", 404);
   } catch (err) {
     next(err);
   }

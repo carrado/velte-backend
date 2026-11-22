@@ -49,6 +49,19 @@ const orderSchema = new mongoose.Schema(
     vendorName: { type: String, default: null },
     storeHandle: { type: String, default: null },
 
+    // Attribution: If this order originated from a buyer-sponsored advert
+    promoterBuyerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Buyer",
+      default: null,
+      index: true,
+    },
+    advertId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "HubAdvert",
+      default: null,
+    },
+
     // Who to deliver to. Collected at checkout, shown to the vendor on
     // confirm. Optional at the schema layer so orders placed before this
     // existed can still be confirmed; checkout itself requires all three.

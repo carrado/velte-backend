@@ -3,6 +3,7 @@ import Product from "../../models/Product.model.js";
 import Category from "../../models/Category.model.js";
 import User from "../../models/Users.js";
 import Review from "../../models/Review.model.js";
+import HubAdvert from "../../models/HubAdvert.model.js";
 import { AppError } from "../../middleware/errorHandler.js";
 import { embedAndSaveStore } from "../../services/embedding.service.js";
 import { sectorLabel, mergeBusinessTypeFromLabels } from "../../utils/sectorLabels.js";
@@ -15,7 +16,7 @@ import { can } from "../../config/entitlements.js";
 import { ensureProductSlug } from "../../utils/productSlug.js";
 
 const LISTING_PUBLIC_FIELDS =
-  "vendorId name slug kind quoteOnRequest price priceMax currency mainImageUrl thumbnailUrls videoUrl description attributes quantity categoryId delivery";
+  "vendorId name slug kind quoteOnRequest price priceMax currency mainImageUrl thumbnailUrls videoUrl description attributes quantity categoryId sectorValue delivery";
 
 // The old "notify buyers who follow this vendor" trigger
 // (notifyFollowersOfStoreUpdate) is gone (2026-08-18) along with
@@ -185,6 +186,8 @@ function presentPublicListing(p, vendor) {
     videoUrl: p.videoUrl ?? null,
     description: p.description,
     quantity: p.quantity ?? null,
+    sectorValue: p.sectorValue ?? null,
+    category: (p.sectorValue && sectorLabel(p.sectorValue)) || p.categoryId || null,
     checkoutEligible: isCheckoutEligible(p, vendor),
     attributes: (p.attributes || []).map((a) => ({
       name: a.name,
@@ -524,14 +527,32 @@ export async function getPublicStore(req, res, next) {
     const store = await Store.findOne({ handle });
     if (!store) throw new AppError("Store not found.", 404);
 
-    const [user, products] = await Promise.all([
+    const [user, products, vendorRatings, activeAdverts] = await Promise.all([
       User.findById(store.vendorId).select("avatar area +payout"),
       Product.find({ vendorId: store.vendorId, isSuspended: { $ne: true } })
         .sort({ isFeatured: -1, createdAt: -1 })
         .limit(12)
         .select(LISTING_PUBLIC_FIELDS)
         .lean(),
+      Review.aggregate([
+        {
+          $match: {
+            vendorId: store.vendorId,
+            $or: [{ kind: "vendor" }, { kind: { $exists: false } }],
+          },
+        },
+        { $group: { _id: "$rating", count: { $sum: 1 } } },
+      ]),
+      HubAdvert.find({
+        vendorId: store.vendorId,
+        status: "active",
+      })
+        .sort({ createdAt: -1 })
+        .select("_id headline blurb imageUrl productId")
+        .lean(),
     ]);
+
+    const vendorReviews = ratingSummary(vendorRatings);
 
     res.json({
       success: true,
@@ -544,6 +565,15 @@ export async function getPublicStore(req, res, next) {
         vendorId: store.vendorId,
         avatar: user?.avatar ?? null,
         area: user?.area ?? null,
+        ratingAvg: vendorReviews.avg,
+        ratingCount: vendorReviews.count,
+        adverts: (activeAdverts || []).map((ad) => ({
+          id: String(ad._id),
+          headline: ad.headline,
+          blurb: ad.blurb || "",
+          imageUrl: ad.imageUrl,
+          productId: ad.productId ? String(ad.productId) : null,
+        })),
         // Shim: keeps the API response shape stable for the frontend (which
         // still reads PublicStore.businessType) now that the account no
         // longer stores one frozen businessType — derived fresh from the

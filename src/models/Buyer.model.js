@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
 
 // 2026-08-18 — stripped back to the bare minimum per explicit product
 // direction ("Just the Phone and OTP Verification, nothing buyers again on
@@ -148,6 +149,25 @@ const buyerSchema = new mongoose.Schema(
       default: null,
       trim: true,
     },
+    password: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    emailOtp: {
+      code: {
+        type: Number,
+        default: null,
+      },
+      expiresAt: {
+        type: Date,
+        default: null,
+      },
+    },
+    accountVerified: {
+      type: Boolean,
+      default: false,
+    },
     avatar: {
       type: String,
       default: null,
@@ -271,8 +291,21 @@ buyerSchema.set("toJSON", {
   versionKey: false,
   transform: (_doc, ret) => {
     delete ret.phoneOtp;
+    delete ret.emailOtp;
+    delete ret.password;
     return ret;
   },
 });
+
+buyerSchema.pre("save", async function (next) {
+  if (!this.isModified("password") || !this.password) return next();
+  this.password = await bcrypt.hash(this.password, 12);
+  next();
+});
+
+buyerSchema.methods.comparePassword = async function (candidatePassword) {
+  if (!this.password) return false;
+  return await bcrypt.compare(candidatePassword, this.password);
+};
 
 export default mongoose.model("Buyer", buyerSchema);

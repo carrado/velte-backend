@@ -259,3 +259,58 @@ export const sendSubscriptionExpiryEmail = async ({
     console.error("❌ Error sending subscription expiry email:", error.message || error);
   }
 };
+
+export const sendBuyerSponsoredAdvertEmail = async ({
+  to,
+  vendorName,
+  buyerName,
+  headline,
+  blurb,
+  imageUrl,
+  listingTitle,
+  hubUrl,
+}) => {
+  try {
+    if (!process.env.RESEND_API_KEY) {
+      console.warn("⚠️ RESEND_API_KEY unset — skipping buyer sponsored advert email");
+      return;
+    }
+    const templatePath = path.join(
+      process.cwd(),
+      "src",
+      "emailTemplates",
+      "buyerSponsoredAdvert.html"
+    );
+
+    let htmlContent = fs.readFileSync(templatePath, "utf8");
+
+    const imageBlock = imageUrl
+      ? `<img src="${imageUrl}" alt="Advert Poster" class="advert-img" />`
+      : "";
+    const blurbBlock = blurb
+      ? `<p class="advert-blurb">${blurb}</p>`
+      : "";
+
+    htmlContent = htmlContent
+      .replace(/{{vendorName}}/g, vendorName || "Vendor")
+      .replace(/{{buyerName}}/g, buyerName || "A Premium Buyer")
+      .replace(/{{headline}}/g, headline || "Sponsored Listing")
+      .replace(/{{listingTitle}}/g, listingTitle || "Featured Catalog Listing")
+      .replace(/{{imageBlock}}/g, imageBlock)
+      .replace(/{{blurbBlock}}/g, blurbBlock)
+      .replace(/{{hubUrl}}/g, hubUrl || `${process.env.CLIENT_URL || "https://velte.ng"}/hub`);
+
+    const msg = {
+      to,
+      from: "no-reply@velte.ng",
+      subject: `🎉 ${buyerName || "A Premium Buyer"} sponsored your listing on Velte Hub!`,
+      html: htmlContent,
+    };
+
+    const { error } = await resend.emails.send(msg);
+    if (error) throw new Error(error.message);
+    console.log(`✅ Buyer-sponsored advert email delivered to ${to}`);
+  } catch (error) {
+    console.error("❌ Error sending buyer sponsored advert email:", error.message || error);
+  }
+};

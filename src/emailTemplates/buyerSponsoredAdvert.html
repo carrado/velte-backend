@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>A Premium Buyer Sponsored Your Listing - Velte</title>
+    <style>
+      body {
+        font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif;
+        background-color: #f8fafc;
+        margin: 0;
+        padding: 24px 16px;
+        color: #1e293b;
+        -webkit-font-smoothing: antialiased;
+      }
+      .container {
+        max-width: 600px;
+        margin: 0 auto;
+        background-color: #ffffff;
+        border-radius: 16px;
+        overflow: hidden;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+      }
+      .header {
+        background: linear-gradient(135deg, #ea580c 0%, #f97316 100%);
+        padding: 32px 24px;
+        text-align: center;
+        color: #ffffff;
+      }
+      .header .badge {
+        display: inline-block;
+        background: rgba(255, 255, 255, 0.2);
+        padding: 4px 12px;
+        border-radius: 9999px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+      }
+      .header h1 {
+        margin: 0;
+        font-size: 22px;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+      }
+      .header p {
+        margin: 6px 0 0 0;
+        font-size: 14px;
+        opacity: 0.95;
+      }
+      .body {
+        padding: 32px 28px;
+      }
+      .greeting {
+        font-size: 16px;
+        font-weight: 700;
+        color: #0f172a;
+        margin-bottom: 12px;
+      }
+      .intro-text {
+        font-size: 14px;
+        line-height: 1.6;
+        color: #475569;
+        margin-bottom: 24px;
+      }
+      .advert-card {
+        background-color: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 14px;
+        overflow: hidden;
+        margin-bottom: 24px;
+      }
+      .advert-img {
+        width: 100%;
+        height: 220px;
+        object-fit: cover;
+        display: block;
+      }
+      .advert-content {
+        padding: 18px 20px;
+      }
+      .promoter-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background-color: #ffedd5;
+        color: #c2410c;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 3px 10px;
+        border-radius: 9999px;
+        margin-bottom: 10px;
+      }
+      .advert-title {
+        font-size: 16px;
+        font-weight: 700;
+        color: #0f172a;
+        margin: 0 0 6px 0;
+        line-height: 1.35;
+      }
+      .advert-blurb {
+        font-size: 13px;
+        color: #64748b;
+        margin: 0;
+        line-height: 1.5;
+      }
+      .info-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 12px 0;
+        border-top: 1px solid #e2e8f0;
+        font-size: 12px;
+        color: #64748b;
+      }
+      .info-row strong {
+        color: #0f172a;
+      }
+      .cta-wrapper {
+        text-align: center;
+        margin: 28px 0 16px 0;
+      }
+      .cta-button {
+        display: inline-block;
+        background-color: #ea580c;
+        color: #ffffff !important;
+        text-decoration: none;
+        font-weight: 700;
+        font-size: 14px;
+        padding: 12px 28px;
+        border-radius: 10px;
+        box-shadow: 0 4px 12px rgba(234, 88, 12, 0.25);
+      }
+      .footer {
+        background-color: #f1f5f9;
+        padding: 20px 24px;
+        text-align: center;
+        font-size: 12px;
+        color: #64748b;
+      }
+      .footer a {
+        color: #ea580c;
+        text-decoration: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <span class="badge">Velte Hub Spotlight</span>
+        <h1>You Have a New Patron Sponsor!</h1>
+        <p>A verified Premium Buyer just spotlighted your business.</p>
+      </div>
+
+      <div class="body">
+        <div class="greeting">Hello {{vendorName}},</div>
+        <p class="intro-text">
+          Great news! <strong>{{buyerName}}</strong>, a verified Velte Premium Buyer, has placed a <strong>Sponsored Advert</strong> promoting your business and listing directly on the main <strong>Velte Hub Feed</strong>.
+        </p>
+
+        <div class="advert-card">
+          {{imageBlock}}
+          <div class="advert-content">
+            <span class="promoter-pill">Sponsored by {{buyerName}}</span>
+            <h3 class="advert-title">{{headline}}</h3>
+            {{blurbBlock}}
+            <div style="margin-top: 14px;">
+              <div class="info-row">
+                <span>Placement Duration</span>
+                <strong>7 Days Active Pin</strong>
+              </div>
+              <div class="info-row">
+                <span>Promoted Listing</span>
+                <strong>{{listingTitle}}</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <p class="intro-text" style="font-size: 13px;">
+          This advert is now live and pinned for thousands of buyers across Nigeria browsing the Hub feed. All clicks route shoppers directly to your store and listings.
+        </p>
+
+        <div class="cta-wrapper">
+          <a href="{{hubUrl}}" class="cta-button" target="_blank">View Your Advert on Hub</a>
+        </div>
+      </div>
+
+      <div class="footer">
+        &copy; 2026 Velte Technologies. All rights reserved.<br />
+        You received this email because you are a registered vendor on Velte.
+      </div>
+    </div>
+  </body>
+</html>
+

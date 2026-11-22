@@ -1,41 +1,69 @@
 import User from "../../models/Users.js";
+import Buyer from "../../models/Buyer.model.js";
 import { AppError } from "../../middleware/errorHandler.js";
 import { sendPasswordResetEmail, sendVerificationEmail } from "../../helpers/emailSender.js";
 
 export const resendOTP = async (req, res, next) => {
   try {
     const { email } = req.body;
+    if (!email) {
+      throw new AppError("Email is required", 400);
+    }
+    const normalizedEmail = email.toLowerCase().trim();
 
     // 🔹 Find user
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: normalizedEmail });
 
-    // 404, not 401 — same reasoning as passwordResetOTP below.
-    if (!user) {
-      throw new AppError("Invalid email address", 404);
+    if (user) {
+      if (user.accountVerified) {
+        throw new AppError("The user is already verified.", 400);
+      }
+
+      // 🔹 Generate OTP
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+      // 🔹 Send verification email first
+      await sendVerificationEmail(user.email, user.name, otp);
+
+      // 🔹 Update user only after email is sent successfully
+      user.emailOtp = {
+        code: otp,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000), // valid for 10 mins
+      };
+
+      await user.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "OTP re-sent successfully",
+      });
     }
 
-    if (user.accountVerified) {
-      throw new AppError("The user is already verified.", 400);
+    // Check if buyer exists
+    const buyer = await Buyer.findOne({ email: normalizedEmail });
+
+    if (buyer) {
+      if (buyer.accountVerified) {
+        throw new AppError("The account is already verified.", 400);
+      }
+
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      await sendVerificationEmail(buyer.email, buyer.name || "Buyer", otp);
+
+      buyer.emailOtp = {
+        code: Number(otp),
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      };
+
+      await buyer.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "OTP re-sent successfully",
+      });
     }
 
-    // 🔹 Generate OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
-    // 🔹 Send verification email first
-    await sendVerificationEmail(user.email, user.name, otp);
-
-    // 🔹 Update user only after email is sent successfully
-    user.emailOtp = {
-      code: otp,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000), // valid for 10 mins
-    };
-
-    await user.save();
-
-    res.status(200).json({
-      success: true,
-      message: "OTP re-sent successfully",
-    });
+    throw new AppError("Invalid email address", 404);
   } catch (error) {
     next(error);
   }

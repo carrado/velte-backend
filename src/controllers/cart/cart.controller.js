@@ -501,12 +501,21 @@ export async function checkoutCart(req, res, next) {
       ? `${callbackBase}/cart/callback`
       : undefined;
 
+    const promoterBuyerId = mongoose.isValidObjectId(req.body?.promoterBuyerId)
+      ? req.body.promoterBuyerId
+      : null;
+    const advertId = mongoose.isValidObjectId(req.body?.advertId)
+      ? req.body.advertId
+      : null;
+
     const order = await Order.create({
       buyerId,
       vendorId: vendor._id,
       vendorName: store?.name || vendor.company?.name || vendor.name || null,
       storeHandle: store?.handle || null,
       fulfillment,
+      promoterBuyerId,
+      advertId,
       items: quote.items,
       subtotalKobo: quote.subtotalKobo,
       commissionKobo: quote.commissionKobo,
@@ -528,6 +537,8 @@ export async function checkoutCart(req, res, next) {
           orderId: String(order._id),
           buyerId: String(buyerId),
           vendorId: String(vendor._id),
+          promoterBuyerId: promoterBuyerId ? String(promoterBuyerId) : undefined,
+          advertId: advertId ? String(advertId) : undefined,
         },
         channels: ["card", "bank_transfer"],
       });
@@ -769,6 +780,25 @@ export async function markOrderReceived(req, res, next) {
     order.status = "received";
     order.receivedAt = order.receivedAt ?? new Date();
     await order.save();
+
+    // Attribute commission / promotion bounty to the promoter buyer if order originated from an advert
+    if (order.promoterBuyerId) {
+      try {
+        const Credits = (await import("../../models/Credits.model.js")).default;
+        const bonusCredits = 50;
+        await Credits.findOneAndUpdate(
+          { ownerId: order.promoterBuyerId, ownerType: "buyer" },
+          {
+            $inc: { balance: bonusCredits, totalEarned: bonusCredits },
+            $addToSet: { grants: `order_promoter:${order._id}` },
+          },
+          { upsert: true }
+        );
+      } catch (promoErr) {
+        console.warn("⚠️ Failed to credit order promotion bounty to buyer:", promoErr.message || promoErr);
+      }
+    }
+
     const { releaseFunds } = await import("../orders/vendorOrders.controller.js");
     await releaseFunds(order);
     res.json({ success: true, data: { order: presentOrder(order) } });

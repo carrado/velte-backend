@@ -1,6 +1,7 @@
 import express from 'express';
 import {
   register,
+  registerBuyer,
   login,
   logout,
   verifyEmail,
@@ -19,6 +20,7 @@ const router = express.Router();
 
 // Define routes and map to controller functions
 router.post('/register', register);
+router.post('/register-buyer', registerBuyer);
 router.post('/login', login);
 router.post("/verify", verifyEmail);
 router.post("/resend-verification", resendOTP)

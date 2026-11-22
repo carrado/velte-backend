@@ -86,6 +86,5 @@ export const HUB_BASIC_BUYER_LISTING_CAP = 8;
  *  Unset on purpose: the plan names the rule and not the cutoff, so the
  *  badge stays off until this is a number. */
 export const FAST_DELIVERY_MAX_HOURS = null;
-/** What a Premium buyer earns for placing a vendor advert. Unset: the
- *  placement is recorded and labelled, and no naira figure is shown. */
-export const BUYER_ADVERT_COMMISSION_KOBO = null;
+/** What a Premium buyer earns for placing a vendor advert (500 Naira reward bounty). */
+export const BUYER_ADVERT_COMMISSION_KOBO = 50000;
