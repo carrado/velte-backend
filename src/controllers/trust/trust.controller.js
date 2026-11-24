@@ -143,15 +143,58 @@ export async function createValidation(req, res, next) {
         capability: "validate_vendor",
       });
     }
+
+    const {
+      vendorId,
+      photos = [],
+      geo,
+      accuracyMeters,
+      storeStatus = "open_trading",
+      stockLevel = "well_stocked",
+      merchantContactPerson,
+      visited = true,
+      stockSeen = true,
+      addressMatched = true,
+      note = "",
+    } = req.body ?? {};
+
+    if (!vendorId) {
+      throw new AppError("Vendor ID is required for verification.", 400);
+    }
+
     const row = await VendorValidation.create({
       buyerId: req.actor.id,
-      vendorId: req.body?.vendorId,
-      visited: Boolean(req.body?.visited),
-      stockSeen: Boolean(req.body?.stockSeen),
-      addressMatched: Boolean(req.body?.addressMatched),
-      note: typeof req.body?.note === "string" ? req.body.note.slice(0, 400) : "",
+      vendorId,
+      photos: Array.isArray(photos) ? photos.slice(0, 5) : [],
+      ...(Array.isArray(geo?.coordinates) && geo.coordinates.length === 2
+        ? { geo: { type: "Point", coordinates: geo.coordinates } }
+        : {}),
+      accuracyMeters: typeof accuracyMeters === "number" ? accuracyMeters : null,
+      storeStatus: ["open_trading", "closed_temporarily", "relocated", "not_found"].includes(storeStatus)
+        ? storeStatus
+        : "open_trading",
+      stockLevel: ["well_stocked", "low_stock", "no_stock"].includes(stockLevel)
+        ? stockLevel
+        : "well_stocked",
+      merchantContactPerson: typeof merchantContactPerson === "string" ? merchantContactPerson.slice(0, 100) : null,
+      visited: Boolean(visited),
+      stockSeen: Boolean(stockSeen),
+      addressMatched: Boolean(addressMatched),
+      note: typeof note === "string" ? note.slice(0, 600) : "",
+      rewardKobo: 50000, // ₦500 Proof-of-work reward
+      rewardCredited: true,
+      status: "approved",
     });
-    res.json({ success: true, data: { id: String(row._id) } });
+
+    res.json({
+      success: true,
+      data: {
+        id: String(row._id),
+        rewardKobo: row.rewardKobo,
+        rewardNaira: row.rewardKobo / 100,
+        message: "Verification proof submitted successfully. ₦500 PoW reward recorded.",
+      },
+    });
   } catch (err) {
     next(err);
   }

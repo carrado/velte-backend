@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import jwt from "jsonwebtoken";
 
 import Gig from "../../models/Gig.model.js";
 import GigApplication from "../../models/GigApplication.model.js";
@@ -95,6 +96,8 @@ export async function listGigs(req, res, next) {
         requiredSkills: g.requiredSkills,
         status: g.status,
         applicantCount: g.applicantCount || 0,
+        imageUrl: g.imageUrl || store?.avatar || user?.avatar || null,
+        images: g.images && g.images.length ? g.images : (store?.gallery || []),
         createdAt: g.createdAt,
         vendor: {
           vendorId: String(g.vendorId),
@@ -139,6 +142,38 @@ export async function getGigDetails(req, res, next) {
       }).lean();
     }
 
+    // If caller is the vendor who owns this gig, load all applicant proposals
+    let applications = null;
+    let vendorActorId = req.actor?.type === "vendor" ? req.actor.id : null;
+    if (!vendorActorId && req.cookies?.auth_token) {
+      try {
+        const decoded = jwt.verify(req.cookies.auth_token, process.env.JWT_SECRET);
+        if (decoded.userId && decoded.type !== "buyer") vendorActorId = decoded.userId;
+      } catch {}
+    }
+
+    if (vendorActorId && String(gig.vendorId) === String(vendorActorId)) {
+      const apps = await GigApplication.find({ gigId: gig._id })
+        .sort({ createdAt: -1 })
+        .lean();
+      const buyerIds = apps.map((a) => a.buyerId);
+      const buyers = await Buyer.find({ _id: { $in: buyerIds } })
+        .select("name email phone avatar tier")
+        .lean();
+      const buyerMap = new Map(buyers.map((b) => [String(b._id), b]));
+      applications = apps.map((a) => ({
+        id: String(a._id),
+        buyerId: String(a.buyerId),
+        buyer: buyerMap.get(String(a.buyerId)) || null,
+        pitch: a.pitch,
+        proposedDuration: a.proposedDuration,
+        contactPhone: a.contactPhone,
+        status: a.status,
+        submissionProof: a.submissionProof,
+        createdAt: a.createdAt,
+      }));
+    }
+
     res.json({
       success: true,
       data: {
@@ -155,6 +190,8 @@ export async function getGigDetails(req, res, next) {
         requiredSkills: gig.requiredSkills,
         status: gig.status,
         applicantCount: gig.applicantCount || 0,
+        imageUrl: gig.imageUrl || store?.avatar || user?.avatar || null,
+        images: gig.images && gig.images.length ? gig.images : (store?.gallery || []),
         createdAt: gig.createdAt,
         vendor: {
           vendorId: String(gig.vendorId),
@@ -163,6 +200,7 @@ export async function getGigDetails(req, res, next) {
           avatar: store?.avatar || user?.avatar || null,
           verified: Boolean(user?.verification?.status === "verified"),
         },
+        applications,
         myApplication: myApplication
           ? {
             id: String(myApplication._id),
@@ -425,7 +463,14 @@ export async function assignGig(req, res, next) {
 
     const gig = await Gig.findById(req.params.id);
     if (!gig) throw new AppError("Gig not found.", 404);
-    if (String(gig.vendorId) !== String(req.actor.id)) {
+    let vendorId = req.actor?.type === "vendor" ? req.actor.id : null;
+    if (!vendorId && req.cookies?.auth_token) {
+      try {
+        const decoded = jwt.verify(req.cookies.auth_token, process.env.JWT_SECRET);
+        if (decoded.userId && decoded.type !== "buyer") vendorId = decoded.userId;
+      } catch {}
+    }
+    if (String(gig.vendorId) !== String(vendorId)) {
       throw new AppError("You can only assign your own gigs.", 403);
     }
 
@@ -484,7 +529,14 @@ export async function approveGigWork(req, res, next) {
   try {
     const gig = await Gig.findById(req.params.id);
     if (!gig) throw new AppError("Gig not found.", 404);
-    if (String(gig.vendorId) !== String(req.actor.id)) {
+    let vendorId = req.actor?.type === "vendor" ? req.actor.id : null;
+    if (!vendorId && req.cookies?.auth_token) {
+      try {
+        const decoded = jwt.verify(req.cookies.auth_token, process.env.JWT_SECRET);
+        if (decoded.userId && decoded.type !== "buyer") vendorId = decoded.userId;
+      } catch {}
+    }
+    if (String(gig.vendorId) !== String(vendorId)) {
       throw new AppError("You can only approve work for your own gigs.", 403);
     }
 
@@ -554,7 +606,18 @@ export async function approveGigWork(req, res, next) {
  */
 export async function createGig(req, res, next) {
   try {
-    if (!req.actor || req.actor.type !== "vendor") {
+    let vendorId = req.actor?.type === "vendor" ? req.actor.id : null;
+    if (!vendorId && req.cookies?.auth_token) {
+      try {
+        const decoded = jwt.verify(req.cookies.auth_token, process.env.JWT_SECRET);
+        if (decoded.userId && decoded.type !== "buyer") {
+          const user = await User.findById(decoded.userId).select("_id").lean();
+          if (user) vendorId = String(user._id);
+        }
+      } catch {}
+    }
+
+    if (!vendorId) {
       throw new AppError("Only vendors can post tasks and gigs.", 403);
     }
 
@@ -569,6 +632,8 @@ export async function createGig(req, res, next) {
       milestones = [],
       deadline = null,
       requiredSkills = [],
+      imageUrl = null,
+      images = [],
     } = req.body || {};
 
     if (!title || title.trim().length < 5) {
@@ -581,10 +646,10 @@ export async function createGig(req, res, next) {
       throw new AppError("Please specify a valid reward amount.", 400);
     }
 
-    const store = await Store.findOne({ vendorId: req.actor.id }).select("_id").lean();
+    const store = await Store.findOne({ vendorId }).select("_id").lean();
 
     const gig = await Gig.create({
-      vendorId: req.actor.id,
+      vendorId,
       storeId: store?._id || null,
       title: title.trim(),
       description: description.trim(),
@@ -596,6 +661,8 @@ export async function createGig(req, res, next) {
       milestones,
       deadline: deadline ? new Date(deadline) : null,
       requiredSkills: Array.isArray(requiredSkills) ? requiredSkills : [],
+      imageUrl: imageUrl || null,
+      images: Array.isArray(images) ? images : [],
       status: "open",
     });
 

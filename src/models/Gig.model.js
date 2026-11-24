@@ -44,10 +44,20 @@ const gigSchema = new mongoose.Schema(
         "marketing_promotion",
         "technical_service",
         "inventory_warehouse",
+        "job",
+        "service",
         "custom",
       ],
       default: "custom",
       index: true,
+    },
+    imageUrl: {
+      type: String,
+      default: null,
+    },
+    images: {
+      type: [String],
+      default: [],
     },
     workMode: {
       type: String,

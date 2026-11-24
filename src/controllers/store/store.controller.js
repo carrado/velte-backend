@@ -167,6 +167,11 @@ function serializeStore(store) {
       x: store.social?.x || null,
     },
     gallery: store.gallery,
+    locations: (store.locations || []).map((loc) => ({
+      label: loc.label || null,
+      area: loc.area || null,
+      state: loc.state || null,
+    })),
   };
 }
 
@@ -527,11 +532,11 @@ export async function getPublicStore(req, res, next) {
     const store = await Store.findOne({ handle });
     if (!store) throw new AppError("Store not found.", 404);
 
-    const [user, products, vendorRatings, activeAdverts] = await Promise.all([
-      User.findById(store.vendorId).select("avatar area +payout"),
+    const [user, products, vendorRatings, recentReviews, activeAdverts, tier] = await Promise.all([
+      User.findById(store.vendorId).select("avatar area state company country verification accountVerified +payout"),
       Product.find({ vendorId: store.vendorId, isSuspended: { $ne: true } })
         .sort({ isFeatured: -1, createdAt: -1 })
-        .limit(12)
+        .limit(24)
         .select(LISTING_PUBLIC_FIELDS)
         .lean(),
       Review.aggregate([
@@ -543,6 +548,14 @@ export async function getPublicStore(req, res, next) {
         },
         { $group: { _id: "$rating", count: { $sum: 1 } } },
       ]),
+      Review.find({
+        vendorId: store.vendorId,
+        $or: [{ kind: "vendor" }, { kind: { $exists: false } }],
+      })
+        .sort({ createdAt: -1 })
+        .limit(20)
+        .populate("buyerId", "name avatar")
+        .lean(),
       HubAdvert.find({
         vendorId: store.vendorId,
         status: "active",
@@ -550,9 +563,17 @@ export async function getPublicStore(req, res, next) {
         .sort({ createdAt: -1 })
         .select("_id headline blurb imageUrl productId")
         .lean(),
+      resolveTier({ id: store.vendorId, type: "vendor" }).catch(() => "vendor_free"),
     ]);
 
     const vendorReviews = ratingSummary(vendorRatings);
+    const isEnterprise = tier === "vendor_enterprise";
+
+    const hasPhysicalLocation = Boolean(
+      (store.locations && store.locations.length > 0) ||
+      user?.area ||
+      user?.state
+    );
 
     res.json({
       success: true,
@@ -565,8 +586,32 @@ export async function getPublicStore(req, res, next) {
         vendorId: store.vendorId,
         avatar: user?.avatar ?? null,
         area: user?.area ?? null,
+        state: user?.state ?? null,
+        country: user?.country ?? "Nigeria",
+        companyLocation: user?.company?.location ?? null,
+        storeType: hasPhysicalLocation ? "physical" : "online",
+        tier: tier || "vendor_free",
+        isEnterprise,
+        enterprise: isEnterprise,
+        verified: Boolean(
+          user?.verification?.phoneVerifiedAt ||
+          user?.verification?.addressVerifiedAt ||
+          user?.accountVerified
+        ),
+        addressVerified: Boolean(user?.verification?.addressVerifiedAt),
         ratingAvg: vendorReviews.avg,
         ratingCount: vendorReviews.count,
+        ratingDistribution: vendorReviews.distribution,
+        reviews: (recentReviews || []).map((r) => ({
+          id: String(r._id),
+          rating: r.rating,
+          text: r.text || "",
+          createdAt: r.createdAt ? r.createdAt.toISOString() : null,
+          buyerName: r.buyerId?.name || "Verified Customer",
+          buyerAvatar: r.buyerId?.avatar || null,
+          reply: r.reply || null,
+          repliedAt: r.repliedAt ? r.repliedAt.toISOString() : null,
+        })),
         adverts: (activeAdverts || []).map((ad) => ({
           id: String(ad._id),
           headline: ad.headline,
